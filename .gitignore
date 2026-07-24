@@ -11,8 +11,9 @@ assets/cache/
 .env
 secrets/
 
-# Microsoft 폰트 (Windows 시스템 폰트 재배포 라이선스 불명확 - 로컬에서 직접 복사해서 사용)
-assets/fonts/*.ttf
+# Microsoft 폰트만 제외 (Windows 시스템 폰트 재배포 라이선스 불명확 - 로컬에서 직접 복사해서 사용)
+# Pretendard는 OFL 오픈소스 라이선스라 저장소에 포함해도 안전함
+assets/fonts/malgun*.ttf
 
 # OS/에디터
 .DS_Store

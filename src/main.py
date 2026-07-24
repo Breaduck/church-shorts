@@ -119,6 +119,21 @@ def analyze(url: str, config_path: Path = Path("config.yaml"), progress=print) -
     return video_dir, clips
 
 
+def _snap_clip_end_to_sentence(clip: Clip, segs: list[Segment]) -> float:
+    """Claude가 초 단위로 대략 지정한 clip.end가 실제 발화 중간을 자르는 경우가 있다
+    (예: "기도는 마치 전부와 같습니다 바쁠 때는 그래요"가 575.0~578.2초인데
+    end=576.0으로 잘라서 "그래요"가 통째로 잘림).
+
+    주의: faster-whisper의 정밀 재전사 결과는 문장부호(마침표 등)를 전혀 붙이지 않으므로
+    "문장부호로 끝나는지"로 판단할 수 없다 (실제로 시도했다가 전혀 매칭 안 됨을 확인함).
+    대신 clip.end가 어떤 세그먼트의 '중간'에 걸쳐 있으면, 그 세그먼트를 통째로 포함하도록
+    끝을 그 세그먼트의 끝까지 넓힌다 — 이미 말하기 시작한 발화 단위는 끝까지 들려준다."""
+    for seg in segs:
+        if seg.start < clip.end < seg.end:
+            return seg.end
+    return clip.end  # 정확히 세그먼트 경계에 걸리거나 못 찾으면 원래 값 유지
+
+
 def render_selected(
     video_dir: Path,
     clip_indices: list[int],
@@ -132,15 +147,20 @@ def render_selected(
     video_path = video_dir / "source.mp4"
     w = cfg["whisper"]
     outputs = []
+    END_BUFFER_SEC = 5.0  # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
 
     for idx in clip_indices:
         clip = clips[idx]
         progress(f"[{idx+1}] 정밀 재전사 중: {clip.title}")
         segs = transcribe_clip_precise(
-            video_path, clip.start, clip.end,
+            video_path, clip.start, clip.end + END_BUFFER_SEC,
             model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
             language=w["language"], vad_filter=w.get("vad_filter", True),
         )
+        new_end = _snap_clip_end_to_sentence(clip, segs)
+        if new_end != clip.end:
+            progress(f"[{idx+1}] 문장이 끊겨서 끝 지점 보정: {clip.end:.1f}s -> {new_end:.1f}s")
+            clip.end = new_end
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         progress(f"[{idx+1}] 렌더링 중...")

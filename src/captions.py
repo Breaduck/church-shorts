@@ -49,6 +49,37 @@ def _ass_time(sec: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _fit_title_font_size(
+    text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62
+) -> int:
+    """제목이 항상 한 줄에 들어가도록, 글자 수에 맞춰 폰트 크기를 줄인다.
+    (짧은 제목은 max_size 그대로, 긴 제목은 min_size까지 줄여서라도 한 줄 유지.)"""
+    if not text:
+        return max_size
+    needed = available_width_px / (len(text) * char_width_ratio)
+    return max(min_size, min(max_size, int(needed)))
+
+
+def _remap_after_silence_removal(t: float, keep_segments: list[tuple[float, float]]) -> float:
+    """무음 제거로 압축된 새 타임라인 기준으로 시간을 다시 계산한다.
+
+    render.py가 무음 구간을 select 필터로 걷어내면 영상/오디오는 짧아지는데,
+    자막(ASS) 타임스탬프가 원본(무음 포함) 기준 그대로면 뒤로 갈수록 자막이 밀린다
+    (예: 10초 지점에 3초 무음이 있었다면, 그 뒤 모든 대사가 실제 화면보다 자막이
+    3초 늦게 뜬다). keep_segments는 실제로 남긴 (원본시작, 원본끝) 구간 목록이며,
+    이걸 이어붙인 새 타임라인 상의 위치로 t를 변환한다.
+    """
+    cursor_new = 0.0
+    for seg_start, seg_end in keep_segments:
+        seg_len = seg_end - seg_start
+        if t < seg_start:
+            return cursor_new  # 제거된(무음) 구간 안 -> 다음 유지 구간 시작점으로 스냅
+        if t <= seg_end:
+            return cursor_new + (t - seg_start)
+        cursor_new += seg_len
+    return cursor_new  # 마지막 유지 구간 이후
+
+
 def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: float, safe_top_pct: float) -> int:
     width, height = resolution
     if position == "center":
@@ -78,7 +109,9 @@ def build_ass(
     clip_duration: float = 0.0,
     hook_always_on: bool = False,
     title_font_size: int | None = None,
+    title_font_family: str | None = None,
     card_layout: dict | None = None,
+    keep_segments: list[tuple[float, float]] | None = None,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -91,12 +124,18 @@ def build_ass(
     """
     width, height = resolution
     font_name = font_family
-    title_size = title_font_size or int(font_size * 1.3)
+    title_font_name = title_font_family or font_family
+    max_title_size = title_font_size or int(font_size * 1.3)
+    # 제목은 무조건 한 줄에 들어가야 하므로, 글자 수에 맞춰 폰트 크기를 동적으로 줄인다
+    # (긴 제목이 2줄로 자동 줄바꿈되면서 영상 박스와 겹치는 문제가 있었음).
+    title_size = _fit_title_font_size(
+        hook_text or "", max_title_size, min_size=font_size, available_width_px=width - 80
+    )
 
     if card_layout:
         # 제목을 상단 고정이 아니라 영상 박스 바로 위, 가깝게 붙여서 배치한다
-        # (요청: "제목을 영상 쪽으로 훨씬 아래로 내려라"). 글씨가 커진 만큼
-        # 줄 높이를 추정해서 영상 박스와 안 겹치게 여백을 확보한다.
+        # (요청: "제목을 영상 쪽으로 훨씬 아래로 내려라").
+        # 이제 한 줄로 고정되므로 줄 높이는 1줄 기준으로만 여백을 잡으면 된다.
         video_box_y = card_layout["video_box_y"]
         line_height_estimate = int(title_size * 1.25)
         title_margin_v = max(20, video_box_y - line_height_estimate - 24)
@@ -121,7 +160,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,{font_name},{font_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,{caption_alignment},40,40,{caption_margin_v},1
-Style: Hook,{font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width + 1},0,8,40,40,{title_margin_v},1
+Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width + 1},0,8,40,40,{title_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -129,13 +168,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     events = []
 
+    # 무음 제거 후 실제 최종 영상 길이 (keep_segments가 있으면 원본 clip_duration보다 짧다)
+    final_duration = (
+        sum(e - s for s, e in keep_segments) if keep_segments else clip_duration
+    )
+
     if hook_text:
-        hook_end = clip_duration if (hook_always_on and clip_duration > 0) else hook_duration_sec
+        hook_end = final_duration if (hook_always_on and final_duration > 0) else hook_duration_sec
         events.append(
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
         )
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
+    if keep_segments:
+        rel_words = [
+            Word(
+                start=_remap_after_silence_removal(w.start, keep_segments),
+                end=_remap_after_silence_removal(w.end, keep_segments),
+                text=w.text,
+            )
+            for w in rel_words
+        ]
+        # 리매핑 후 순간적으로 start==end가 되는(무음 구간에 걸쳐있던) 단어는 아주 살짝 늘려서
+        # 카라오케 \k 지속시간이 0이 되어 깨지는 걸 방지
+        rel_words = [
+            Word(start=w.start, end=max(w.end, w.start + 0.05), text=w.text) for w in rel_words
+        ]
     lines = chunk_words_into_lines(rel_words, max_words_per_line)
 
     for line in lines:
@@ -163,6 +221,7 @@ def build_ass_for_clip(
     resolution: tuple[int, int],
     hook_text: str | None,
     card_layout: dict | None = None,
+    keep_segments: list[tuple[float, float]] | None = None,
 ) -> str:
     words = _collect_words_in_range(segments, clip_start, clip_end)
     return build_ass(
@@ -186,5 +245,7 @@ def build_ass_for_clip(
         clip_duration=clip_end - clip_start,
         hook_always_on=config_hook.get("always_on", False),
         title_font_size=config_captions.get("title_font_size"),
+        title_font_family=config_captions.get("title_font_family"),
         card_layout=card_layout,
+        keep_segments=keep_segments,
     )

@@ -303,6 +303,9 @@ def render_clip(
             render_cfg.get("silence_threshold_db", -35),
             render_cfg.get("silence_min_duration_sec", 0.6),
         )
+    # 자막 생성보다 먼저 계산해야 한다: 무음 제거로 영상 타임라인이 압축되는데,
+    # 자막 타임스탬프도 똑같이 압축해서 리매핑하지 않으면 뒤로 갈수록 자막이 밀린다.
+    keep_segments = _build_keep_segments(duration, silences) if silences else None
 
     is_card = render_cfg.get("background_mode", "blur") == "card"
     card_layout = render_cfg.get("card_layout") if is_card else None
@@ -325,6 +328,7 @@ def render_clip(
         resolution=resolution,
         hook_text=clip.title,
         card_layout=card_layout,
+        keep_segments=keep_segments,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
@@ -333,8 +337,7 @@ def render_clip(
 
     select_expr = None
     audio_filter = None
-    if silences:
-        keep_segments = _build_keep_segments(duration, silences)
+    if keep_segments:
         select_expr = "+".join(f"between(t,{s:.2f},{e:.2f})" for s, e in keep_segments)
         audio_filter = f"aselect='{select_expr}',asetpts=N/SR/TB"
 

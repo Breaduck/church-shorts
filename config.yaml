@@ -76,17 +76,18 @@ render:
 captions:
   enabled: true
   template: "karaoke"        # "minimal" | "vibrant" | "karaoke" — 단어별 강조가 정확도 체감/몰입도를 높임
-  font_path: "assets/fonts/malgunbd.ttf"  # 맑은 고딕 Bold (Windows 기본 폰트를 프로젝트로 복사해둠)
-  font_family: "Malgun Gothic"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
+  font_path: "assets/fonts/Pretendard-Bold.ttf"
+  font_family: "Pretendard"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
   font_size: 72
   title_font_size: 160  # 자막(72)의 2배 이상 + 영상 바로 위로 내려서 배치
+  title_font_family: "Pretendard ExtraBold"  # 자막(Pretendard Bold)보다 더 굵게
   # 흰 배경(card/pad) 기준 색상: 검정 텍스트 + 강조 단어만 빨강, 흰 얇은 외곽선으로 살짝 대비만.
   primary_color: "&H00000000"     # 검정
   outline_color: "&H00FFFFFF"     # 흰색 (얇은 외곽선)
   outline_width: 2
   max_words_per_line: 4         # 한 화면에 3~4단어만 -> 짧고 정갈하게, 가독성 최우선
   position: "bottom"            # "bottom" | "center" (card 레이아웃에서는 무시되고 영상 박스 아래 캡션 영역에 고정)
-  karaoke_highlight_color: "&H000000FF"  # 강조 단어 색 (빨강)
+  karaoke_highlight_color: "&H0080DE4A"  # 강조 단어 색 (연두/초록)
   # 플랫폼 UI 안전 영역: pad/blur/crop 레거시 모드에서만 사용 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음)
   safe_area_bottom_pct: 0.20
   safe_area_top_pct: 0.10
