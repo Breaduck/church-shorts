@@ -1,0 +1,102 @@
+# 교회 설교 영상 → 자동 쇼츠 생성기 설정
+
+church:
+  name: "우리교회"  # 자막/제목에 참고용으로 쓰일 수 있음
+
+whisper:
+  # PC에 NVIDIA GPU 없음(CPU 전용 확인됨).
+  # 이 모델은 두 곳에 쓰인다: (1) 유튜브 자동 자막이 없는 영상의 전체 전사 폴백,
+  # (2) 하이라이트로 뽑힌 클립만 최종 자막용으로 정밀 재전사(main.py 5단계).
+  # large-v3가 기독교 용어 정확도는 더 좋지만 이 네트워크에서 최초 다운로드가
+  # HF_TOKEN 없이는 심하게 느려서(레이트리밋+Windows 심링크 미지원) medium으로 유지.
+  model_size: "medium"
+  device: "cpu"
+  compute_type: "int8"      # cpu는 int8 권장, cuda는 float16 권장
+  language: "ko"
+  word_timestamps: true     # 단어 단위 타임스탬프 필수 (자막 정싱크 + 카라오케 강조의 기반)
+  vad_filter: true          # 무음/잡음 구간 오인식 억제 -> 자막 정확도 향상
+
+highlights:
+  mode: "auto"              # "auto" = claude -p 서브프로세스 자동 호출 / "manual" = 이 세션에서 수동 선정
+  min_clips: 3
+  max_clips: 5
+  min_duration_sec: 20
+  max_duration_sec: 60
+  # 하이라이트 선정은 전적으로 Claude가 전사본을 읽고 설교의 맥락/의미를 이해해서 판단한다.
+  # 아래 카테고리는 "이런 걸 찾아봐"라는 참고 관점일 뿐, 기계적 키워드 매칭이 아니다.
+  # audio_peaks(오디오 에너지)는 보조 힌트로만 프롬프트에 곁들이고, 최종 판단 기준으로 쓰지 않는다.
+  categories:
+    - "설교 핵심 메시지/명언 구절 (짧게 잘라도 그 자체로 완결되고 울림이 있는 부분)"
+    - "설교 흐름상 감정이 고조되거나 반전이 있는 부분 (오디오 힌트는 참고만, 실제 판단은 내용 이해로)"
+    - "맥락상 일반 시청자도 공감하거나 '이건 뜨겠다' 싶은 부분"
+  # 바이럴 쇼츠 구조 강제: Hook(첫 1~3초 임팩트 문장) -> Build(맥락) -> Payoff(반전/울림/명언으로 마무리)
+  # highlights.py의 프롬프트가 이 구조를 명시적으로 요구해야 함 (자세한 건 highlights.py 참고)
+  require_hook_first_sentence: true   # 클립의 시작이 완결된 한 문장(훅)으로 시작하도록 경계를 스냅
+  require_payoff_last_sentence: true  # 클립의 끝이 어중간하게 끊기지 않고 문장이 완결되도록 스냅
+
+audio_peaks:
+  enabled: true             # 보조 힌트 전용. highlights.py 프롬프트에 "참고 신호"로만 첨부됨
+  frame_length_sec: 1.0
+  hop_length_sec: 0.5
+
+render:
+  aspect_ratio: "9:16"
+  resolution: [1080, 1920]
+  # "card" (흰 배경 + 둥근 모서리 영상 박스 + 상단 고정 제목 + 하단 캡션, 참고 이미지 스타일)
+  # | "pad" (흰 여백만) | "blur" (배경 블러 채움) | "crop" (중앙 크롭)
+  background_mode: "card"
+  pad_color: "white"        # background_mode: pad일 때 여백 색상
+  card_layout:
+    video_box_width: 1000     # 영상 박스 너비 (좌우 40px씩 여백)
+    # video_box_height는 여기서 고정하지 않는다. 원본 가로세로 비율을 그대로 유지해야 해서
+    # (옆을 잘라 확대하지 않음) render.py가 실제 소스 해상도로부터 매번 계산한다.
+    # video_box_y도 고정하지 않는다: title_area_height와 caption_area_height를 제외한
+    # 나머지 중간 공간에 영상 박스가 수직 중앙 정렬되도록 render.py가 계산한다.
+    title_area_height: 360    # 제목 영역 높이 (상단) - 글씨가 커져서 영역도 확장
+    caption_area_height: 380  # 캡션 영역 높이 (하단)
+    corner_radius: 36         # 둥근 모서리 반경(px)
+    source_crop_bottom_pct: 0.12  # 원본 영상 하단 이만큼(%)을 먼저 잘라냄 (교회 자체 자막 제거용)
+  remove_silence: true      # 무음 구간 자동 제거 (알파컷 참고: 페이스 빠르게, 지루함 방지)
+  silence_threshold_db: -35
+  silence_min_duration_sec: 1.2  # 설교자의 정상적인 강조 호흡(0.6~1초대)까지 잘라내면 말이 너무 툭툭 끊겨서 상향
+  ken_burns:
+    # 기본 꺼둠: zoompan 필터의 자기참조 'zoom' 변수가 d=1(연속 영상)일 때
+    # 프레임마다 리셋되어 실제로는 전혀 줌인되지 않는 현상을 실측으로 확인함
+    # (정지 이미지로 격리 테스트: 40초 후에도 프레임이 시작과 완전히 동일).
+    # 부가 기능(화려한 기교 없어도 된다는 요구사항)이라 더 파고들지 않고 비활성화.
+    # 나중에 다른 방식(예: 프레임별 오프셋을 미리 계산해 scale+crop에 전달)으로 재시도 가능.
+    enabled: false
+    zoom_per_sec: 0.008       # 아주 미세하게 (과하면 산만함)
+  hook:
+    enabled: true            # card 레이아웃에서는 제목이 클립 처음부터 끝까지 상단에 고정 표시됨
+    always_on: true           # true면 duration_sec 무시하고 클립 전체 길이 동안 표시
+    duration_sec: 3           # always_on: false일 때만 사용 (레거시 pad/blur/crop 모드용)
+    font_size_multiplier: 1.3
+
+captions:
+  enabled: true
+  template: "karaoke"        # "minimal" | "vibrant" | "karaoke" — 단어별 강조가 정확도 체감/몰입도를 높임
+  font_path: "assets/fonts/malgunbd.ttf"  # 맑은 고딕 Bold (Windows 기본 폰트를 프로젝트로 복사해둠)
+  font_family: "Malgun Gothic"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
+  font_size: 72
+  title_font_size: 160  # 자막(72)의 2배 이상 + 영상 바로 위로 내려서 배치
+  # 흰 배경(card/pad) 기준 색상: 검정 텍스트 + 강조 단어만 빨강, 흰 얇은 외곽선으로 살짝 대비만.
+  primary_color: "&H00000000"     # 검정
+  outline_color: "&H00FFFFFF"     # 흰색 (얇은 외곽선)
+  outline_width: 2
+  max_words_per_line: 4         # 한 화면에 3~4단어만 -> 짧고 정갈하게, 가독성 최우선
+  position: "bottom"            # "bottom" | "center" (card 레이아웃에서는 무시되고 영상 박스 아래 캡션 영역에 고정)
+  karaoke_highlight_color: "&H000000FF"  # 강조 단어 색 (빨강)
+  # 플랫폼 UI 안전 영역: pad/blur/crop 레거시 모드에서만 사용 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음)
+  safe_area_bottom_pct: 0.20
+  safe_area_top_pct: 0.10
+
+upload:
+  youtube:
+    enabled: true
+    default_privacy: "unlisted"   # 테스트 단계는 unlisted 권장
+    category_id: "22"             # People & Blogs (설교/종교는 별도 카테고리 없음)
+  instagram:
+    enabled: false   # Phase C: Meta 앱 심사 후 활성화
+  tiktok:
+    enabled: false    # Phase C: audit 승인 후 활성화

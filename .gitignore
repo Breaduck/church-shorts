@@ -1,0 +1,26 @@
+# 파이썬 가상환경
+venv/
+__pycache__/
+*.pyc
+
+# 생성물 (대용량 영상/오디오/전사 데이터 - 저장소에 안 올림)
+output/
+assets/cache/
+
+# 민감정보
+.env
+secrets/
+
+# Microsoft 폰트 (Windows 시스템 폰트 재배포 라이선스 불명확 - 로컬에서 직접 복사해서 사용)
+assets/fonts/*.ttf
+
+# OS/에디터
+.DS_Store
+Thumbs.db
+
+# 로컬 도구 상태
+.claude/
+
+# 참고용으로 받은 타인 콘텐츠 스크린샷 (저작권 불명확 - 저장소에 올리지 않음)
+유튜브 이미지.jpg
+유튜브 이미지 2.jpg
