@@ -33,6 +33,12 @@ class Clip:
     caption: str         # SNS 게시글 본문
     hashtags: list[str]
     reason: str          # 왜 이 구간을 선정했는지 (검토 UI에 표시)
+    # 웹 UI의 위치 편집 툴에서 드래그로 조정한, 기본 위치 대비 픽셀 오프셋(렌더 해상도 기준).
+    # 기본값 0은 기존 clips.json(이 필드가 없는)과도 호환된다.
+    title_offset_x: float = 0.0
+    title_offset_y: float = 0.0
+    caption_offset_x: float = 0.0
+    caption_offset_y: float = 0.0
 
 
 def build_prompt(

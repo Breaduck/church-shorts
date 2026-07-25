@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Optional
 
 import yt_dlp
 
@@ -37,9 +38,12 @@ def _probe_duration_sec(path: Path) -> float:
         return 0.0
 
 
-def download_video(url: str, output_root: Path) -> DownloadResult:
+def download_video(
+    url: str, output_root: Path, on_progress: Optional[Callable[[float], None]] = None
+) -> DownloadResult:
     """주어진 유튜브 URL의 영상을 output_root/<video_id>/source.mp4 로 저장한다.
-    이미 다운로드된 파일이 있으면 재다운로드하지 않고 재사용한다."""
+    이미 다운로드된 파일이 있으면 재다운로드하지 않고 재사용한다.
+    on_progress가 주어지면 0~100 사이의 다운로드 진행률(%)을 실시간으로 콜백한다."""
     video_id = extract_video_id(url)
     video_dir = output_root / video_id
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -47,12 +51,29 @@ def download_video(url: str, output_root: Path) -> DownloadResult:
 
     existing = list(video_dir.glob("source.*"))
     if existing:
+        if on_progress:
+            on_progress(100.0)
         return DownloadResult(
             video_id=video_id,
             title=video_id,
             video_path=existing[0],
             duration_sec=_probe_duration_sec(existing[0]),
         )
+
+    # 영상/오디오가 별도 스트림으로 순차 다운로드되어 각각 0~100%를 다시 찍으므로,
+    # 진행률 바가 뒤로 튀지 않도록 지금까지 본 최댓값만 콜백한다.
+    _max_pct = [0.0]
+
+    def _hook(d: dict) -> None:
+        if on_progress is None or d.get("status") != "downloading":
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        downloaded = d.get("downloaded_bytes")
+        if total and downloaded:
+            pct = min(100.0, downloaded / total * 100)
+            if pct > _max_pct[0]:
+                _max_pct[0] = pct
+                on_progress(pct)
 
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
@@ -64,6 +85,7 @@ def download_video(url: str, output_root: Path) -> DownloadResult:
         "merge_output_format": "mp4",
         "quiet": False,
         "noprogress": False,
+        "progress_hooks": [_hook] if on_progress else [],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

@@ -88,6 +88,18 @@ def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: flo
     return int(height * (1 - safe_bottom_pct) - 40)
 
 
+def compute_card_margins(card_layout: dict, resolution: tuple[int, int], title_size: int) -> tuple[int, int]:
+    """카드 레이아웃에서 제목/캡션의 기본(오프셋 적용 전) MarginV를 계산한다.
+    build_ass()와 위치 편집 웹 UI(web_app.py)가 반드시 같은 값을 써야 미리보기가
+    실제 렌더링과 일치하므로, 계산 로직을 이 함수 하나로 모은다."""
+    video_box_y = card_layout["video_box_y"]
+    line_height_estimate = int(title_size * 1.25)
+    title_margin_v = max(20, video_box_y - line_height_estimate - 90)
+    video_box_bottom = video_box_y + card_layout["video_box_height"]
+    caption_margin_v = video_box_bottom + 60
+    return title_margin_v, caption_margin_v
+
+
 def build_ass(
     clip_words: list[Word],
     clip_start: float,
@@ -112,6 +124,10 @@ def build_ass(
     title_font_family: str | None = None,
     card_layout: dict | None = None,
     keep_segments: list[tuple[float, float]] | None = None,
+    title_offset_x: float = 0.0,
+    title_offset_y: float = 0.0,
+    caption_offset_x: float = 0.0,
+    caption_offset_y: float = 0.0,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -132,20 +148,27 @@ def build_ass(
         hook_text or "", max_title_size, min_size=font_size, available_width_px=width - 80
     )
 
+    # 위치 편집 웹 UI에서 사용자가 드래그로 조정한 픽셀 오프셋. MarginV는 커질수록 텍스트가
+    # 아래로 내려가므로(상단 기준 정렬), offset_y를 그대로 더하면 된다. 좌우는 중앙 정렬
+    # 기준 MarginL/MarginR을 반대 방향으로 움직여서 중심을 offset_x만큼 이동시킨다.
+    base_margin_lr = 40
+    title_margin_l = max(0, base_margin_lr + title_offset_x)
+    title_margin_r = max(0, base_margin_lr - title_offset_x)
+    caption_margin_l = max(0, base_margin_lr + caption_offset_x)
+    caption_margin_r = max(0, base_margin_lr - caption_offset_x)
+
     if card_layout:
         # 제목을 상단 고정이 아니라 영상 박스 바로 위, 가깝게 붙여서 배치한다
         # (요청: "제목을 영상 쪽으로 훨씬 아래로 내려라").
         # 이제 한 줄로 고정되므로 줄 높이는 1줄 기준으로만 여백을 잡으면 된다.
-        video_box_y = card_layout["video_box_y"]
-        line_height_estimate = int(title_size * 1.25)
-        title_margin_v = max(20, video_box_y - line_height_estimate - 90)
-        video_box_bottom = video_box_y + card_layout["video_box_height"]
-        caption_margin_v = video_box_bottom + 60
+        title_margin_v, caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
+        title_margin_v = max(0, title_margin_v + title_offset_y)
+        caption_margin_v = max(0, caption_margin_v + caption_offset_y)
         caption_alignment = 8  # 상단 기준 (캡션 영역 안에서 위쪽부터 채움)
     else:
         y = _y_position(resolution, position, safe_area_bottom_pct, safe_area_top_pct)
-        title_margin_v = int(height * safe_area_top_pct)
-        caption_margin_v = height - y
+        title_margin_v = max(0, int(height * safe_area_top_pct) + title_offset_y)
+        caption_margin_v = max(0, height - y + caption_offset_y)
         caption_alignment = 2  # 하단 기준 (기존 방식)
 
     # Fontname은 폰트 파일명이 아니라 폰트 내부에 등록된 family name과 일치해야 libass가 찾는다.
@@ -159,8 +182,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{font_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,{caption_alignment},40,40,{caption_margin_v},1
-Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width + 1},0,8,40,40,{title_margin_v},1
+Style: Caption,{font_name},{font_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
+Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width + 1},0,8,{title_margin_l},{title_margin_r},{title_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -222,6 +245,10 @@ def build_ass_for_clip(
     hook_text: str | None,
     card_layout: dict | None = None,
     keep_segments: list[tuple[float, float]] | None = None,
+    title_offset_x: float = 0.0,
+    title_offset_y: float = 0.0,
+    caption_offset_x: float = 0.0,
+    caption_offset_y: float = 0.0,
 ) -> str:
     words = _collect_words_in_range(segments, clip_start, clip_end)
     return build_ass(
@@ -248,4 +275,8 @@ def build_ass_for_clip(
         title_font_family=config_captions.get("title_font_family"),
         card_layout=card_layout,
         keep_segments=keep_segments,
+        title_offset_x=title_offset_x,
+        title_offset_y=title_offset_y,
+        caption_offset_x=caption_offset_x,
+        caption_offset_y=caption_offset_y,
     )

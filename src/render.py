@@ -329,6 +329,10 @@ def render_clip(
         hook_text=clip.title,
         card_layout=card_layout,
         keep_segments=keep_segments,
+        title_offset_x=clip.title_offset_x,
+        title_offset_y=clip.title_offset_y,
+        caption_offset_x=clip.caption_offset_x,
+        caption_offset_y=clip.caption_offset_y,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 

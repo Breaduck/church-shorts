@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from faster_whisper import WhisperModel
 
@@ -79,6 +79,7 @@ def transcribe(
     compute_type: str = "int8",
     language: str = "ko",
     vad_filter: bool = True,
+    on_segment: Optional[Callable[[float, float], None]] = None,
 ) -> Transcript:
     model = _get_model(model_size, device, compute_type)
 
@@ -96,6 +97,10 @@ def transcribe(
             for w in (seg.words or [])
         ]
         segments.append(Segment(start=seg.start, end=seg.end, text=seg.text, words=words))
+        # faster-whisper는 세그먼트를 순차 생성(streaming)하므로, 지금까지 처리한 지점(seg.end)을
+        # 전체 길이(info.duration)와 비교하면 실시간 전사 진행률을 알 수 있다.
+        if on_segment is not None and info.duration:
+            on_segment(seg.end, info.duration)
 
     return Transcript(
         language=info.language,
@@ -112,6 +117,7 @@ def transcribe_and_save(
     compute_type: str = "int8",
     language: str = "ko",
     vad_filter: bool = True,
+    on_segment: Optional[Callable[[float, float], None]] = None,
 ) -> Transcript:
     transcript = transcribe(
         audio_path,
@@ -120,6 +126,7 @@ def transcribe_and_save(
         compute_type=compute_type,
         language=language,
         vad_filter=vad_filter,
+        on_segment=on_segment,
     )
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     output_json_path.write_text(
