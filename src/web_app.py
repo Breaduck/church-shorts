@@ -110,6 +110,25 @@ BASE_STYLE = """
     height: 100%; border-radius: 999px; background: var(--accent);
     transition: width .4s ease;
   }
+  /* 애플식 단계형 진행바 */
+  .prog-card { padding: 26px 28px; background: var(--card); border-radius: 20px; box-shadow: var(--shadow); }
+  .prog-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 26px; gap: 12px; }
+  .prog-msg { font-size: 15px; color: var(--text); font-weight: 600; min-width: 0; }
+  .prog-pct { font-size: 27px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
+  .stepper { position: relative; display: flex; justify-content: space-between; padding: 0 6px; }
+  .rail { position: absolute; top: 11px; left: 17px; right: 17px; height: 4px; background: var(--border); border-radius: 999px; }
+  .rail-fill { position: absolute; top: 0; bottom: 0; left: 0; width: 0%; background: linear-gradient(90deg, var(--accent), #5aa2ff); border-radius: 999px; transition: width .6s cubic-bezier(.22,.61,.36,1); }
+  .step { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 11px; }
+  .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--card); border: 2px solid var(--border); display: flex; align-items: center; justify-content: center; transition: border-color .35s ease, background .35s ease, box-shadow .35s ease; }
+  .dot::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: transparent; transition: background .3s ease; }
+  .step.active .dot { border-color: var(--accent); box-shadow: 0 0 0 5px rgba(49, 130, 246, .15); }
+  .step.active .dot::after { background: var(--accent); animation: dotpulse 1.2s ease-in-out infinite; }
+  .step.done .dot { border-color: var(--accent); background: var(--accent); }
+  .step.done .dot::after { content: '✓'; color: #fff; font-size: 12px; font-weight: 800; width: auto; height: auto; background: transparent; }
+  .step .lbl { font-size: 12.5px; color: var(--text-faint); font-weight: 600; white-space: nowrap; transition: color .3s ease; }
+  .step.active .lbl { color: var(--accent); font-weight: 700; }
+  .step.done .lbl { color: var(--text-muted); }
+  @keyframes dotpulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.55); opacity: .5; } }
 </style>
 """
 
@@ -214,14 +233,18 @@ CANDIDATES_TEMPLATE = f"""
   <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
 
   {{% if status != 'ready' %}}
-  <div class="status-box">
-    <div class="progress-row">
-      <span><span class="spinner"></span>{{{{ status_message }}}}</span>
-      <span class="progress-pct">{{{{ "%.0f"|format(pct) }}}}%</span>
+  <div class="prog-card" id="prog" data-kind="analyze" data-pct="{{{{ pct }}}}" data-msg="{{{{ status_message }}}}" data-url="/video/{{{{ video_id }}}}/status">
+    <div class="prog-head">
+      <span class="prog-msg">{{{{ status_message }}}}</span>
+      <span class="prog-pct">{{{{ "%.0f"|format(pct) }}}}%</span>
     </div>
-    <div class="progress-track"><div class="progress-fill" style="width: {{{{ pct }}}}%"></div></div>
+    <div class="stepper">
+      <div class="rail"><div class="rail-fill"></div></div>
+      <div class="step" data-min="0" data-max="30"><span class="dot"></span><span class="lbl">다운로드</span></div>
+      <div class="step" data-min="30" data-max="75"><span class="dot"></span><span class="lbl">전사</span></div>
+      <div class="step" data-min="75" data-max="100"><span class="dot"></span><span class="lbl">하이라이트 선정</span></div>
+    </div>
   </div>
-  <script>setTimeout(() => location.reload(), 1500);</script>
   {{% else %}}
   <form id="renderForm">
   {{% for c in clips %}}
@@ -263,14 +286,17 @@ CANDIDATES_TEMPLATE = f"""
   </form>
 
   {{% if rendering %}}
-  <div class="status-box" style="margin-top:16px">
-    <div class="progress-row">
-      <span><span class="spinner"></span>{{{{ render_message }}}}</span>
-      <span class="progress-pct">{{{{ "%.0f"|format(render_pct) }}}}%</span>
+  <div class="prog-card" id="prog" data-kind="render" style="margin-top:16px" data-pct="{{{{ render_pct }}}}" data-msg="{{{{ render_message }}}}" data-url="/video/{{{{ video_id }}}}/status">
+    <div class="prog-head">
+      <span class="prog-msg">{{{{ render_message }}}}</span>
+      <span class="prog-pct">{{{{ "%.0f"|format(render_pct) }}}}%</span>
     </div>
-    <div class="progress-track"><div class="progress-fill" style="width: {{{{ render_pct }}}}%"></div></div>
+    <div class="stepper">
+      <div class="rail"><div class="rail-fill"></div></div>
+      <div class="step" data-min="0" data-max="100"><span class="dot"></span><span class="lbl">쇼츠 렌더링</span></div>
+      <div class="step" data-min="100" data-max="100"><span class="dot"></span><span class="lbl">완성</span></div>
+    </div>
   </div>
-  <script>setTimeout(() => location.reload(), 1500);</script>
   {{% elif render_error %}}
   <div class="status-box error-box" style="margin-top:16px">오류: {{{{ render_error }}}}</div>
   {{% endif %}}
@@ -292,6 +318,46 @@ CANDIDATES_TEMPLATE = f"""
   }});
   </script>
   {{% endif %}}
+
+  <script>
+  (function() {{
+    var el = document.getElementById('prog');
+    if (!el) return;
+    var kind = el.dataset.kind, url = el.dataset.url;
+    var fill = el.querySelector('.rail-fill');
+    var steps = Array.prototype.slice.call(el.querySelectorAll('.step'));
+    var pctEl = el.querySelector('.prog-pct');
+    var msgEl = el.querySelector('.prog-msg');
+    function paint(pct, msg) {{
+      pct = Math.max(0, Math.min(100, pct || 0));
+      fill.style.width = pct + '%';
+      pctEl.textContent = Math.round(pct) + '%';
+      if (msg) msgEl.textContent = msg;
+      steps.forEach(function(s) {{
+        var mn = parseFloat(s.dataset.min), mx = parseFloat(s.dataset.max);
+        s.classList.remove('active', 'done');
+        if (pct >= mx) s.classList.add('done');
+        else if (pct >= mn) s.classList.add('active');
+      }});
+    }}
+    paint(parseFloat(el.dataset.pct), el.dataset.msg);
+    function poll() {{
+      fetch(url).then(function(r) {{ return r.json(); }}).then(function(j) {{
+        if (kind === 'analyze') {{
+          paint(j.pct, j.message);
+          if (j.ready) {{ paint(100, '완료'); setTimeout(function() {{ location.reload(); }}, 500); return; }}
+          if (j.status === 'error') {{ msgEl.textContent = j.message; return; }}
+        }} else {{
+          paint(j.render_pct, j.render_message);
+          if (j.render_error) {{ location.reload(); return; }}
+          if (!j.rendering) {{ paint(100, '완성'); setTimeout(function() {{ location.reload(); }}, 500); return; }}
+        }}
+        setTimeout(poll, 650);
+      }}).catch(function() {{ setTimeout(poll, 1200); }});
+    }}
+    setTimeout(poll, 650);
+  }})();
+  </script>
 </div>
 </body>
 </html>
@@ -375,6 +441,25 @@ def video_detail(video_id: str):
         render_pct=job.get("render_pct", 0),
         render_error=job.get("render_error"),
     )
+
+
+@app.route("/video/<video_id>/status")
+def video_status(video_id: str):
+    """진행바 폴링용 경량 JSON. 전체 페이지를 새로고침하지 않고 이 상태만 받아
+    스텝 진행바를 부드럽게 갱신한다 (분석/렌더 두 단계 모두 커버)."""
+    with _jobs_lock:
+        job = dict(_jobs.get(video_id) or {})
+    clips_ready = (OUTPUT_ROOT / video_id / "clips.json").exists()
+    return jsonify({
+        "status": "ready" if clips_ready else job.get("status", "analyzing"),
+        "ready": clips_ready,
+        "pct": 100 if clips_ready else job.get("pct", 0),
+        "message": job.get("message", "처리 중..."),
+        "rendering": job.get("rendering", False),
+        "render_pct": job.get("render_pct", 0),
+        "render_message": job.get("render_message", "렌더링 준비 중..."),
+        "render_error": job.get("render_error"),
+    })
 
 
 @app.route("/video/<video_id>/render", methods=["POST"])
