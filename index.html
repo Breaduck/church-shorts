@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>교회 설교 영상 → 자동 쇼츠 생성기</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --fg: #1c1c1a;
+    --muted: #6b6b64;
+    --card: #ffffff;
+    --border: #e4e3de;
+    --accent: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171715;
+      --fg: #ececea;
+      --muted: #9a9a92;
+      --card: #201f1d;
+      --border: #34332f;
+      --accent: #f2a65a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171715;
+    --fg: #ececea;
+    --muted: #9a9a92;
+    --card: #201f1d;
+    --border: #34332f;
+    --accent: #f2a65a;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f7f5;
+    --fg: #1c1c1a;
+    --muted: #6b6b64;
+    --card: #ffffff;
+    --border: #e4e3de;
+    --accent: #b45309;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    line-height: 1.6;
+  }
+  .wrap {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+  h1 {
+    font-size: 1.9rem;
+    margin: 0 0 8px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin: 0 0 40px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 1.05rem;
+    margin: 0 0 12px;
+    color: var(--accent);
+  }
+  .pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+  .pipeline span.step {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    white-space: nowrap;
+  }
+  .pipeline span.arrow {
+    color: var(--muted);
+  }
+  ul { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .phase-done { color: var(--fg); }
+  .phase-pending { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  footer {
+    margin-top: 40px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>교회 설교 영상 → 자동 쇼츠 생성기</h1>
+    <p class="subtitle">유튜브 설교 영상 링크 하나만 넣으면 하이라이트를 자동으로 찾아 세로형(9:16) 쇼츠를 만들어주는 파이프라인입니다.</p>
+
+    <div class="card">
+      <h2>파이프라인</h2>
+      <div class="pipeline">
+        <span class="step">링크 입력</span><span class="arrow">→</span>
+        <span class="step">다운로드 (yt-dlp)</span><span class="arrow">→</span>
+        <span class="step">전사 (faster-whisper)</span><span class="arrow">→</span>
+        <span class="step">오디오 피크 감지</span><span class="arrow">→</span>
+        <span class="step">하이라이트 선정 (Claude Code)</span><span class="arrow">→</span>
+        <span class="step">컷 · 세로변환 · 자막 (ffmpeg)</span><span class="arrow">→</span>
+        <span class="step">쇼츠 3~5개 출력</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>진행 단계</h2>
+      <ul>
+        <li class="phase-done"><strong>Phase A</strong> — 링크 → 쇼츠 생성까지 완전 자동 (현재)</li>
+        <li class="phase-pending"><strong>Phase B</strong> — 로컬 검토 웹 UI + YouTube 자동 업로드</li>
+        <li class="phase-pending"><strong>Phase C</strong> — Instagram Reels / TikTok API 연동</li>
+      </ul>
+    </div>
+
+    <footer>
+      소스코드: <a href="https://github.com/Breaduck/church-shorts" target="_blank" rel="noopener">github.com/Breaduck/church-shorts</a>
+    </footer>
+  </div>
+</body>
+</html>
