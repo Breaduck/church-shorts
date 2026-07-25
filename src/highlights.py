@@ -17,7 +17,7 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +38,9 @@ class Clip:
     score: Optional[float] = None         # 100점 만점 통합 점수(진짜 뜰 확률=핵심×바이럴 교집합). UI 표기/필터 기준
     core_score: Optional[float] = None    # 설교의 진짜 핵심에 얼마나 근접한가 (1~10)
     viral_score: Optional[float] = None   # 스크롤을 멈추고 저장·공유하고 싶은가 (1~10)
+    # 이 클립에 등장하는 고유명사(성경 인물/지명/용어). 최종 자막 정밀 재전사(large-v3)에
+    # initial_prompt 힌트로 넣어 유튜브 자동자막이 틀리는 이름(룻·보아스·기드온 등)의 철자를 고정한다.
+    keywords: list[str] = field(default_factory=list)
     # 웹 UI의 위치 편집 툴에서 드래그로 조정한, 기본 위치 대비 픽셀 오프셋(렌더 해상도 기준).
     # 기본값 0은 기존 clips.json(이 필드가 없는)과도 호환된다.
     title_offset_x: float = 0.0
@@ -145,10 +148,14 @@ def build_prompt(
     "title": "영상 맨 위에 고정될 한 줄 제목 (호기심/공감 유발, 15자 내외)",
     "caption": "유튜브/인스타/틱톡 게시글 캡션 (2~3문장, 설교 맥락 살려서)",
     "hashtags": ["#설교", "#은혜", "..."],
+    "keywords": ["룻", "보아스", "나오미", "맥추감사절"],
     "reason": "담은 핵심 메시지 + core/viral/score 근거 + 마지막 문장을 그대로 인용하고 왜 그게 강한 마무리인지"
   }}
 ]
 ```
+- **keywords**: 이 클립 구간에 등장하는 고유명사(성경 인물·지명·용어, 설교 주제어)를 정확한 철자로 적어라.
+  최종 자막을 정밀 전사할 때 이 이름들의 철자를 고정하는 힌트로 쓴다(유튜브 자막이 룻→'루시', 기드온→'기도원'처럼
+  틀리는 걸 막기 위함). 전사본에 틀리게 적혀 있어도 너는 맥락으로 올바른 표기를 알 것이니 바르게 적어라.
 - score는 0~100 정수. 80 미만은 출력 금지.
 - start/end는 전사본 타임스탬프 기준 **초 단위 숫자**로 변환해서 적을 것. end는 반드시 펀치라인이 끝나는 지점이어야 한다.
 """
@@ -204,6 +211,7 @@ def _validate_and_build_clips(
                 score=_as_score(c.get("score")),
                 core_score=_as_score(c.get("core_score")),
                 viral_score=_as_score(c.get("viral_score")),
+                keywords=[str(k).strip() for k in c.get("keywords", []) if str(k).strip()],
             )
         )
     return clips
