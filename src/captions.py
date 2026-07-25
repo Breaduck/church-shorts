@@ -138,7 +138,7 @@ def build_ass(
         # 이제 한 줄로 고정되므로 줄 높이는 1줄 기준으로만 여백을 잡으면 된다.
         video_box_y = card_layout["video_box_y"]
         line_height_estimate = int(title_size * 1.25)
-        title_margin_v = max(20, video_box_y - line_height_estimate - 24)
+        title_margin_v = max(20, video_box_y - line_height_estimate - 90)
         video_box_bottom = video_box_y + card_layout["video_box_height"]
         caption_margin_v = video_box_bottom + 60
         caption_alignment = 8  # 상단 기준 (캡션 영역 안에서 위쪽부터 채움)

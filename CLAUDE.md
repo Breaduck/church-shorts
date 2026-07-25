@@ -1,1 +1,3 @@
 - 작업을 종료할 때까지 절대로 멈추지 말 것. 계속 진행하겠냐고 묻지 말고 끝까지 작업할 것.
+- 앞으로 배포 작업 시 이 Cloudflare Pages 프로젝트(https://dash.cloudflare.com/08571ac869c9f59b8298b94148b8b515/pages/view/shorts)에도 자동으로 배포할 것.
+- 커밋 후에는 GitHub 저장소(https://github.com/Breaduck/church-shorts)의 master 브랜치로 자동으로 push할 것 (Cloudflare Pages가 이 브랜치를 보고 자동 배포함).
