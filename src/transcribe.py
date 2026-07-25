@@ -81,15 +81,19 @@ def transcribe(
     vad_filter: bool = True,
     on_segment: Optional[Callable[[float, float], None]] = None,
     initial_prompt: Optional[str] = None,
+    hotwords: Optional[str] = None,
 ) -> Transcript:
     model = _get_model(model_size, device, compute_type)
 
     # initial_prompt: Whisper 디코딩을 이 어휘 쪽으로 편향시킨다. 설교 도메인 용어(성경 인물/책
     # 이름, 은혜/성령/구원 등)를 미리 알려주면 medium 모델이라도 교회 용어 오탈자가 크게 준다.
+    # hotwords: initial_prompt와 달리 224토큰 한도에 얽매이지 않고 특정 단어(성경 고유명사 사전)의
+    # 인식 확률을 끌어올리는 전용 기능. 정적 성경 사전을 상시 탑재하는 데 쓴다.
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=language,
         initial_prompt=initial_prompt,
+        hotwords=hotwords,
         word_timestamps=True,
         vad_filter=vad_filter,
     )
@@ -149,6 +153,7 @@ def transcribe_clip_precise(
     language: str = "ko",
     vad_filter: bool = True,
     initial_prompt: Optional[str] = None,
+    hotwords: Optional[str] = None,
 ) -> list[Segment]:
     """클립 구간(1~5분 이내의 짧은 분량)만 오려서 정밀 재전사한다.
 
@@ -178,6 +183,7 @@ def transcribe_clip_precise(
             language=language,
             vad_filter=vad_filter,
             initial_prompt=initial_prompt,
+            hotwords=hotwords,
         )
 
     shifted_segments: list[Segment] = []

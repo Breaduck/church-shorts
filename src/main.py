@@ -208,15 +208,16 @@ def render_selected(
         # 최종 화면 자막은 유튜브 자동자막(부정확)이 아니라 이 정밀 재전사 결과를 쓴다.
         # precise_model_size로 정밀 재전사만 더 정확한 모델(예: large-v3)로 올릴 수 있다
         # (짧은 선택 클립에만 돌리므로 전체 영상을 큰 모델로 돌리는 부담 없이 정확도만 취함).
-        # 이 클립의 고유명사(룻·보아스 등)를 도메인 힌트에 덧붙여 large-v3가 이름 철자를 맞추게 한다.
-        base_prompt = w.get("initial_prompt") or ""
-        clip_prompt = (base_prompt + " " + " ".join(clip.keywords)).strip() if clip.keywords else (base_prompt or None)
+        # 성경 고유명사 상시 사전(정적) + 이 클립에서 뽑은 고유명사(동적)를 함께 hotwords로 넣어
+        # large-v3가 이름 철자를 맞추게 한다(룻→'루시', 기드온→'기도원' 류 방지, 이중 방어).
+        hotwords = " ".join(filter(None, [w.get("bible_hotwords", ""), " ".join(clip.keywords)])).strip() or None
         segs = transcribe_clip_precise(
             video_path, clip.start, clip.end + END_BUFFER_SEC,
             model_size=w.get("precise_model_size", w["model_size"]),
             device=w["device"], compute_type=w["compute_type"],
             language=w["language"], vad_filter=w.get("vad_filter", True),
-            initial_prompt=clip_prompt,
+            initial_prompt=w.get("initial_prompt"),
+            hotwords=hotwords,
         )
         new_end = _snap_clip_end_to_sentence(clip, segs)
         if new_end != clip.end:
