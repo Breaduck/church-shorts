@@ -56,7 +56,12 @@ render:
     caption_area_height: 380  # 캡션 영역 높이 (하단)
     corner_radius: 36         # 둥근 모서리 반경(px)
     source_crop_bottom_pct: 0.12  # 원본 영상 하단 이만큼(%)을 먼저 잘라냄 (교회 자체 자막 제거용)
-  remove_silence: true      # 무음 구간 자동 제거 (알파컷 참고: 페이스 빠르게, 지루함 방지)
+  # 무음 자동 제거는 끈다. 켜면 (1) 카드에 뜨는 "N초" 라벨(clip.end-clip.start, 원본 기준)이
+  # 실제로 짧아진 mp4 길이와 안 맞고, (2) 압축된 타임라인에 자막을 remap하는 과정에서
+  # ffmpeg select의 프레임 단위 컷과 연속 수식 remap 사이 오차가 컷마다 누적돼 목소리-자막
+  # 싱크가 뒤로 갈수록 밀린다. 신뢰성(정확히 그 구간을 그대로) 우선이라 비활성화.
+  # (remove_silence 관련 코드/리매핑은 그대로 두어 나중에 프레임정밀 방식으로 재시도 가능.)
+  remove_silence: false
   silence_threshold_db: -35
   silence_min_duration_sec: 1.2  # 설교자의 정상적인 강조 호흡(0.6~1초대)까지 잘라내면 말이 너무 툭툭 끊겨서 상향
   ken_burns:

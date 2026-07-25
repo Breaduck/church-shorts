@@ -174,6 +174,16 @@ CANDIDATES_TEMPLATE = f"""
   .top-row {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
   .title {{ font-size: 17px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }}
   .duration {{ color: var(--text-faint); font-size: 13px; white-space: nowrap; }}
+  .title-wrap {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
+  .score-badge {{
+    flex-shrink: 0; font-size: 12px; font-weight: 800; letter-spacing: -0.01em;
+    padding: 4px 9px; border-radius: 999px; white-space: nowrap; line-height: 1;
+    display: inline-flex; align-items: center; gap: 4px;
+  }}
+  .score-badge .num {{ font-size: 13px; }}
+  .score-badge.tier-top {{ background: #fef3c7; color: #b45309; }}       /* 90점 이상: 최상 */
+  .score-badge.tier-high {{ background: #dcfce7; color: #15803d; }}      /* 85점 이상: 추천 */
+  .score-badge.tier-ok {{ background: #e0edff; color: #1d4ed8; }}        /* 80점 이상: 후보 */
   .caption {{ color: var(--text); font-size: 14.5px; margin: 10px 0; }}
   .hashtags {{ color: var(--accent); font-size: 13px; margin: 0 0 10px; }}
   .reason {{
@@ -215,11 +225,19 @@ CANDIDATES_TEMPLATE = f"""
   {{% else %}}
   <form id="renderForm">
   {{% for c in clips %}}
+  {{% if c.score is none or c.score >= 80 %}}
   <div class="card candidate">
     <div class="rank">{{{{ loop.index }}}}</div>
     <div class="body">
       <div class="top-row">
-        <h3 class="title">{{{{ c.title }}}}</h3>
+        <div class="title-wrap">
+          {{% if c.score is not none %}}
+          <span class="score-badge {{% if c.score >= 90 %}}tier-top{{% elif c.score >= 85 %}}tier-high{{% else %}}tier-ok{{% endif %}}">
+            <span class="num">{{{{ "%.0f"|format(c.score) }}}}</span>점{{% if c.score >= 90 %}} · 최상{{% elif c.score >= 85 %}} · 추천{{% endif %}}
+          </span>
+          {{% endif %}}
+          <h3 class="title">{{{{ c.title }}}}</h3>
+        </div>
         <span class="duration">{{{{ "%.0f"|format(c.end - c.start) }}}}초</span>
       </div>
       <p class="caption">{{{{ c.caption }}}}</p>
@@ -237,6 +255,7 @@ CANDIDATES_TEMPLATE = f"""
       {{% endif %}}
     </div>
   </div>
+  {{% endif %}}
   {{% endfor %}}
   <div class="actions">
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
