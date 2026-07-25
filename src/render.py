@@ -375,9 +375,10 @@ def render_clip(
             cmd += ["-af", audio_filter]
 
     cmd += [
-        # crf 낮을수록/preset 느릴수록 화질 좋음. 소스가 고화질(H264 1.5Mbps+)로 바뀐 만큼
-        # 우리 재인코딩에서 화질을 깎아먹지 않도록 이전(crf 20/medium)보다 올림.
-        "-c:v", "libx264", "-preset", "slow", "-crf", "16",
+        # preset slow/crf16은 화질은 최고지만 클립 하나에 1~2분씩 걸려 렌더가 느렸다.
+        # 쇼츠는 어차피 플랫폼이 업로드 시 재인코딩하므로 crf 20/veryfast로 낮춰도 체감 화질
+        # 차이는 없고 인코딩은 5~8배 빨라진다(속도 우선). 화질 이슈 생기면 fast/crf18로 조정.
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-b:a", "192k",
         str(output_path),
     ]

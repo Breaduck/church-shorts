@@ -76,7 +76,10 @@ def download_video(
                 on_progress(pct)
 
     ydl_opts = {
-        "format": "bestvideo+bestaudio/best",
+        # 최종 영상 박스가 1000px 폭이라 720p 소스면 화질 손실 없이 충분하다(1280→1000 다운스케일).
+        # 최고화질(1080p+, 수백 MB)을 통째로 받으면 링크 넣은 직후 다운로드가 몇 분씩 걸려
+        # 크리티컬 패스를 잡아먹으므로, 720p로 상한을 둬서 다운로드 용량/시간을 대폭 줄인다.
+        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
         # yt-dlp 기본 정렬은 "코덱 효율" 위주라 저비트레이트 AV1을 고비트레이트 H264보다
         # 우선시할 때가 있다 (예: 515kbps AV1을 1592kbps H264보다 선호) — 실제로는 훨씬
         # 흐릿하게 나오므로, 해상도 다음으로 비트레이트(tbr)를 명시적으로 우선시한다.

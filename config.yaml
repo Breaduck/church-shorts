@@ -35,7 +35,9 @@ highlights:
   require_payoff_last_sentence: true  # 클립의 끝이 어중간하게 끊기지 않고 문장이 완결되도록 스냅
 
 audio_peaks:
-  enabled: true             # 보조 힌트 전용. highlights.py 프롬프트에 "참고 신호"로만 첨부됨
+  # 기본 끔: 이건 "참고용 힌트"일 뿐인데(실판단은 Claude가 전사본 읽고 함) librosa가 30~60분
+  # 오디오를 통째로 디코딩하느라 링크 넣은 직후 수십 초를 잡아먹는다. 속도 우선이라 비활성화.
+  enabled: false            # 보조 힌트 전용. highlights.py 프롬프트에 "참고 신호"로만 첨부됨
   frame_length_sec: 1.0
   hop_length_sec: 0.5
 
