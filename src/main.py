@@ -46,13 +46,21 @@ def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, me
     실제로 더 오래 걸리면 end_pct 근처에서 멈춰 기다린다 (거짓으로 100%를 찍지 않기 위함)."""
     done = threading.Event()
 
+    def _fmt_eta(sec: float) -> str:
+        sec = max(0, int(round(sec)))
+        if sec >= 60:
+            return f"약 {sec // 60}분 {sec % 60}초 남음"
+        return f"약 {sec}초 남음"
+
     def _tick() -> None:
         t0 = time.time()
         while not done.wait(timeout=1.0):
-            frac = min(0.95, (time.time() - t0) / est_seconds)
-            progress(message, start_pct + (end_pct - start_pct) * frac)
+            elapsed = time.time() - t0
+            frac = min(0.95, elapsed / est_seconds)
+            eta = _fmt_eta(est_seconds - elapsed) if elapsed < est_seconds else "마무리 중..."
+            progress(f"{message} · {eta}", start_pct + (end_pct - start_pct) * frac)
 
-    progress(message, start_pct)
+    progress(f"{message} · {_fmt_eta(est_seconds)}", start_pct)
     ticker = threading.Thread(target=_tick, daemon=True)
     ticker.start()
     try:
@@ -165,19 +173,37 @@ def analyze(
     return video_dir, clips
 
 
-def _snap_clip_end_to_sentence(clip: Clip, segs: list[Segment]) -> float:
-    """Claude가 초 단위로 대략 지정한 clip.end가 실제 발화 중간을 자르는 경우가 있다
-    (예: "기도는 마치 전부와 같습니다 바쁠 때는 그래요"가 575.0~578.2초인데
-    end=576.0으로 잘라서 "그래요"가 통째로 잘림).
+def _snap_clip_end_to_sentence(
+    clip: Clip, segs: list[Segment], max_extend: float = 10.0, pause_gap: float = 0.7
+) -> float:
+    """Claude가 대략 지정한 clip.end가 문장/발화 중간을 잘라 "말이 안 끝났는데 뚝 끊기는"
+    문제를 막는다. clip.end 지점부터 발화가 계속 이어지면(다음 세그먼트가 pause_gap 이내로
+    시작) 자연스러운 멈춤(그보다 큰 침묵)이 나올 때까지 끝을 늘린다. max_extend까지만 확장.
 
-    주의: faster-whisper의 정밀 재전사 결과는 문장부호(마침표 등)를 전혀 붙이지 않으므로
-    "문장부호로 끝나는지"로 판단할 수 없다 (실제로 시도했다가 전혀 매칭 안 됨을 확인함).
-    대신 clip.end가 어떤 세그먼트의 '중간'에 걸쳐 있으면, 그 세그먼트를 통째로 포함하도록
-    끝을 그 세그먼트의 끝까지 넓힌다 — 이미 말하기 시작한 발화 단위는 끝까지 들려준다."""
-    for seg in segs:
-        if seg.start < clip.end < seg.end:
-            return seg.end
-    return clip.end  # 정확히 세그먼트 경계에 걸리거나 못 찾으면 원래 값 유지
+    문장부호가 없어(정밀 재전사) 마침표로 판단 불가하므로 '침묵 간격'을 문장 경계 신호로 쓴다.
+    반드시 신뢰도 높은 원본 전사(base_segments)를 넘겨야 한다 — 정밀 재전사는 이따금 실패해
+    세그먼트가 비어 스냅이 무력화된다(실제로 겪은 버그)."""
+    if not segs:
+        return clip.end
+    segs = sorted(segs, key=lambda s: s.start)
+    end = clip.end
+    idx = -1
+    for i, seg in enumerate(segs):
+        if seg.start <= end <= seg.end:
+            end = seg.end
+            idx = i
+            break
+        if seg.start > end:
+            idx = i - 1
+            break
+        idx = i
+    if idx < 0:
+        return clip.end
+    limit = clip.end + max_extend
+    while idx + 1 < len(segs) and segs[idx + 1].start - end <= pause_gap and segs[idx + 1].end <= limit:
+        idx += 1
+        end = segs[idx].end
+    return end
 
 
 def render_selected(
@@ -194,9 +220,32 @@ def render_selected(
     cfg = load_config(config_path)
     clips = load_clips_json(video_dir / "clips.json")
     video_path = video_dir / "source.mp4"
+    # 자기치유: 원본(source.mp4)이 없거나 깨졌으면(예: 이전 다운로드가 중단돼 조각만 남은
+    # 경우) 렌더가 raw ffmpeg 오류로 죽지 않도록, video id로 유튜브 URL을 복원해 다시 받는다.
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        progress("영상 원본이 없어 다시 내려받는 중...", 0)
+        download_video(
+            f"https://www.youtube.com/watch?v={video_dir.name}",
+            video_dir.parent,
+            on_progress=lambda p: progress(f"영상 다시 받는 중... {p:.0f}%", p * 0.05),
+        )
+        if not video_path.exists():
+            raise RuntimeError(
+                f"원본 영상을 확보하지 못했습니다: {video_path}. 처음부터 다시 분석해 주세요."
+            )
     w = cfg["whisper"]
     outputs = []
     END_BUFFER_SEC = 5.0  # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
+
+    # 정밀 재전사가 이따금 한두 단어만 뱉고 사실상 실패할 때가 있다(자막이 통째로 비는
+    # 치명적 결과 — 실제로 겪음). 그럴 때 폴백할 원본 전사(유튜브 자동자막/medium)를 미리 로드.
+    base_segments: list[Segment] = []
+    base_transcript_path = video_dir / "transcript.json"
+    if base_transcript_path.exists():
+        base_segments = json_load_transcript(base_transcript_path)["segments"]
+
+    def _count_words(segments: list[Segment], a: float, b: float) -> int:
+        return sum(1 for s in segments for wd in s.words if wd.start >= a and wd.end <= b)
 
     total = len(clip_indices)
     step = 100 / total if total else 100
@@ -204,31 +253,82 @@ def render_selected(
     for i, idx in enumerate(clip_indices):
         clip = clips[idx]
         base = i * step
-        progress(f"[{idx+1}] 정밀 재전사 중: {clip.title}", base)
         # 최종 화면 자막은 유튜브 자동자막(부정확)이 아니라 이 정밀 재전사 결과를 쓴다.
         # precise_model_size로 정밀 재전사만 더 정확한 모델(예: large-v3)로 올릴 수 있다
         # (짧은 선택 클립에만 돌리므로 전체 영상을 큰 모델로 돌리는 부담 없이 정확도만 취함).
         # 성경 고유명사 상시 사전(정적) + 이 클립에서 뽑은 고유명사(동적)를 함께 hotwords로 넣어
         # large-v3가 이름 철자를 맞추게 한다(룻→'루시', 기드온→'기도원' 류 방지, 이중 방어).
+        # 사용자가 자막 편집기에서 자막을 확정했으면 재전사 없이 그대로 렌더한다
+        # (편집 결과가 최우선이고, 느린 large-v3 재전사도 건너뛰어 훨씬 빠르다).
+        if getattr(clip, "caption_overrides", None):
+            # 사용자가 직접 구간을 자른 경우(trimmed)엔 그 길이를 그대로 존중한다.
+            # 아니면, 편집 자막 마지막 줄이 잘리지 않게/문장 중간에 끊기지 않게 끝을 확장한다.
+            if not getattr(clip, "trimmed", False):
+                last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
+                clip.end = max(clip.end, last_ov_end + 0.3)
+                clip.end = _snap_clip_end_to_sentence(clip, base_segments)
+            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            _run_with_progress_ticker(
+                lambda: render_clip(video_path, [], clip, out_path, cfg["render"], cfg["captions"]),
+                start_pct=base, end_pct=base + step, progress=progress,
+                message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
+                est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
+            )
+            outputs.append(out_path)
+            continue
+
         hotwords = " ".join(filter(None, [w.get("bible_hotwords", ""), " ".join(clip.keywords)])).strip() or None
-        segs = transcribe_clip_precise(
-            video_path, clip.start, clip.end + END_BUFFER_SEC,
-            model_size=w.get("precise_model_size", w["model_size"]),
-            device=w["device"], compute_type=w["compute_type"],
-            language=w["language"], vad_filter=w.get("vad_filter", True),
-            initial_prompt=w.get("initial_prompt"),
-            hotwords=hotwords,
-        )
-        new_end = _snap_clip_end_to_sentence(clip, segs)
-        if new_end != clip.end:
-            progress(f"[{idx+1}] 문장이 끊겨서 끝 지점 보정: {clip.end:.1f}s -> {new_end:.1f}s", base + step * 0.3)
-            clip.end = new_end
+        # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
+        # 멈춰 있으면 사용자가 "안 만들어진다"고 오해한다(실제로 겪은 피드백). 재전사/렌더
+        # 두 무진행 구간 모두 흉내 진행률 티커로 부드럽게 채워 "작동 중"임을 보여준다.
+        clip_len = clip.end - clip.start
+        # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
+        # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
+        # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
+        try:
+            segs = _run_with_progress_ticker(
+                lambda: transcribe_clip_precise(
+                    video_path, clip.start, clip.end + END_BUFFER_SEC,
+                    model_size=w.get("precise_model_size", w["model_size"]),
+                    device=w["device"], compute_type=w["compute_type"],
+                    language=w["language"], vad_filter=w.get("vad_filter", True),
+                    initial_prompt=w.get("initial_prompt"),
+                    hotwords=hotwords,
+                ),
+                start_pct=base, end_pct=base + step * 0.5, progress=progress,
+                message=f"[{idx+1}/{total}] 자막 정밀 인식 중: {clip.title}",
+                est_seconds=max(20.0, clip_len * 1.8),
+            )
+        except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 원본 자막으로 계속 진행
+            progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 원본 자막 사용", base + step * 0.5)
+            segs = []
+        # 방어: 정밀 재전사 단어 수가 원본 전사보다 현저히 적으면(재전사 실패로 판단) 원본
+        # 전사 단어로 대체해 자막이 비는 걸 막는다. 원본에 충분한 단어가 있을 때만 발동.
+        precise_n = _count_words(segs, clip.start, clip.end)
+        base_n = _count_words(base_segments, clip.start, clip.end)
+        if base_n >= 5 and precise_n < max(3, int(base_n * 0.5)):
+            progress(
+                f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
+                base + step * 0.5,
+            )
+            segs = base_segments
+        # 스냅은 반드시 신뢰도 높은 원본 전사로 판단한다(정밀 재전사는 실패 시 세그먼트가
+        # 비어 문장 끝 감지가 무력화됨). 원본이 없을 때만 정밀 결과로 폴백.
+        # 사용자가 직접 구간을 자른 경우(trimmed)엔 자동 확장하지 않는다.
+        if not getattr(clip, "trimmed", False):
+            new_end = _snap_clip_end_to_sentence(clip, base_segments or segs)
+            if new_end != clip.end:
+                clip.end = new_end
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        progress(f"[{idx+1}] 렌더링 중...", base + step * 0.35)
-        render_clip(video_path, segs, clip, out_path, cfg["render"], cfg["captions"])
+        _run_with_progress_ticker(
+            lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], cfg["captions"]),
+            start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
+            message=f"[{idx+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
+            est_seconds=max(15.0, clip_len * 0.9),
+        )
         outputs.append(out_path)
-        progress(f"[{idx+1}] 완료", base + step)
 
     progress("모든 클립 렌더링 완료", 100)
     return outputs

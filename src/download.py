@@ -38,6 +38,51 @@ def _probe_duration_sec(path: Path) -> float:
         return 0.0
 
 
+def _has_audio_stream(path: Path) -> bool:
+    """파일에 오디오 스트림이 실제로 들어있는지 확인한다. 영상 전용 조각(source.fNNN.mp4)을
+    완성본으로 오인해 소스로 쓰면 소리 없는 쇼츠가 나오거나 렌더가 깨지므로 방어에 쓴다."""
+    import subprocess
+
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return bool(proc.stdout.strip())
+
+
+_FRAGMENT_RE = re.compile(r"\.f\d+\.")  # yt-dlp 포맷별 스트림 조각: source.f298.mp4, source.f140.m4a
+
+
+def _is_partial(name: str) -> bool:
+    """중단·임시·포맷조각 파일인지 판별 (완성 병합본 source.mp4가 아닌 것들)."""
+    return (
+        ".part" in name or ".ytdl" in name or ".temp" in name
+        or name.endswith(".part-Frag") or bool(_FRAGMENT_RE.search(name))
+    )
+
+
+def _cleanup_partials(video_dir: Path) -> None:
+    """이전 다운로드가 중단되며 남긴 조각/임시 파일을 지운다. 이게 남아 있으면 재다운로드
+    시 병합이 꼬이거나, 완성본으로 오인돼 source.mp4 없이 파이프라인이 진행되는 버그가 난다."""
+    for p in video_dir.glob("source.*"):
+        if p.name != "source.mp4" and _is_partial(p.name):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+def _purge_non_final(video_dir: Path) -> None:
+    """유효한 source.mp4가 확보된 뒤, 남아있는 다른 source.* (조각/다른 컨테이너)를 정리한다."""
+    for p in video_dir.glob("source.*"):
+        if p.name != "source.mp4":
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
 def download_video(
     url: str, output_root: Path, on_progress: Optional[Callable[[float], None]] = None
 ) -> DownloadResult:
@@ -49,16 +94,22 @@ def download_video(
     video_dir.mkdir(parents=True, exist_ok=True)
     target = video_dir / "source.mp4"
 
-    existing = list(video_dir.glob("source.*"))
-    if existing:
+    # 재사용은 "완성된 병합본 source.mp4 + 오디오 포함"일 때만 한다. 조각 파일
+    # (source.f298.mp4, source.f140.m4a.part 등)은 완성본이 아니므로 절대 재사용하지 않는다.
+    # (예전엔 glob("source.*")로 조각을 완성본으로 오인 → 오디오 없는 소스로 진행하다
+    #  렌더 단계에서 source.mp4 없음 크래시가 났다.)
+    if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
         if on_progress:
             on_progress(100.0)
         return DownloadResult(
             video_id=video_id,
             title=video_id,
-            video_path=existing[0],
-            duration_sec=_probe_duration_sec(existing[0]),
+            video_path=target,
+            duration_sec=_probe_duration_sec(target),
         )
+
+    # 재다운로드 전에 이전 실패가 남긴 조각/임시 파일을 정리한다(병합 꼬임/오인 방지).
+    _cleanup_partials(video_dir)
 
     # 영상/오디오가 별도 스트림으로 순차 다운로드되어 각각 0~100%를 다시 찍으므로,
     # 진행률 바가 뒤로 튀지 않도록 지금까지 본 최댓값만 콜백한다.
@@ -86,6 +137,10 @@ def download_video(
         "format_sort": ["res", "tbr"],
         "outtmpl": str(target.with_suffix("")) + ".%(ext)s",
         "merge_output_format": "mp4",
+        # 조각 다운로드가 네트워크 문제로 끊겨 병합이 안 되는 걸 줄인다(이번 크래시의 근본 원인).
+        "retries": 5,
+        "fragment_retries": 10,
+        "continuedl": True,
         "quiet": False,
         "noprogress": False,
         "progress_hooks": [_hook] if on_progress else [],
@@ -94,19 +149,40 @@ def download_video(
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    # yt-dlp가 병합 후 실제로 만든 파일명을 확인 (확장자가 mp4가 아닐 수도 있으므로)
-    resolved = video_dir / f"source.mp4"
-    if not resolved.exists():
-        candidates = list(video_dir.glob("source.*"))
-        if not candidates:
-            raise FileNotFoundError(f"다운로드된 파일을 찾을 수 없습니다: {video_dir}")
-        resolved = candidates[0]
+    # 병합 결과가 source.mp4가 아니면(단일 webm/mkv 등) mp4로 맞춰 파이프라인 계약을 항상
+    # 만족시킨다(렌더는 source.mp4를 하드코딩으로 기대함).
+    if not target.exists():
+        singles = [p for p in video_dir.glob("source.*") if not _is_partial(p.name)]
+        if singles:
+            src = singles[0]
+            import subprocess
 
+            # 먼저 무손실 remux(-c copy) 시도, 실패하면 재인코딩.
+            for cmd in (
+                ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+                 "-i", str(src), "-c", "copy", str(target)],
+                ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+                 "-i", str(src), str(target)],
+            ):
+                subprocess.run(cmd, capture_output=True, text=True)
+                if target.exists() and target.stat().st_size > 0:
+                    break
+
+    # 계약 검증: 오디오 포함 source.mp4가 없으면 반쪽짜리 상태로 다음 단계로 넘기지 않고
+    # 조각을 지운 뒤 명확한 오류로 실패시킨다(재시도하면 깨끗이 다시 받는다).
+    if not target.exists() or target.stat().st_size == 0 or not _has_audio_stream(target):
+        _cleanup_partials(video_dir)
+        raise RuntimeError(
+            "영상 다운로드가 완결되지 않았습니다(오디오 포함 source.mp4 생성 실패). "
+            "네트워크 문제로 중단됐을 수 있으니 다시 시도하세요."
+        )
+
+    _purge_non_final(video_dir)  # 검증 통과 후 남은 조각/다른 컨테이너 정리
     return DownloadResult(
         video_id=video_id,
         title=info.get("title", video_id),
-        video_path=resolved,
-        duration_sec=float(info.get("duration") or 0.0),
+        video_path=target,
+        duration_sec=float(info.get("duration") or _probe_duration_sec(target)),
     )
 
 
