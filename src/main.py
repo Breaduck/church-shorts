@@ -36,31 +36,132 @@ def load_config(path: Path = Path("config.yaml")) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _default_progress(message: str, pct: float) -> None:
-    print(f"[{pct:5.1f}%] {message}")
+def _default_progress(message: str, pct: float, eta_seconds: float | None = None) -> None:
+    eta = "" if eta_seconds is None else f" (~{int(round(eta_seconds))}s)"
+    print(f"[{pct:5.1f}%]{eta} {message}")
+
+
+class _Stage:
+    __slots__ = ("key", "message", "est")
+
+    def __init__(self, key: str, message: str, est: float):
+        self.key = key
+        self.message = message
+        self.est = max(1.0, float(est))
+
+
+class StageProgress:
+    """단계 기반 진행률 엔진. 각 단계에 '예상 소요시간(est)'을 주고, 전체 바를 '경과시간 대비
+    예상시간' 비율로 채운다. 그래서 진행 콜백이 없는 opaque 단계(하이라이트 선정 등)도 바가
+    부드럽게 움직이고 절대 뒤로 튀지 않는다(단조 증가). ETA는 '남은 단계 예상시간의 합'이라
+    링크 넣은 직후부터 끝까지 일관된 값이 나온다(예전의 구간별 점프/엉뚱한 ETA 해결).
+
+    - set_fraction(frac): 실제 진행률이 있는 단계(다운로드 %, 로컬 전사 %)에서 호출.
+    - set_current_est(sec): 런타임에 예상시간을 바꿀 때(예: 로컬 전사로 분기되면 크게).
+    - advance(): 현재 단계 완료 처리 후 다음 단계로.
+    - finish(): 100%로 마감하고 티커 종료."""
+
+    def __init__(self, progress_cb, stages: list[_Stage], min_floor: float = 99.0):
+        self._cb = progress_cb
+        self._stages = stages
+        self._i = 0
+        self._frac = 0.0
+        self._min_floor = min_floor  # finish() 전까지 넘지 않을 상한(거짓 100% 방지)
+        self._stage_start = time.time()
+        self._last_pct = 0.0
+        self._lock = threading.RLock()
+        self._done = threading.Event()
+        self._ticker = threading.Thread(target=self._tick, daemon=True)
+        self._ticker.start()
+
+    def _total_est(self) -> float:
+        return sum(s.est for s in self._stages) or 1.0
+
+    def _emit_locked(self) -> None:
+        cur = self._stages[self._i]
+        completed = sum(s.est for s in self._stages[: self._i])
+        done_est = completed + cur.est * self._frac
+        total = self._total_est()
+        gfrac = min(1.0, done_est / total)
+        pct = min(self._min_floor, gfrac * 100.0)
+        pct = max(pct, self._last_pct)  # 단조 증가 보장
+        self._last_pct = pct
+        eta = max(0.0, total - done_est)
+        self._cb(cur.message, pct, eta)
+
+    def _tick(self) -> None:
+        while not self._done.wait(timeout=0.5):
+            with self._lock:
+                cur = self._stages[self._i]
+                elapsed = time.time() - self._stage_start
+                target = min(0.95, elapsed / cur.est)
+                if target > self._frac:
+                    self._frac = target
+                self._emit_locked()
+
+    def set_fraction(self, frac: float, message: str | None = None) -> None:
+        with self._lock:
+            if message:
+                self._stages[self._i].message = message
+            self._frac = max(self._frac, min(1.0, frac))
+            self._emit_locked()
+
+    def set_current_est(self, est_seconds: float) -> None:
+        with self._lock:
+            self._stages[self._i].est = max(1.0, float(est_seconds))
+            self._emit_locked()
+
+    def message(self, message: str) -> None:
+        with self._lock:
+            self._stages[self._i].message = message
+            self._emit_locked()
+
+    def advance(self, message: str | None = None) -> None:
+        with self._lock:
+            self._frac = 1.0
+            self._emit_locked()
+            if self._i < len(self._stages) - 1:
+                self._i += 1
+                self._frac = 0.0
+                self._stage_start = time.time()
+                if message:
+                    self._stages[self._i].message = message
+                self._emit_locked()
+
+    def stop(self) -> None:
+        """티커만 정지(100% 안 찍음). 예외 경로의 finally에서 안전하게 부른다."""
+        self._done.set()
+        try:
+            self._ticker.join(timeout=2.0)
+        except RuntimeError:
+            pass
+
+    def finish(self, message: str = "완료") -> None:
+        self.stop()
+        with self._lock:
+            self._last_pct = 100.0
+            self._cb(message, 100.0, 0.0)
 
 
 def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, message: str, est_seconds: float):
     """분 단위로 걸릴 수 있는데 중간 진행률을 알 수 없는 단계(예: claude -p 서브프로세스 호출)를
     위한 흉내 진행률바. est_seconds에 걸쳐 start_pct -> end_pct*0.95 정도까지 서서히 채우고,
-    실제로 더 오래 걸리면 end_pct 근처에서 멈춰 기다린다 (거짓으로 100%를 찍지 않기 위함)."""
+    실제로 더 오래 걸리면 end_pct 근처에서 멈춰 기다린다(거짓으로 100%를 찍지 않기 위함).
+    progress(message, pct, eta_seconds)로 남은 예상시간(초)도 함께 넘긴다."""
     done = threading.Event()
+    t0 = time.time()
 
-    def _fmt_eta(sec: float) -> str:
-        sec = max(0, int(round(sec)))
-        if sec >= 60:
-            return f"약 {sec // 60}분 {sec % 60}초 남음"
-        return f"약 {sec}초 남음"
+    def _emit() -> None:
+        elapsed = time.time() - t0
+        frac = min(0.95, elapsed / est_seconds) if est_seconds > 0 else 0.95
+        eta = max(0.0, est_seconds - elapsed)
+        progress(message, start_pct + (end_pct - start_pct) * frac, eta)
 
     def _tick() -> None:
-        t0 = time.time()
-        while not done.wait(timeout=1.0):
-            elapsed = time.time() - t0
-            frac = min(0.95, elapsed / est_seconds)
-            eta = _fmt_eta(est_seconds - elapsed) if elapsed < est_seconds else "마무리 중..."
-            progress(f"{message} · {eta}", start_pct + (end_pct - start_pct) * frac)
+        while not done.wait(timeout=0.5):
+            _emit()
 
-    progress(f"{message} · {_fmt_eta(est_seconds)}", start_pct)
+    _emit()
     ticker = threading.Thread(target=_tick, daemon=True)
     ticker.start()
     try:
@@ -90,50 +191,64 @@ def analyze(
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
 
-    progress(message, pct)로 호출되며 pct는 0~100 사이의 전체 진행률이다. 아래 단계별
-    구간으로 나뉜다: 다운로드(0~30) / 전사(30~75) / 오디오 힌트(75~82) / 하이라이트 선정(82~100)."""
+    progress(message, pct, eta_seconds)로 호출된다. pct는 0~100 전체 진행률, eta_seconds는
+    남은 예상시간(초). 진행률은 단계별 '예상 소요시간' 비율로 채워지므로 바가 부드럽게 움직이고
+    ETA도 처음부터 끝까지 일관된다(StageProgress 참고)."""
     cfg = load_config(config_path)
     output_root = Path("output")
 
-    progress("다운로드 중...", 1)
-    dl = download_video(
-        url, output_root,
-        on_progress=lambda p: progress(f"다운로드 중... {p:.0f}%", 1 + p * 0.29),
-    )
-    video_dir = output_root / dl.video_id
-
-    transcript_path = video_dir / "transcript.json"
-    if transcript_path.exists():
-        progress("기존 전사 결과 재사용", 75)
-        transcript = Transcript(**json_load_transcript(transcript_path))
-    else:
-        progress("유튜브 자동 자막 확인 중...", 32)
-        transcript = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
-        if transcript is None or not transcript.segments:
-            progress("자동 자막 없음. 로컬 전사로 대체 중 (시간이 걸릴 수 있음)...", 35)
-            w = cfg["whisper"]
-            transcript = transcribe_and_save(
-                dl.video_path, transcript_path,
-                model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
-                language=w["language"], vad_filter=w.get("vad_filter", True),
-                on_segment=lambda seg_end, duration: progress(
-                    f"전사 중... {min(100, seg_end / duration * 100):.0f}%",
-                    35 + min(1.0, seg_end / duration) * 40,
-                ),
-            )
-        else:
-            progress("유튜브 자동 자막 사용", 75)
-        transcript_path.write_text(
-            json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
+    # 각 단계 예상시간(초). 실제 소요와 다르면 런타임에 보정한다(다운로드 %/전사 %/전사 분기).
+    stages = [
+        _Stage("download", "영상 다운로드 중...", est=40),
+        _Stage("transcript", "자막 준비 중...", est=12),
+        _Stage("hints", "핵심 구간 분석 중...", est=15),
+        _Stage("highlight", "하이라이트 후보 선정 중...", est=90),
+    ]
+    sp = StageProgress(progress, stages)
+    try:
+        dl = download_video(
+            url, output_root,
+            on_progress=lambda p: sp.set_fraction(p / 100.0, f"영상 다운로드 중... {p:.0f}%"),
         )
+        video_dir = output_root / dl.video_id
 
-    clips_path = video_dir / "clips.json"
-    h = cfg["highlights"]
-    if clips_path.exists():
-        progress("기존 하이라이트 선정 결과 재사용", 99)
-        clips = load_clips_json(clips_path)
-    else:
-        progress("오디오 에너지 힌트 감지 중...", 78)
+        # 2) 전사 --------------------------------------------------------------
+        sp.advance("자막 준비 중...")
+        transcript_path = video_dir / "transcript.json"
+        if transcript_path.exists():
+            sp.set_fraction(1.0, "기존 자막 재사용")
+            transcript = Transcript(**json_load_transcript(transcript_path))
+        else:
+            sp.message("유튜브 자동 자막 확인 중...")
+            transcript = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
+            if transcript is None or not transcript.segments:
+                # 로컬 전사는 영상 길이에 비례해 오래 걸린다 → 예상시간을 크게 잡아 ETA를 맞춘다.
+                sp.set_current_est(max(30.0, dl.duration_sec * 0.5))
+                sp.message("자동 자막이 없어 직접 전사 중 (시간이 걸릴 수 있어요)...")
+                w = cfg["whisper"]
+                transcript = transcribe_and_save(
+                    dl.video_path, transcript_path,
+                    model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
+                    language=w["language"], vad_filter=w.get("vad_filter", True),
+                    on_segment=lambda seg_end, duration: sp.set_fraction(
+                        min(1.0, seg_end / duration) if duration else 0.0,
+                        f"직접 전사 중... {min(100, seg_end / duration * 100):.0f}%" if duration else "직접 전사 중...",
+                    ),
+                )
+            else:
+                sp.set_fraction(1.0, "유튜브 자동 자막 사용")
+            transcript_path.write_text(
+                json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+        clips_path = video_dir / "clips.json"
+        h = cfg["highlights"]
+        if clips_path.exists():
+            sp.finish(f"완료: 기존 후보 재사용")
+            return video_dir, load_clips_json(clips_path)
+
+        # 3) 오디오 에너지 힌트 -------------------------------------------------
+        sp.advance("핵심 구간 분석 중...")
         peak_hints = []
         if cfg["audio_peaks"].get("enabled", True):
             peak_hints = detect_peak_hints(
@@ -156,21 +271,19 @@ def analyze(
                 f"Claude Code 세션에서 하이라이트를 골라 {clips_path}에 저장한 뒤 다시 시도하세요."
             )
 
-        clips = _run_with_progress_ticker(
-            lambda: select_highlights_auto(
-                transcript=transcript, peak_hints=peak_hints,
-                min_clips=h["min_clips"], max_clips=h["max_clips"],
-                min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
-                categories=h["categories"],
-            ),
-            start_pct=82, end_pct=99, progress=progress,
-            message="하이라이트 후보 선정 중 (로컬 Claude Code 호출)...",
-            est_seconds=90,
+        # 4) 하이라이트 선정 (opaque: 티커가 부드럽게 채움) ---------------------
+        sp.advance("하이라이트 후보 선정 중 (AI 분석)...")
+        clips = select_highlights_auto(
+            transcript=transcript, peak_hints=peak_hints,
+            min_clips=h["min_clips"], max_clips=h["max_clips"],
+            min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
+            categories=h["categories"],
         )
         save_clips_json(clips, clips_path)
-
-    progress(f"완료: {len(clips)}개 후보 선정", 100)
-    return video_dir, clips
+        sp.finish(f"완료: {len(clips)}개 후보 선정")
+        return video_dir, clips
+    finally:
+        sp.stop()
 
 
 def _snap_clip_end_to_sentence(

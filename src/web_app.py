@@ -36,15 +36,9 @@ def _load_config() -> dict:
     return yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
 
-def _estimate_eta(started: float | None, pct: float) -> float | None:
-    """경과 시간과 진행률로 남은 예상 시간(초)을 추정한다. 진행률이 너무 낮을 때(<5%)는
-    추정이 크게 튀므로 None을 반환해 UI가 '계산 중…'을 그대로 보여주게 한다."""
-    if not started or pct is None or pct < 5 or pct >= 100:
-        return None
-    elapsed = time.time() - started
-    if elapsed <= 0:
-        return None
-    return max(0.0, elapsed * (100.0 - pct) / pct)
+# ETA는 파이프라인(main.StageProgress / _run_with_progress_ticker)이 단계별 예상시간으로
+# 직접 계산해 job dict의 eta_seconds/render_eta_seconds로 넘겨준다. (예전의 '경과/진행률'
+# 선형 추정은 단계마다 속도가 크게 달라 값이 튀어서 폐기했다.)
 
 
 # 토스/애플 느낌: 넉넉한 여백, 부드러운 그림자, 큰 라운드 코너, 프리텐다드 폰트, 절제된 포인트 컬러.
@@ -435,7 +429,9 @@ def _run_analyze_job(video_id_holder: dict, url: str) -> None:
     try:
         video_dir, clips = analyze(
             url,
-            progress=lambda msg, pct: _update_job(video_id_holder["id"], message=msg, pct=pct),
+            progress=lambda msg, pct, eta=None: _update_job(
+                video_id_holder["id"], message=msg, pct=pct, eta_seconds=eta
+            ),
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -523,12 +519,12 @@ def video_status(video_id: str):
         "ready": clips_ready,
         "pct": analyze_pct,
         "message": job.get("message", "처리 중..."),
-        "eta_seconds": _estimate_eta(job.get("started"), analyze_pct),
+        "eta_seconds": 0 if clips_ready else job.get("eta_seconds"),
         "rendering": job.get("rendering", False),
         "render_pct": job.get("render_pct", 0),
         "render_message": job.get("render_message", "렌더링 준비 중..."),
         "render_error": job.get("render_error"),
-        "render_eta_seconds": _estimate_eta(job.get("render_started"), job.get("render_pct", 0)),
+        "render_eta_seconds": job.get("render_eta_seconds"),
     })
 
 
@@ -548,7 +544,9 @@ def render_route(video_id: str):
         try:
             render_selected(
                 video_dir, indices,
-                progress=lambda msg, pct: _update_job(video_id, render_message=msg, render_pct=pct),
+                progress=lambda msg, pct, eta=None: _update_job(
+                    video_id, render_message=msg, render_pct=pct, render_eta_seconds=eta
+                ),
             )
         except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
             _update_job(video_id, render_error=str(e))
@@ -862,7 +860,10 @@ __BASE_STYLE__
   <p id="saveStatus"></p>
 
   <div class="prog-card hidden" id="renderProg" style="margin-top:16px">
-    <div class="prog-head"><span class="prog-msg" id="rpMsg">렌더링 준비...</span><span class="prog-pct" id="rpPct">0%</span></div>
+    <div class="prog-head">
+      <div class="prog-headL"><span class="prog-msg" id="rpMsg">렌더링 준비...</span><span class="prog-eta" id="rpEta">예상 시간 계산 중…</span></div>
+      <span class="prog-pct" id="rpPct">0%</span>
+    </div>
     <div class="stepper">
       <div class="rail"><div class="rail-fill" id="rpFill"></div></div>
       <div class="step" data-min="0" data-max="50"><span class="dot"></span><span class="lbl">자막 인식</span></div>
@@ -1079,12 +1080,21 @@ document.getElementById('renderBtn').addEventListener('click', async () => {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ indices: [{{ idx }}] }),
   });
   if (!r.ok) { paint(0, '렌더 요청 실패'); btn.disabled = false; return; }
+  var rpEta = document.getElementById('rpEta');
+  function fmtEta(s) {
+    if (s == null || s < 0) return '';
+    s = Math.round(s);
+    if (s < 60) return '약 ' + Math.max(1, s) + '초 남음';
+    return '약 ' + Math.round(s / 60) + '분 남음';
+  }
   function poll() {
     fetch('/video/{{ video_id }}/status').then(x => x.json()).then(function(j) {
       paint(j.render_pct, j.render_message);
+      if (rpEta) rpEta.textContent = fmtEta(j.render_eta_seconds) || '예상 시간 계산 중…';
       if (j.render_error) { rpMsg.textContent = '오류: ' + j.render_error; btn.disabled = false; return; }
       if (!j.rendering) {
         paint(100, '완성');
+        if (rpEta) rpEta.textContent = '거의 완료…';
         document.getElementById('renderResult').innerHTML =
           '<video controls src="/media/{{ video_id }}/{{ idx + 1 }}.mp4?t=' + Date.now() + '"></video>';
         btn.disabled = false; return;
