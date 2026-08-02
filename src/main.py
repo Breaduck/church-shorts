@@ -422,27 +422,49 @@ def render_selected(
         # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
         # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
         # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
+        def _precise(vad: bool) -> list[Segment]:
+            return transcribe_clip_precise(
+                video_path, clip.start, clip.end + END_BUFFER_SEC,
+                model_size=w.get("precise_model_size", w["model_size"]),
+                device=w["device"], compute_type=w["compute_type"],
+                language=w["language"], vad_filter=vad,
+                initial_prompt=w.get("initial_prompt"),
+                hotwords=hotwords,
+            )
+
+        vad_default = w.get("vad_filter", True)
         try:
             segs = _run_with_progress_ticker(
-                lambda: transcribe_clip_precise(
-                    video_path, clip.start, clip.end + END_BUFFER_SEC,
-                    model_size=w.get("precise_model_size", w["model_size"]),
-                    device=w["device"], compute_type=w["compute_type"],
-                    language=w["language"], vad_filter=w.get("vad_filter", True),
-                    initial_prompt=w.get("initial_prompt"),
-                    hotwords=hotwords,
-                ),
-                start_pct=base, end_pct=base + step * 0.5, progress=progress,
+                lambda: _precise(vad_default),
+                start_pct=base, end_pct=base + step * 0.45, progress=progress,
                 message=f"[{idx+1}/{total}] 자막 정밀 인식 중: {clip.title}",
                 est_seconds=max(20.0, clip_len * 1.8),
             )
-        except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 원본 자막으로 계속 진행
-            progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 원본 자막 사용", base + step * 0.5)
+        except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
+            progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
             segs = []
-        # 방어: 정밀 재전사 단어 수가 원본 전사보다 현저히 적으면(재전사 실패로 판단) 원본
-        # 전사 단어로 대체해 자막이 비는 걸 막는다. 원본에 충분한 단어가 있을 때만 발동.
-        precise_n = _count_words(segs, clip.start, clip.end)
+
         base_n = _count_words(base_segments, clip.start, clip.end)
+        precise_n = _count_words(segs, clip.start, clip.end)
+        # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
+        # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
+        # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
+        # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
+        # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
+        weak = (precise_n < max(3, int(base_n * 0.5))) if base_n >= 5 else (precise_n == 0)
+        if weak and vad_default:
+            try:
+                segs2 = _run_with_progress_ticker(
+                    lambda: _precise(False),
+                    start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
+                    message=f"[{idx+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                    est_seconds=max(20.0, clip_len * 1.8),
+                )
+                if _count_words(segs2, clip.start, clip.end) > precise_n:
+                    segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
+            except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
+                pass
+        # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
         if base_n >= 5 and precise_n < max(3, int(base_n * 0.5)):
             progress(
                 f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
@@ -465,6 +487,11 @@ def render_selected(
             est_seconds=max(15.0, clip_len * 0.9),
         )
         outputs.append(out_path)
+
+    # 렌더 과정에서 스냅/편집자막으로 clip.end가 조정됐을 수 있다. 이를 clips.json에 반영해
+    # 검토 UI의 'N초' 라벨(= end-start)이 실제 렌더된 영상 길이와 일치하게 한다.
+    # (기존엔 원본 end를 그대로 표기해 "49초"인데 실제 58초처럼 어긋나던 문제.)
+    save_clips_json(clips, video_dir / "clips.json")
 
     progress("모든 클립 렌더링 완료", 100)
     return outputs
