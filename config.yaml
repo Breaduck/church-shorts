@@ -130,6 +130,11 @@ captions:
   outline_color: "&H00FFFFFF"     # 흰색 (얇은 외곽선)
   outline_width: 2
   max_words_per_line: 4         # 한 화면에 3~4단어만 -> 짧고 정갈하게, 가독성 최우선
+  # 자막에서 뜻 없는 추임새를 걷어낸다(자막은 전사 기록이 아니라 읽기 보조물).
+  strip_filler: true            # 순수 간투사(음·어·에·으·엄·아) 제거 — 부작용 거의 없음
+  # 설교 구어에 흔한 "그"·"막"·"뭐" 등도 제거(훨씬 깔끔). 단 가끔 "그 사람"→"사람"처럼
+  # 지시어가 빠질 수 있다(남는 명사가 뜻을 가져 대개 자연스러움). 설교 채널 권장.
+  aggressive_filler: true
   position: "bottom"            # "bottom" | "center" (card 레이아웃에서는 무시되고 영상 박스 아래 캡션 영역에 고정)
   karaoke_highlight_color: "&H0080DE4A"  # 강조 단어 색 (연두/초록)
   # 플랫폼 UI 안전 영역: pad/blur/crop 레거시 모드에서만 사용 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음)

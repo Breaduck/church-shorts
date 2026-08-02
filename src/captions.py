@@ -27,7 +27,24 @@ def _clean_word_text(text: str) -> str:
     return t
 
 
-def _collect_words_in_range(segments: list[Segment], clip_start: float, clip_end: float) -> list[Word]:
+# 뜻 없이 끼어드는 순수 간투사/추임새. 이것들만 자막에서 걷어낸다. 뜻을 가진 지시어
+# ('그 나라'의 '그', '이제'='now' 등)와 혼동될 수 있는 단어는 부작용이 커서 넣지 않는다
+# (그런 공격적 제거는 aggressive_filler 옵션에서만).
+_FILLER_WORDS = {"음", "어", "에", "으", "엄", "아", "응", "어어", "으음", "음음", "아아", "어으"}
+# 공격적 모드에서 추가로 제거할, 자주 군더더기지만 가끔 뜻을 갖는 단어들.
+_FILLER_WORDS_AGGRESSIVE = _FILLER_WORDS | {"그", "그그", "인제", "막", "뭐", "저", "저기"}
+
+
+def _is_filler(text: str, aggressive: bool = False) -> bool:
+    """단어가 순수 추임새인지 — 앞뒤 문장부호는 떼고 판단한다."""
+    t = text.strip().strip(".,!?…·").strip()
+    return t in (_FILLER_WORDS_AGGRESSIVE if aggressive else _FILLER_WORDS)
+
+
+def _collect_words_in_range(
+    segments: list[Segment], clip_start: float, clip_end: float,
+    strip_filler: bool = True, aggressive_filler: bool = False,
+) -> list[Word]:
     words: list[Word] = []
     for seg in segments:
         if seg.end < clip_start or seg.start > clip_end:
@@ -49,6 +66,10 @@ def _collect_words_in_range(segments: list[Segment], clip_start: float, clip_end
         if any(d.text == w.text and abs(d.start - w.start) < 0.25 for d in deduped[-3:]):
             continue
         deduped.append(w)
+    # 뜻 없는 추임새(음·어·에…) 제거. 자막은 전사 기록이 아니라 읽기 보조물이라, 군더더기를
+    # 걷어내면 훨씬 정갈하다. 오디오는 그대로라 남은 단어들의 카라오케 타이밍은 영향 없다.
+    if strip_filler:
+        deduped = [w for w in deduped if not _is_filler(w.text, aggressive_filler)]
     return deduped
 
 
@@ -380,7 +401,11 @@ def build_ass_for_clip(
     caption_overrides: list | None = None,
     font_style: dict | None = None,
 ) -> str:
-    words = _collect_words_in_range(segments, clip_start, clip_end)
+    words = _collect_words_in_range(
+        segments, clip_start, clip_end,
+        strip_filler=config_captions.get("strip_filler", True),
+        aggressive_filler=config_captions.get("aggressive_filler", False),
+    )
     fs = font_style or {}
     return build_ass(
         clip_words=words,
