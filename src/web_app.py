@@ -17,7 +17,7 @@ import yaml
 from flask import Flask, jsonify, render_template_string, request, send_file
 
 from src.highlights import load_clips_json, save_clips_json
-from src.main import analyze, render_selected
+from src.main import analyze, render_selected, render_signature
 
 app = Flask(__name__)
 OUTPUT_ROOT = Path("output")
@@ -495,7 +495,16 @@ def video_detail(video_id: str):
 
     clips_dir = OUTPUT_ROOT / video_id / "clips"
     for i, c in enumerate(clips, start=1):
-        c.rendered = (clips_dir / f"short_{i}.mp4").exists()
+        # mp4가 있어도, 그게 '지금 이 클립'의 렌더인지 서명(start_end)으로 대조한다.
+        # 재선정 등으로 clips.json이 바뀌면 옛 short_N.mp4가 다른 내용인데도 붙어 보이던
+        # 문제(사용자: "안 만들었는데 멋대로 만들어짐")를 막는다. 서명 없거나 불일치면 미렌더 취급.
+        mp4 = clips_dir / f"short_{i}.mp4"
+        src = clips_dir / f"short_{i}.src"
+        sig = render_signature(c.start, c.end)
+        c.rendered = (
+            mp4.exists() and src.exists()
+            and src.read_text(encoding="utf-8").strip() == sig
+        )
 
     return render_template_string(
         CANDIDATES_TEMPLATE,
@@ -780,6 +789,13 @@ __BASE_STYLE__
   <h1>제목·자막 위치 편집</h1>
   <p class="subtitle">글자를 드래그해서 원하는 위치로 옮기세요. #{{ idx + 1 }} 클립 ({{ clip.title }})</p>
 
+  <div class="btn-row" style="margin:14px 0 4px">
+    <button id="resetBtn" type="button">위치 초기화</button>
+    <button id="saveBtn" type="button">저장만</button>
+  </div>
+  <button id="renderBtn" type="button">저장하고 영상 만들기</button>
+  <p id="saveStatus"></p>
+
   <div class="canvas-wrap">
     <div class="canvas" id="canvas">
       <div class="video-box" id="videoBox" style="
@@ -802,12 +818,12 @@ __BASE_STYLE__
 
   <section class="ed-card">
     <h2>영상 길이</h2>
-    <p class="cap-sub">클립 시작·끝을 초 단위로 잘라 길이를 조절합니다. (전체 {{ '%.1f'|format(clip.end - clip.start) }}초)</p>
+    <p class="cap-sub">클립 시작·끝을 초 단위로 조절합니다. (전체 {{ '%.1f'|format(clip.end - clip.start) }}초) · 시작을 음수로, 끝을 전체보다 크게 하면 원본에서 앞뒤로 <b>최대 10초까지 늘릴</b> 수 있어요.</p>
     <div class="sty-row">
       <label>시작</label>
-      <input type="number" id="trimStart" class="trim-num" min="0" step="0.5"> <span class="unit">초</span>
+      <input type="number" id="trimStart" class="trim-num" min="-10" step="0.5"> <span class="unit">초</span>
       <label style="width:auto">끝</label>
-      <input type="number" id="trimEnd" class="trim-num" min="0" step="0.5"> <span class="unit">초</span>
+      <input type="number" id="trimEnd" class="trim-num" min="0" max="{{ '%.1f'|format(clip.end - clip.start + 10) }}" step="0.5"> <span class="unit">초</span>
     </div>
   </section>
 
@@ -856,13 +872,6 @@ __BASE_STYLE__
     </div>
     <button type="button" class="cap-add" id="capAdd">+ 자막 칸 추가</button>
   </section>
-
-  <div class="btn-row">
-    <button id="resetBtn" type="button">위치 초기화</button>
-    <button id="saveBtn" type="button">저장만</button>
-  </div>
-  <button id="renderBtn" type="button">저장하고 영상 만들기</button>
-  <p id="saveStatus"></p>
 
   <div class="prog-card hidden" id="renderProg" style="margin-top:16px">
     <div class="prog-head">
@@ -1166,7 +1175,7 @@ def save_clip_position(video_id: str, idx: int):
         clip.title = str(body["title"]).strip()
     # 영상 구간(길이 자르기). 사용자가 명시하면 그대로 존중한다(렌더 시 자동 확장/스냅 안 함).
     if body.get("clip_start") is not None and body.get("clip_end") is not None:
-        s = float(body["clip_start"])
+        s = max(0.0, float(body["clip_start"]))  # 시작은 0(영상 맨 앞) 밑으로 못 내림
         e = float(body["clip_end"])
         if e - s >= 1.0:  # 최소 1초
             clip.start, clip.end = s, e

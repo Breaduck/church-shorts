@@ -51,6 +51,13 @@ def _safe_progress(cb, message, pct, eta=None) -> None:
         pass
 
 
+def render_signature(start: float, end: float) -> str:
+    """렌더된 mp4가 '지금 이 클립'의 결과인지 식별하는 서명. 렌더 시 short_N.src에 기록하고
+    검토 UI가 대조한다. clips.json이 바뀌어(재선정 등) 인덱스가 다른 클립을 가리켜도, 옛
+    short_N.mp4가 새 클립 밑에 '이미 만들어진 것'처럼 붙어 보이던 문제를 막는다."""
+    return f"{start:.2f}_{end:.2f}"
+
+
 class _Stage:
     __slots__ = ("key", "message", "est")
 
@@ -424,6 +431,9 @@ def render_selected(
                 message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
                 est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
             )
+            out_path.with_suffix(".src").write_text(
+                render_signature(clip.start, clip.end), encoding="utf-8"
+            )
             outputs.append(out_path)
             continue
 
@@ -498,6 +508,9 @@ def render_selected(
             start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
             message=f"[{idx+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
             est_seconds=max(15.0, clip_len * 0.9),
+        )
+        out_path.with_suffix(".src").write_text(
+            render_signature(clip.start, clip.end), encoding="utf-8"
         )
         outputs.append(out_path)
 

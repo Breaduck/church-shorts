@@ -155,6 +155,25 @@ def _ass_time(sec: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _karaoke_text(words: list[Word]) -> str:
+    r"""단어별 카라오케(\k) 강조 텍스트. 단어 사이의 '쉼(gap)'만큼 \k를 먼저 넣어,
+    강조가 실제 목소리보다 앞서 달려나가지 않게 맞춘다(줄 시작 = 첫 단어 start 기준).
+    이걸 안 하면 단어 사이 침묵이 무시돼 강조가 목소리를 앞질러 자막이 어긋난다
+    (특히 필러 제거로 단어가 빠지면 그 자리 침묵이 커져 더 심해짐)."""
+    if not words:
+        return ""
+    parts: list[str] = []
+    prev_end = words[0].start  # 줄은 첫 단어에서 시작 → 그 앞엔 쉼이 없다
+    for w in words:
+        gap_cs = int(round((w.start - prev_end) * 100))
+        if gap_cs > 0:
+            parts.append(f"{{\\k{gap_cs}}}")  # 쉼: 아무것도 강조 안 하고 시간만 소비
+        dur_cs = max(1, int(round((w.end - w.start) * 100)))
+        parts.append(f"{{\\k{dur_cs}}}{w.text} ")
+        prev_end = w.end
+    return "".join(parts).strip()
+
+
 def _fit_title_font_size(
     text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62
 ) -> int:
@@ -343,9 +362,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             start_t = _ass_time(line.start)
             end_t = _ass_time(line.end)
             if template == "karaoke":
-                text = "".join(
-                    f"{{\\k{max(1, int(round((w.end - w.start) * 100)))}}}{w.text} " for w in line.words
-                ).strip()
+                text = _karaoke_text(line.words)
             else:
                 text = " ".join(w.text for w in line.words)
             events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
@@ -372,11 +389,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_t = _ass_time(line.start)
         end_t = _ass_time(line.end)
         if template == "karaoke":
-            text = ""
-            for w in line.words:
-                dur_cs = max(1, int(round((w.end - w.start) * 100)))
-                text += f"{{\\k{dur_cs}}}{w.text} "
-            text = text.strip()
+            text = _karaoke_text(line.words)
         else:
             text = " ".join(w.text for w in line.words)
         events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
