@@ -251,8 +251,13 @@ CANDIDATES_TEMPLATE = f"""
 <body>
 <div class="wrap">
   <a class="back" href="/">&larr; 새 링크</a>
+  {{% if status != 'ready' %}}
+  <h1>쇼츠를 준비하고 있어요</h1>
+  <p class="subtitle">링크를 받아 하이라이트를 뽑는 중이에요. 잠시만 기다려주세요…</p>
+  {{% else %}}
   <h1>하이라이트 후보</h1>
   <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
+  {{% endif %}}
 
   {{% if status != 'ready' %}}
   <div class="prog-card" id="prog" data-kind="analyze" data-pct="{{{{ pct }}}}" data-msg="{{{{ status_message }}}}" data-url="/video/{{{{ video_id }}}}/status">
