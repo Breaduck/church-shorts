@@ -18,6 +18,15 @@ class CaptionLine:
     words: list[Word]  # 원본(절대 시간) 단어 타임스탬프 그대로 보관
 
 
+def _clean_word_text(text: str) -> str:
+    """유튜브 자동자막의 화자 표시(>>)나 잡토큰을 자막에서 걷어낸다.
+    (정밀 재전사 실패로 원본 자동자막으로 폴백할 때 '>> 우리의…'처럼 노출되던 문제 방지.)"""
+    t = text.strip()
+    while t.startswith(">"):
+        t = t[1:].strip()
+    return t
+
+
 def _collect_words_in_range(segments: list[Segment], clip_start: float, clip_end: float) -> list[Word]:
     words: list[Word] = []
     for seg in segments:
@@ -25,8 +34,65 @@ def _collect_words_in_range(segments: list[Segment], clip_start: float, clip_end
             continue
         for w in seg.words:
             if w.start >= clip_start and w.end <= clip_end:
-                words.append(w)
-    return words
+                cleaned = _clean_word_text(w.text)
+                if cleaned:
+                    words.append(Word(start=w.start, end=w.end, text=cleaned))
+    # 유튜브 자동자막은 '롤링' 방식이라 연속 자막 이벤트가 같은 단어를 겹쳐서 반복한다.
+    # 그대로 두면 자막이 겹쳐 2줄로 뜨고 싱크가 어긋난다. 시간 순 정렬 후 같은 단어가
+    # 겹치거나 거의 같은 시각에 중복되면 하나만 남긴다.
+    words.sort(key=lambda w: (w.start, w.end))
+    deduped: list[Word] = []
+    for w in words:
+        # 롤링 중복만 제거: 같은 단어가 거의 같은 시각에 다시 나온 경우에만 버린다.
+        # (단어 end 시간 비교로 거르면 롤링 자막의 긴 end 때문에 뒤 단어가 줄줄이 삭제되어
+        #  자막이 반토막 나는 문제가 있었음 — start 근접만 본다.)
+        if any(d.text == w.text and abs(d.start - w.start) < 0.25 for d in deduped[-3:]):
+            continue
+        deduped.append(w)
+    return deduped
+
+
+def _lines_from_overrides(
+    caption_overrides: list, clip_start: float
+) -> list[CaptionLine]:
+    """사용자가 편집기에서 확정한 자막 라인({start,end,text} 절대초)을 화면용 라인으로 변환한다.
+    라인 텍스트를 단어로 쪼개 라인 구간에 균등 분배해, 편집된 자막도 카라오케 강조가 유지되게 한다."""
+    lines: list[CaptionLine] = []
+    for ov in caption_overrides:
+        text = _clean_word_text(str(ov.get("text", "")))
+        if not text:
+            continue
+        rel_start = float(ov["start"]) - clip_start
+        rel_end = max(rel_start + 0.05, float(ov["end"]) - clip_start)
+        toks = text.split()
+        n = len(toks) or 1
+        span = (rel_end - rel_start) / n
+        ws = [
+            Word(start=rel_start + i * span, end=rel_start + (i + 1) * span, text=tok)
+            for i, tok in enumerate(toks)
+        ]
+        lines.append(CaptionLine(start=rel_start, end=rel_end, words=ws))
+    return lines
+
+
+def _clamp_lines_non_overlap(lines: list[CaptionLine]) -> list[CaptionLine]:
+    """자막 라인들의 '표시 구간([start,end])'이 서로 겹치지 않게 정리한다.
+
+    유튜브 자동자막으로 폴백하면 단어 end 타임스탬프가 다음 단어 위로 길게 겹치는
+    '롤링' 특성 때문에, 4단어씩 끊은 인접 라인의 표시 구간이 시간상 겹쳐 화면에 자막이
+    2줄로 동시에 뜬다. 시작 시간 순으로 정렬한 뒤 각 라인의 end를 다음 라인 start까지만
+    보이도록 잘라, 어떤 순간에도 한 줄만 표시되게 한다. (라인 내부 \\k 카라오케 타이밍은
+    상대값이라 영향 없음.) 길이가 0 이하가 되는 라인은 버린다."""
+    ordered = sorted(lines, key=lambda l: l.start)
+    result: list[CaptionLine] = []
+    for i, line in enumerate(ordered):
+        end = line.end
+        if i + 1 < len(ordered):
+            end = min(end, ordered[i + 1].start)
+        if end - line.start < 0.05:
+            continue
+        result.append(CaptionLine(start=line.start, end=end, words=line.words))
+    return result
 
 
 def chunk_words_into_lines(words: list[Word], max_words_per_line: int) -> list[CaptionLine]:
@@ -128,6 +194,15 @@ def build_ass(
     title_offset_y: float = 0.0,
     caption_offset_x: float = 0.0,
     caption_offset_y: float = 0.0,
+    caption_overrides: list | None = None,
+    title_font_override: str = "",
+    title_size_override: int = 0,
+    title_align: str = "",
+    title_spacing: float = 0.0,
+    caption_font_override: str = "",
+    caption_size_override: int = 0,
+    caption_align: str = "",
+    caption_spacing: float = 0.0,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -139,14 +214,22 @@ def build_ass(
     card_layout이 None이면(레거시 blur/crop/pad): 기존처럼 영상 위에 오버레이한다.
     """
     width, height = resolution
-    font_name = font_family
-    title_font_name = title_font_family or font_family
-    max_title_size = title_font_size or int(font_size * 1.3)
+    # 편집기에서 고른 글꼴/크기가 있으면 그것을 우선 사용(빈 값/0이면 config 기본값).
+    font_name = caption_font_override or font_family
+    caption_size = caption_size_override or font_size
+    title_font_name = title_font_override or title_font_family or font_family
+    max_title_size = title_size_override or title_font_size or int(font_size * 1.3)
     # 제목은 무조건 한 줄에 들어가야 하므로, 글자 수에 맞춰 폰트 크기를 동적으로 줄인다
     # (긴 제목이 2줄로 자동 줄바꿈되면서 영상 박스와 겹치는 문제가 있었음).
+    # 사용자가 지정한 크기(max_title_size)를 상한으로 삼되, 폭을 넘으면 줄여 한 줄 유지.
     title_size = _fit_title_font_size(
-        hook_text or "", max_title_size, min_size=font_size, available_width_px=width - 80
+        hook_text or "", max_title_size, min_size=min(font_size, max_title_size),
+        available_width_px=width - 80,
     )
+
+    def _align_num(a: str, default: int) -> int:
+        # 카드 레이아웃은 상단 기준(7/8/9)으로 배치해야 MarginV 위치 계산과 맞는다.
+        return {"left": 7, "center": 8, "right": 9}.get(a, default)
 
     # 위치 편집 웹 UI에서 사용자가 드래그로 조정한 픽셀 오프셋. MarginV는 커질수록 텍스트가
     # 아래로 내려가므로(상단 기준 정렬), offset_y를 그대로 더하면 된다. 좌우는 중앙 정렬
@@ -164,15 +247,26 @@ def build_ass(
         title_margin_v, caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
         title_margin_v = max(0, title_margin_v + title_offset_y)
         caption_margin_v = max(0, caption_margin_v + caption_offset_y)
-        caption_alignment = 8  # 상단 기준 (캡션 영역 안에서 위쪽부터 채움)
+        caption_alignment = _align_num(caption_align, 8)  # 상단 기준(7/8/9), 기본 중앙
+        title_alignment = _align_num(title_align, 8)
     else:
         y = _y_position(resolution, position, safe_area_bottom_pct, safe_area_top_pct)
         title_margin_v = max(0, int(height * safe_area_top_pct) + title_offset_y)
         caption_margin_v = max(0, height - y + caption_offset_y)
         caption_alignment = 2  # 하단 기준 (기존 방식)
+        title_alignment = 8
 
     # Fontname은 폰트 파일명이 아니라 폰트 내부에 등록된 family name과 일치해야 libass가 찾는다.
     # (render.py가 font_path의 디렉터리를 fontsdir로 넘겨 해당 폴더의 폰트 파일들을 스캔하게 한다)
+
+    # 카라오케 색 규칙: ASS \k는 "말하기 전=SecondaryColour, 말한 후=PrimaryColour"로 칠한다.
+    # 따라서 '말소리를 따라 강조색으로 켜지게' 하려면 카라오케일 때 Primary=강조색(연두),
+    # Secondary=기본색(검정)이어야 한다. (기존엔 반대로 되어 있어 단어가 연두로 떴다가 검정으로
+    # 꺼지는 반전 버그가 있었음.) 비카라오케 템플릿은 Primary=기본색 그대로 둔다.
+    if template == "karaoke":
+        cap_primary, cap_secondary = karaoke_highlight_color, primary_color
+    else:
+        cap_primary, cap_secondary = primary_color, karaoke_highlight_color
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -182,8 +276,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{font_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
-Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width + 1},0,8,{title_margin_l},{title_margin_r},{title_margin_v},1
+Style: Caption,{font_name},{caption_size},{cap_primary},{cap_secondary},{outline_color},&H00000000,-1,0,0,0,100,100,{caption_spacing},0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
+Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,{title_spacing},0,1,{outline_width + 1},0,{title_alignment},{title_margin_l},{title_margin_r},{title_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -202,6 +296,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
         )
 
+    # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
+    if caption_overrides:
+        lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
+        for line in lines:
+            start_t = _ass_time(line.start)
+            end_t = _ass_time(line.end)
+            if template == "karaoke":
+                text = "".join(
+                    f"{{\\k{max(1, int(round((w.end - w.start) * 100)))}}}{w.text} " for w in line.words
+                ).strip()
+            else:
+                text = " ".join(w.text for w in line.words)
+            events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
+        return header + "\n".join(events) + "\n"
+
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
     if keep_segments:
         rel_words = [
@@ -217,7 +326,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         rel_words = [
             Word(start=w.start, end=max(w.end, w.start + 0.05), text=w.text) for w in rel_words
         ]
-    lines = chunk_words_into_lines(rel_words, max_words_per_line)
+    lines = _clamp_lines_non_overlap(chunk_words_into_lines(rel_words, max_words_per_line))
 
     for line in lines:
         start_t = _ass_time(line.start)
@@ -249,8 +358,11 @@ def build_ass_for_clip(
     title_offset_y: float = 0.0,
     caption_offset_x: float = 0.0,
     caption_offset_y: float = 0.0,
+    caption_overrides: list | None = None,
+    font_style: dict | None = None,
 ) -> str:
     words = _collect_words_in_range(segments, clip_start, clip_end)
+    fs = font_style or {}
     return build_ass(
         clip_words=words,
         clip_start=clip_start,
@@ -279,4 +391,13 @@ def build_ass_for_clip(
         title_offset_y=title_offset_y,
         caption_offset_x=caption_offset_x,
         caption_offset_y=caption_offset_y,
+        caption_overrides=caption_overrides,
+        title_font_override=fs.get("title_font", ""),
+        title_size_override=int(fs.get("title_size", 0) or 0),
+        title_align=fs.get("title_align", ""),
+        title_spacing=float(fs.get("title_spacing", 0) or 0),
+        caption_font_override=fs.get("caption_font", ""),
+        caption_size_override=int(fs.get("caption_size", 0) or 0),
+        caption_align=fs.get("caption_align", ""),
+        caption_spacing=float(fs.get("caption_spacing", 0) or 0),
     )

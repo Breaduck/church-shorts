@@ -6,6 +6,13 @@ __pycache__/
 # 생성물 (대용량 영상/오디오/전사 데이터 - 저장소에 안 올림)
 output/
 assets/cache/
+# fonts.py가 원본 폰트들을 모아 만드는 통합 폴더(파생물) - 재생성되므로 커밋 안 함
+assets/_allfonts/
+# 편집기 글씨체 원본 모음(대용량 폰트 바이너리, 라이선스 혼재) - 로컬 전용
+글씨체/
+
+# Cloudflare Wrangler 로컬 빌드 캐시/상태
+.wrangler/
 
 # 민감정보
 .env

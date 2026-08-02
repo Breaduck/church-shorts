@@ -286,14 +286,32 @@ def analyze(
         sp.stop()
 
 
+def _is_sentence_final(text: str) -> bool:
+    """세그먼트 텍스트가 '문장이 여기서 끝났다'로 보이는지 판단한다.
+    마침표류 문장부호나 한국어 종결어미로 끝나면 True. base 전사(유튜브 자동자막)는
+    이런 신호가 있어, 펀치라인이 끝난 뒤 다음 새 주제로 끝을 끌고 가는 과확장을 막는다."""
+    t = (text or "").strip().rstrip('"\'”’)』」')
+    if not t:
+        return False
+    if t[-1] in ".?!…":
+        return True
+    # 한국어 종결어미(설교 말투): ~습니다/~합니다/~됩니다/~십시오/~세요/~예요/~에요/~죠/~다 등.
+    endings = ("습니다", "합니다", "됩니다", "입니다", "니다", "십시오", "세요", "에요", "예요",
+               "겁니다", "거예요", "거죠", "하죠", "이죠", "겠죠", "네요", "군요", "잖아요")
+    return t.endswith(endings)
+
+
 def _snap_clip_end_to_sentence(
-    clip: Clip, segs: list[Segment], max_extend: float = 10.0, pause_gap: float = 0.7
+    clip: Clip, segs: list[Segment], max_extend: float = 3.0, pause_gap: float = 0.35
 ) -> float:
     """Claude가 대략 지정한 clip.end가 문장/발화 중간을 잘라 "말이 안 끝났는데 뚝 끊기는"
-    문제를 막는다. clip.end 지점부터 발화가 계속 이어지면(다음 세그먼트가 pause_gap 이내로
-    시작) 자연스러운 멈춤(그보다 큰 침묵)이 나올 때까지 끝을 늘린다. max_extend까지만 확장.
+    문제를 막는다. clip.end가 발화 중간이면 그 발화가 끝나는 곳까지만 살짝 늘린다.
 
-    문장부호가 없어(정밀 재전사) 마침표로 판단 불가하므로 '침묵 간격'을 문장 경계 신호로 쓴다.
+    단, 과확장 금지가 최우선: 현재 세그먼트가 이미 문장 종결(마침표/종결어미)로 끝나면
+    거기서 멈춘다. 펀치라인이 끝났는데도 다음 새 주제(예: "그래서 어 6월 27일이죠…")까지
+    끝을 끌고 가 마무리가 흐지부지되는 문제가 있어(실측), 문장 경계 신호를 우선한다.
+    보조로 침묵 간격(pause_gap)과 확장 한도(max_extend)로 이중 제한한다.
+
     반드시 신뢰도 높은 원본 전사(base_segments)를 넘겨야 한다 — 정밀 재전사는 이따금 실패해
     세그먼트가 비어 스냅이 무력화된다(실제로 겪은 버그)."""
     if not segs:
@@ -312,10 +330,15 @@ def _snap_clip_end_to_sentence(
         idx = i
     if idx < 0:
         return clip.end
+    # 이미 문장 종결로 끝나는 세그먼트에 걸쳐 있으면 확장하지 않는다(펀치라인에서 딱 끝).
+    if _is_sentence_final(segs[idx].text):
+        return end
     limit = clip.end + max_extend
     while idx + 1 < len(segs) and segs[idx + 1].start - end <= pause_gap and segs[idx + 1].end <= limit:
         idx += 1
         end = segs[idx].end
+        if _is_sentence_final(segs[idx].text):
+            break  # 문장이 끝나는 지점에 도달하면 더 늘리지 않는다
     return end
 
 

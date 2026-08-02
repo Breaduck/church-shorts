@@ -163,10 +163,20 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
 
 
 def _compute_card_video_box_height(card: dict, source_resolution: tuple[int, int]) -> int:
-    """영상 박스 높이를 원본 가로세로 비율 그대로 계산한다 (사용자 요청: 옆을 잘라 확대하지
-    말고 원본 비율 그대로 두고 둥근 처리만 할 것). config의 고정값이 아니라 실제 소스
-    비율(및 하단 크롭분)로부터 계산해야 화면이 찌그러지거나 잘리지 않는다."""
+    """영상 박스 높이를 결정한다.
+
+    - fill_mode == "cover"(기본): 세로가 확 큰 소스(16:9)를 카드에 작게 letterbox하면
+      화면 절반이 빈 흰 여백이 되어 "유튜브 쇼츠 같지 않고 하단이 텅 빈" 문제가 생긴다.
+      그래서 config의 video_box_aspect(가로:세로 비, 예 [4,3])로 박스를 크게 잡고, 소스는
+      좌우의 빈 배경만 살짝 잘라(cover) 박스를 꽉 채운다. 설교자는 화면 중앙에 있으므로
+      좌우를 조금 잘라도 잘리지 않는다.
+    - fill_mode == "fit": 원본 가로세로 비율을 그대로 유지(옛 동작, 옆을 안 자름).
+    """
     vbw = card["video_box_width"]
+    fill_mode = card.get("fill_mode", "cover")
+    if fill_mode == "cover":
+        aspect = card.get("video_box_aspect", [4, 3])
+        return round(vbw * aspect[1] / aspect[0])
     source_crop_bottom_pct = card.get("source_crop_bottom_pct", 0.08)
     src_w, src_h = source_resolution
     effective_src_h = src_h * (1 - source_crop_bottom_pct)
@@ -216,15 +226,22 @@ def _build_card_filter_complex(
     vbx = (w - vbw) // 2
     source_crop_bottom_pct = card.get("source_crop_bottom_pct", 0.08)
 
+    fill_mode = card.get("fill_mode", "cover")
     video_parts = []
     if select_expr:
         video_parts.append(f"select='{select_expr}'")
         video_parts.append("setpts=N/FRAME_RATE/TB")
     if source_crop_bottom_pct > 0:
         video_parts.append(f"crop=iw:ih*{1 - source_crop_bottom_pct}:0:0")
-    # 원본 가로세로 비율을 그대로 유지 -> vbh를 이미 그 비율로 계산했으니 옆을 잘라내지 않고
-    # 그대로 크기만 맞춘다 (확대/크롭 없음). flags=lanczos로 선명하게 리사이즈.
-    video_parts.append(f"scale={vbw}:{vbh}:flags=lanczos")
+    if fill_mode == "cover":
+        # 박스를 꽉 채우도록 확대 후 중앙을 박스 크기로 잘라낸다 (좌우 빈 배경만 트리밍,
+        # 설교자는 중앙이라 안 잘림). 이렇게 해야 영상이 커져 화면이 유튜브 쇼츠처럼 꽉 찬다.
+        video_parts.append(
+            f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
+        )
+    else:
+        # fit: 원본 가로세로 비율 그대로(옆을 안 자름). vbh가 이미 그 비율로 계산됨.
+        video_parts.append(f"scale={vbw}:{vbh}:flags=lanczos")
     video_chain = ",".join(video_parts)
 
     filter_complex = (
@@ -294,6 +311,12 @@ def render_clip(
     resolution = tuple(render_cfg.get("resolution", [1080, 1920]))
     duration = clip.end - clip.start
 
+    # 편집기에서 클립별로 화면모드(풀 화면=fit / 화면 확대=cover)를 고른 경우 config 기본값을 덮어쓴다.
+    clip_fill = getattr(clip, "fill_mode", "") or ""
+    if clip_fill:
+        _card = {**render_cfg.get("card_layout", {}), "fill_mode": clip_fill}
+        render_cfg = {**render_cfg, "card_layout": _card}
+
     silences: list[tuple[float, float]] = []
     if render_cfg.get("remove_silence", True):
         silences = _detect_silences(
@@ -333,10 +356,24 @@ def render_clip(
         title_offset_y=clip.title_offset_y,
         caption_offset_x=clip.caption_offset_x,
         caption_offset_y=clip.caption_offset_y,
+        caption_overrides=getattr(clip, "caption_overrides", None) or None,
+        font_style={
+            "title_font": getattr(clip, "title_font", "") or "",
+            "title_size": getattr(clip, "title_size", 0) or 0,
+            "title_align": getattr(clip, "title_align", "") or "",
+            "title_spacing": getattr(clip, "title_spacing", 0.0) or 0.0,
+            "caption_font": getattr(clip, "caption_font", "") or "",
+            "caption_size": getattr(clip, "caption_size", 0) or 0,
+            "caption_align": getattr(clip, "caption_align", "") or "",
+            "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
+        },
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
-    font_dir = str(Path(captions_cfg["font_path"]).parent).replace("\\", "/").replace(":", "\\:")
+    # 편집기에서 고른 글꼴이 어느 폴더에 있든 libass가 찾도록 모든 폰트를 모은 통합 폴더를 fontsdir로 넘긴다.
+    from src.fonts import default_font_dir_for_ass
+
+    font_dir = default_font_dir_for_ass()
     ass_path_ff = str(ass_path).replace("\\", "/").replace(":", "\\:")
 
     select_expr = None

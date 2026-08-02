@@ -80,18 +80,21 @@ render:
   background_mode: "card"
   pad_color: "white"        # background_mode: pad일 때 여백 색상
   card_layout:
-    video_box_width: 1000     # 영상 박스 너비 (좌우 40px씩 여백)
-    # video_box_height는 여기서 고정하지 않는다. 원본 가로세로 비율을 그대로 유지해야 해서
-    # (옆을 잘라 확대하지 않음) render.py가 실제 소스 해상도로부터 매번 계산한다.
+    video_box_width: 1080     # 영상 박스 너비 (원본을 폭 꽉 차게, 좌우 여백 없음)
+    # 영상 박스를 채우는 방식. 사용자 결정: "fit" — 유튜브 원본 16:9를 하나도 안 자르고
+    # 그대로 넣는다(교회 자막/로고 포함). 세로 화면을 다 못 채우는 만큼 위아래는 흰 여백으로 둔다.
+    #  - "fit": 원본 비율 그대로(안 자름). 위아래 흰 여백 생김.
+    #  - "cover": 박스를 video_box_aspect로 크게 잡고 좌우/하단을 잘라 꽉 채움(현재 미사용).
+    fill_mode: "fit"
+    video_box_aspect: [4, 3]  # cover 모드에서만 사용
+    # video_box_height는 여기서 고정하지 않는다. fill_mode에 따라 render.py가 계산한다.
     # video_box_y도 고정하지 않는다: title_area_height와 caption_area_height를 제외한
     # 나머지 중간 공간에 영상 박스가 수직 중앙 정렬되도록 render.py가 계산한다.
     title_area_height: 360    # 제목 영역 높이 (상단) - 글씨가 커져서 영역도 확장
     caption_area_height: 380  # 캡션 영역 높이 (하단)
     corner_radius: 36         # 둥근 모서리 반경(px)
-    # 원본 하단 이만큼(%)을 먼저 잘라냄 (교회 자체 자막 제거용). 12%로는 교회 자막(하단 lower-third)이
-    # 반만 잘리고 글자 윗부분이 남아 "세로로 잘린 것처럼" 보였다. 실측(자막 상단 y≈935/1080≈13.5%)해
-    # 여유 있게 16%로 상향하여 자막 띠를 완전히 제거한다.
-    source_crop_bottom_pct: 0.16
+    # 사용자 결정: 원본 하단을 자르지 않는다(교회 자막 '1. …' 등도 그대로 보여줌).
+    source_crop_bottom_pct: 0.0
   # 무음 자동 제거는 끈다. 켜면 (1) 카드에 뜨는 "N초" 라벨(clip.end-clip.start, 원본 기준)이
   # 실제로 짧아진 mp4 길이와 안 맞고, (2) 압축된 타임라인에 자막을 remap하는 과정에서
   # ffmpeg select의 프레임 단위 컷과 연속 수식 remap 사이 오차가 컷마다 누적돼 목소리-자막
