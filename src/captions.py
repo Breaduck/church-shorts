@@ -95,13 +95,32 @@ def _clamp_lines_non_overlap(lines: list[CaptionLine]) -> list[CaptionLine]:
     return result
 
 
-def chunk_words_into_lines(words: list[Word], max_words_per_line: int) -> list[CaptionLine]:
+def _ends_phrase(text: str) -> bool:
+    """단어가 문장/절 끝(문장부호)으로 끝나는지 — 여기서 줄을 끊으면 자연스럽다."""
+    t = (text or "").strip()
+    return bool(t) and t[-1] in ".?!…"
+
+
+def chunk_words_into_lines(
+    words: list[Word], max_words_per_line: int, max_gap: float = 0.45
+) -> list[CaptionLine]:
+    """자막을 한 줄씩 자를 때 기계적으로 N단어에서 끊지 않고, 말의 자연스러운 경계에서
+    우선 끊는다: (1) 문장부호로 끝나는 단어 뒤, (2) 다음 단어와 뚜렷한 쉼(gap≥max_gap)이
+    있는 곳. 그래야 '…나타나지 않는 / 겁니다'처럼 한 구가 두 줄로 쪼개지는 어색함이 준다.
+    자연 경계가 없으면 최대 max_words_per_line 단어에서 안전하게 끊는다.
+    (쉼으로 끊을 땐 최소 2단어를 모아 한 단어짜리 줄이 깜빡이는 것을 막는다.)"""
     lines: list[CaptionLine] = []
-    for i in range(0, len(words), max_words_per_line):
-        chunk = words[i : i + max_words_per_line]
-        if not chunk:
-            continue
-        lines.append(CaptionLine(start=chunk[0].start, end=chunk[-1].end, words=chunk))
+    cur: list[Word] = []
+    for i, w in enumerate(words):
+        cur.append(w)
+        gap = (words[i + 1].start - w.end) if i + 1 < len(words) else 1e9
+        at_cap = len(cur) >= max_words_per_line
+        natural = _ends_phrase(w.text) or (gap >= max_gap and len(cur) >= 2)
+        if natural or at_cap:
+            lines.append(CaptionLine(start=cur[0].start, end=cur[-1].end, words=cur))
+            cur = []
+    if cur:
+        lines.append(CaptionLine(start=cur[0].start, end=cur[-1].end, words=cur))
     return lines
 
 

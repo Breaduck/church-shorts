@@ -41,6 +41,16 @@ def _default_progress(message: str, pct: float, eta_seconds: float | None = None
     print(f"[{pct:5.1f}%]{eta} {message}")
 
 
+def _safe_progress(cb, message, pct, eta=None) -> None:
+    """진행률 콜백은 순전히 장식(UI 표시)이다. 콜백이 던지는 예외가 전사/렌더 파이프라인을
+    죽이거나, 더 나쁘게는 '정밀 인식 실패'로 오인돼 자막이 유튜브 폴백으로 떨어지게 해서는
+    안 된다(실측 버그). 따라서 콜백 호출은 여기서 감싸 예외를 삼킨다."""
+    try:
+        cb(message, pct, eta)
+    except Exception:  # noqa: BLE001 - 진행률 표시 실패는 파이프라인과 무관하게 무시
+        pass
+
+
 class _Stage:
     __slots__ = ("key", "message", "est")
 
@@ -87,7 +97,7 @@ class StageProgress:
         pct = max(pct, self._last_pct)  # 단조 증가 보장
         self._last_pct = pct
         eta = max(0.0, total - done_est)
-        self._cb(cur.message, pct, eta)
+        _safe_progress(self._cb, cur.message, pct, eta)
 
     def _tick(self) -> None:
         while not self._done.wait(timeout=0.5):
@@ -140,7 +150,7 @@ class StageProgress:
         self.stop()
         with self._lock:
             self._last_pct = 100.0
-            self._cb(message, 100.0, 0.0)
+            _safe_progress(self._cb, message, 100.0, 0.0)
 
 
 def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, message: str, est_seconds: float):
@@ -155,7 +165,7 @@ def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, me
         elapsed = time.time() - t0
         frac = min(0.95, elapsed / est_seconds) if est_seconds > 0 else 0.95
         eta = max(0.0, est_seconds - elapsed)
-        progress(message, start_pct + (end_pct - start_pct) * frac, eta)
+        _safe_progress(progress, message, start_pct + (end_pct - start_pct) * frac, eta)
 
     def _tick() -> None:
         while not done.wait(timeout=0.5):
@@ -353,6 +363,9 @@ def render_selected(
 
     progress(message, pct)로 호출되며, 클립 개수만큼 균등 분할한 뒤 각 클립을
     재전사(전반 30%)/렌더링(후반 70%) 두 단계로 나눠 진행률을 채운다."""
+    # 진행률 콜백을 방어적으로 감싼다: UI 표시 오류가 전사/렌더를 죽이거나 폴백을 유발하지 않게.
+    _raw_progress = progress
+    progress = lambda message, pct, eta=None: _safe_progress(_raw_progress, message, pct, eta)  # noqa: E731
     cfg = load_config(config_path)
     clips = load_clips_json(video_dir / "clips.json")
     video_path = video_dir / "source.mp4"
