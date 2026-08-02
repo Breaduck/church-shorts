@@ -286,7 +286,7 @@ CANDIDATES_TEMPLATE = f"""
         <span class="dur">{{{{ "%.0f"|format(c.end - c.start) }}}}초</span>
       </div>
       <label class="pick">
-        <input type="checkbox" name="idx" value="{{{{ loop.index0 }}}}" {{% if loop.index0 < 3 %}}checked{{% endif %}}>
+        <input type="checkbox" name="idx" value="{{{{ loop.index0 }}}}">
         <span class="pick-label">만들기</span>
       </label>
     </div>

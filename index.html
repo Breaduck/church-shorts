@@ -55,7 +55,7 @@
     <div id="offline" class="hidden">
       <h1>편집기가 꺼져 있어요</h1>
       <p>프로젝트 폴더의 <code>편집기.bat</code> 을 더블클릭해 켠 뒤<br>아래 버튼을 누르세요.</p>
-      <button class="btn" id="openBtn" type="button">편집기 열기</button>
+      <a class="btn" id="openBtn" href="http://localhost:5000/">편집기 열기</a>
       <p class="hint">켜져 있다면 자동으로 넘어갑니다. 계속 이 화면이면 편집기가 아직 안 뜬 상태예요.<br>
         다른 기기(폰 등)에서 쓰려면 터널 주소가 필요합니다.</p>
     </div>
@@ -86,16 +86,16 @@
 
   async function tryGo() {
     var url = await findEditor();
-    if (url) { window.location.href = url; return true; }
+    if (url) { window.location.replace(url); return true; }
     return false;
   }
 
   // 진입 시: 편집기 켜져 있으면 즉시 이동, 아니면 안내 화면 + 2.5초마다 자동 재확인.
+  // ('편집기 열기'는 실제 <a> 링크라, 프로브가 브라우저에 막혀도 클릭하면 바로 이동한다.)
   (async function () {
     if (await tryGo()) return;
     document.getElementById("loading").classList.add("hidden");
     document.getElementById("offline").classList.remove("hidden");
-    document.getElementById("openBtn").addEventListener("click", function () { tryGo(); });
     setInterval(tryGo, 2500);
   })();
 </script>
