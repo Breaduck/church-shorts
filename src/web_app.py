@@ -195,9 +195,13 @@ INDEX_TEMPLATE = f"""
     <form id="f">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
       <textarea id="transcript" rows="6" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다.&#10;· 권장: 유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사, 또는 SRT/VTT&#10;· 순수 텍스트(노트북LM 등)도 가능하나, 정확한 클립 시간을 위해 유튜브 자동자막에 자동 정렬합니다."></textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px;color:var(--text-muted);cursor:pointer">
+        <input type="checkbox" id="force" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer">
+        기존 결과 무시하고 새로 분석 (이미 분석한 영상을 새 로직으로 다시 뽑을 때)
+      </label>
       <button class="primary" type="submit">분석 시작</button>
     </form>
-    <p class="hint">자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용합니다.</p>
+    <p class="hint">자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용합니다. 자막을 붙여넣으면 자동으로 새로 분석돼요.</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -208,10 +212,11 @@ f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   const url = document.getElementById('url').value;
   const transcript_text = document.getElementById('transcript').value;
+  const force = document.getElementById('force').checked;
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중...';
   const res = await fetch('/analyze', {{
-    method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text}})
+    method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force}})
   }});
   const data = await res.json();
   if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; return; }}
@@ -525,7 +530,9 @@ CANDIDATES_TEMPLATE = f"""
 """
 
 
-def _run_analyze_job(video_id_holder: dict, url: str, transcript_text: str = "") -> None:
+def _run_analyze_job(
+    video_id_holder: dict, url: str, transcript_text: str = "", force: bool = False
+) -> None:
     try:
         video_dir, clips = analyze(
             url,
@@ -533,6 +540,7 @@ def _run_analyze_job(video_id_holder: dict, url: str, transcript_text: str = "")
                 video_id_holder["id"], message=msg, pct=pct, eta_seconds=eta
             ),
             transcript_text=transcript_text,
+            force=force,
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -552,6 +560,7 @@ def analyze_route():
     body = request.get_json()
     url = body.get("url", "").strip()
     transcript_text = (body.get("transcript_text") or "").strip()
+    force = bool(body.get("force"))
     if not url:
         return jsonify({"error": "URL이 비어있습니다"}), 400
 
@@ -565,7 +574,7 @@ def analyze_route():
     _update_job(video_id, status="analyzing", message="분석 시작...", pct=0, started=time.time())
     holder = {"id": video_id}
     threading.Thread(
-        target=_run_analyze_job, args=(holder, url, transcript_text), daemon=True
+        target=_run_analyze_job, args=(holder, url, transcript_text, force), daemon=True
     ).start()
     return jsonify({"video_id": video_id})
 

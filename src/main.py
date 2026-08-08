@@ -210,7 +210,7 @@ def json_load_transcript(path: Path) -> dict:
 
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
-    transcript_text: str = "",
+    transcript_text: str = "", force: bool = False,
 ) -> tuple[Path, list[Clip]]:
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
@@ -241,7 +241,8 @@ def analyze(
         transcript_path = video_dir / "transcript.json"
         # 순수 텍스트를 비례정렬한 경우, 선정 후 클립 경계를 실제 시각으로 스냅하기 위해 참조 자막을 보관.
         snap_reference: Transcript | None = None
-        if transcript_path.exists():
+        # 붙여넣은 자막이 있으면 캐시된 transcript.json보다 그것을 우선(사용자 의도 존중).
+        if transcript_path.exists() and not transcript_text.strip():
             sp.set_fraction(1.0, "기존 자막 재사용")
             transcript = Transcript(**json_load_transcript(transcript_path))
         elif transcript_text.strip():
@@ -291,9 +292,15 @@ def analyze(
 
         clips_path = video_dir / "clips.json"
         h = cfg["highlights"]
-        if clips_path.exists():
+        # force(새로 분석) 또는 붙여넣은 자막이 있으면 캐시를 무시하고 재선정한다.
+        regenerate = force or bool(transcript_text.strip())
+        if clips_path.exists() and not regenerate:
             sp.finish(f"완료: 기존 후보 재사용")
             return video_dir, load_clips_json(clips_path)
+        if clips_path.exists() and regenerate:
+            # 기존 후보(사용자 편집이 담겼을 수 있음)를 지우지 않고 버전 백업 후 재생성.
+            backup = clips_path.with_name(f"clips.{time.strftime('%Y%m%d_%H%M%S')}.bak.json")
+            clips_path.replace(backup)
 
         # 3) 오디오 에너지 힌트 -------------------------------------------------
         sp.advance("핵심 구간 분석 중...")
