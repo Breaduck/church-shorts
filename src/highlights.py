@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.audio_peaks import PeakHint, format_hints_for_prompt
+from src.scoring import compute_scores
 from src.transcribe import Transcript
 
 
@@ -37,7 +38,17 @@ class Clip:
     # 기본값 None은 이 필드가 없던 기존 clips.json과도 호환된다.
     score: Optional[float] = None         # 100점 만점 통합 점수(진짜 뜰 확률=핵심×바이럴 교집합). UI 표기/필터 기준
     core_score: Optional[float] = None    # 설교의 진짜 핵심에 얼마나 근접한가 (1~10)
-    viral_score: Optional[float] = None   # 스크롤을 멈추고 저장·공유하고 싶은가 (1~10)
+    viral_score: Optional[float] = None   # 스크롤을 멈추고 저장·공유하고 싶은가 (1~10). scoring.py가 세부축에서 계산
+    # viral을 이루는 세부 축(1~10). 모델이 이걸 매기면 scoring.py가 viral_score/score를 결정론적으로 계산한다.
+    # (예전 clips.json에는 없으므로 기본 None으로 하위호환.)
+    hook_score: Optional[float] = None          # 첫 1~2초 훅
+    retention_score: Optional[float] = None     # 전진감/죽은 구간 없음
+    emotion_score: Optional[float] = None        # 감정 스파이크
+    relatability_score: Optional[float] = None   # 공감 "내 얘기"
+    payoff_score: Optional[float] = None         # 마무리 펀치라인 착지
+    quotability_score: Optional[float] = None    # 인용각
+    # 대안 제목 후보(편집기에서 한 번에 골라 바꿀 수 있게). title 외에 5개 정도.
+    title_candidates: list[str] = field(default_factory=list)
     # 이 클립에 등장하는 고유명사(성경 인물/지명/용어). 최종 자막 정밀 재전사(large-v3)에
     # initial_prompt 힌트로 넣어 유튜브 자동자막이 틀리는 이름(룻·보아스·기드온 등)의 철자를 고정한다.
     keywords: list[str] = field(default_factory=list)
@@ -78,25 +89,34 @@ def build_prompt(
     max_duration_sec: int,
     categories: list[str],
     video_duration_sec: float,
+    feedback_block: str = "",
 ) -> str:
     transcript_text = transcript.to_plain_text_with_timestamps()
     hints_text = format_hints_for_prompt(peak_hints)
     categories_text = "\n".join(f"  - {c}" for c in categories)
+    feedback_section = f"\n{feedback_block}\n" if feedback_block else ""
 
     return f"""너는 조회수가 잘 나오는 교회 쇼츠를 만드는 최고의 편집자다. {video_duration_sec/60:.0f}분 설교 전체에서
 "이 부분만큼은 사람들이 끝까지 보고, 저장하고, 공유할 것"이라 확신하는 진짜 알맹이만 골라낸다.
 
 아래는 {video_duration_sec/60:.0f}분 길이 설교 영상의 전체 전사본이다 (타임스탬프 [HH:MM:SS] 포함).
 
-## 네가 뽑아야 하는 건 "교집합"이다 (가장 중요)
-좋은 쇼츠는 두 가지가 **동시에** 만족돼야 한다. 하나만 높으면 실패다.
-  (A) **설교의 핵심** — 설교자가 진짜 힘줘 말한 알맹이인가? (알맹이 없는 자극 = 낚시, 실패)
-  (B) **바이럴** — 스크롤을 멈추고, 끝까지 보고, 저장·공유하고 싶은가? (핵심이지만 지루하면 = 안 터짐, 실패)
-각 후보에 두 축을 **따로** 매긴다: core_score(A, 1~10), viral_score(B, 1~10).
-그리고 이 둘의 **교집합**을 0~100점 통합 점수 `score`로 환산한다 = "이게 실제로 뜰 확률".
-  - score는 두 축이 **모두** 높을 때만 높다. 한 축이라도 낮으면 score도 확 떨어진다(곱셈적 사고).
-  - 기준선: core·viral 둘 다 9면 score 90+, 둘 다 8이면 80~85, 한쪽이라도 7 이하로 처지면 80 미만.
-**score 80점 미만은 아예 출력하지 마라.** 80점 넘는 게 3개뿐이면 3개만, 하나도 없으면 그렇게 말고 가장 근접한 걸 내되 솔직한 점수를 매겨라.
+## 채점 방식 (중요 — 너는 세부 축만 매기고, 통합 점수는 시스템이 계산한다)
+좋은 쇼츠는 두 축이 **동시에** 높아야 한다. 하나만 높으면 실패다.
+  (A) **설교의 핵심(core)** — 설교자가 진짜 힘줘 말한 알맹이인가? (알맹이 없는 자극 = 낚시, 실패)
+  (B) **바이럴(viral)** — 스크롤을 멈추고, 끝까지 보고, 저장·공유하고 싶은가?
+너는 아래 축들을 **각각 1~10으로 정직하게** 매기기만 하면 된다. viral_score와 통합 score(0~100)는
+시스템이 정해진 공식(가중 기하평균 + 훅 관문)으로 계산하니 **네가 통합 점수를 지어내지 마라.**
+  - core_score (1~10): 설교의 진짜 핵심에 얼마나 근접한가.
+  - **hook (1~10): 첫 1~2초 훅. 가장 중요. 이게 낮으면(6 미만) 시스템이 viral을 통째로 깎는다.**
+  - retention (1~10): 전진감 있고 죽은 구간이 없는가.
+  - emotion (1~10): 감정 스파이크(전율·감동·뜨끔·위로)가 있는가.
+  - relatability (1~10): 안 믿는 일반 시청자도 "이거 내 얘기"로 느끼는가.
+  - payoff (1~10): 마지막이 펀치라인/울림으로 깔끔히 착지하는가.
+  - quotability (1~10): 스샷 떠서 공유할 인용각 문장이 있는가.
+점수는 **후보를 버리는 필터가 아니라 우선순위 도구**다. 최종 취사선택은 사람(편집기 UI)이 한다.
+그러니 억지로 개수를 채우지도, 약한 걸 감추지도 말고 **정직하게** 매겨라(약하면 낮게).
+{feedback_section}
 
 ## 실제로 잘 뜨는 숏폼의 핵심 로직 (일반 + 교회 계정 공통 분석 → 이 기준으로 viral_score를 매겨라)
 숏폼(틱톡/릴스/쇼츠)이 터지는 원리는 정해져 있다. 아래를 얼마나 만족하는지가 곧 viral_score다.
@@ -124,8 +144,9 @@ def build_prompt(
   아니라면 빼라. 위로·회개·구원·은혜·믿음·기도·관계·내면의 변화처럼 **보편적이고 개인적인** 것만 남겨라.
 
 ## 절대 원칙 (이걸 어기면 실패다)
-- **양보다 질.** 억지로 개수를 채우지 마라. core/viral 둘 다 7점 이상이 3개뿐이면 3개만 내라.
-  평범한 구간을 하나라도 끼워 넣느니, 최고만 3개 내는 게 낫다. (최소 {min_clips}, 최대 {max_clips}개)
+- **양보다 질.** 억지로 개수를 채우지 마라. 진짜 강한 게 1개뿐이면 1개만 내도 된다.
+  평범한 구간을 하나라도 끼워 넣느니, 최고만 내는 게 낫다. (최소 {min_clips}, 최대 {max_clips}개 범위에서
+  '정말 뽑을 만한 것'만. 점수는 필터가 아니라 우선순위 도구이니, 낸 후보에는 약하면 약한 대로 정직한 점수를 매겨라.)
 - **끝이 흐지부지되면 절대 안 된다 (최우선).** 쇼츠의 성패는 마지막 3초가 좌우한다.
   - 클립의 **마지막 문장 = 이 클립에서 가장 강한 펀치라인/울림/반전**이어야 한다. 여기서 딱 끝내라.
   - 펀치라인 뒤에 붙는 **꼬리를 반드시 잘라내라**: "자, 그러면", "다음으로", "제가 오늘 드리고 싶은 건",
@@ -143,11 +164,29 @@ def build_prompt(
 - **누구나 겪는 감정에 이름 붙이기**: 불안, 번아웃, 관계의 상처, 열등감, 죄책감
 - **반전 구조**: 예상과 다른 결말/깨달음으로 끝나 여운이 남는 것
 
+## 제목(title) 작성법 — 이게 조회수의 절반이다 (대충 쓰면 채널 평판 깎아먹는다)
+title은 영상 맨 위에 고정되는 훅이다. **교회 안 다니는 사람이 스크롤하다 이걸 보고 손가락을 멈출까?**
+이 한 질문을 통과 못 하면 실패다. 아래를 반드시 지켜라.
+- **교회 전문용어·설교 요약체 금지.** "미전도 종족", "복음화율", "성화", "은혜의 방편" 같은 안 믿는 사람이
+  모르는 용어를 훅에 쓰지 마라. 설교 소제목처럼 밋밋하게 요약하는 것("~는 ~입니다")도 금지 — 그건 목차지 훅이 아니다.
+- **일반 시청자의 감정·상황·궁금증을 건드려라.** 불안·번아웃·관계·죄책감·자녀·돈·외로움처럼 누구나 아는 언어로.
+- 좋은 결: 통념 뒤집기("사실 ~가 아닙니다"), 뜨끔한 지적("당신이 지친 진짜 이유"), 직접 호명("지금 ~한 사람"),
+  궁금증 격차("~한 이유는 하나였습니다"), 충격적 숫자·사실("우리 아이 94%가…").
+- **나쁜 예 → 좋은 예 (감을 잡아라):**
+  - ✗ "미전도 종족은 우리 자녀들입니다" (용어·요약체, 안 믿는 사람은 무슨 말인지 모름)
+    → ✓ "진짜 선교지는 저 멀리가 아니라 당신 집입니다" / "우리 아이 94%가 예수를 모릅니다"
+  - ✗ "기도의 능력에 대하여" (제목이 아니라 목차)
+    → ✓ "기도가 안 되는 진짜 이유, 아무도 안 알려줍니다"
+- 길이 15자 내외, 완결된 한 줄. 물음표/도발/구체 숫자를 적극 활용하라.
+- **제목은 하나로 끝내지 말고, 결이 서로 다른 후보를 5개(title_candidates) 더 제시하라.** 사람이 편집기에서
+  그중 마음에 드는 걸 고른다. 5개는 서로 다른 각도로: (통념뒤집기 / 뜨끔한지적 / 직접호명 / 궁금증격차 / 숫자·사실)
+  각각 하나씩이면 이상적. 전부 위 "제목 작성법" 기준을 통과해야 한다(용어·요약체 금지).
+
 ## 작업 순서 (반드시 이 순서로 사고할 것)
 1단계) 이 설교의 **핵심 주제 한 줄**과, 설교자가 밀어붙인 **핵심 메시지 2~4개**를 정리한다.
 2단계) 각 메시지를 강력하고 완결되게 담은 실제 후보 구간을 전사본에서 여러 개 찾는다.
-3단계) 각 후보에 core_score(1~10)와 viral_score(1~10)를 냉정하게 매기고, 둘의 교집합으로 score(0~100)를 낸다.
-   **score 80점 이상만 남긴다.**
+3단계) 각 후보에 core_score와 viral 세부 축(hook·retention·emotion·relatability·payoff·quotability)을
+   1~10으로 냉정하게 매긴다. (통합 score는 시스템이 계산하니 지어내지 마라.)
 4단계) **자가검증(경계 초 단위로 실제 대사와 대조)** — 남긴 각 후보에 대해:
    (a) **start 검증**: 전사본에서 start 타임스탬프의 **실제 첫 대사를 글자 그대로 읽어라.**
        그 문장이 지시어(그/그거/그걸/이거/저거/그때/거기서/그래서/그러니까)로 시작하거나
@@ -166,6 +205,9 @@ def build_prompt(
    (d) **금지 주제 검증**: 이 후보가 정치·논쟁 소지가 있거나, 역사·국가적 사건을 하나님의 직접
        개입/섭리로 단정하는 유형인가? 하나라도 그렇다면 점수와 무관하게 **즉시 탈락**시켜라
        (위 "절대 선정 금지 주제" 참조). 개인의 보편적 영적 메시지가 아니면 남기지 마라.
+   (e) **제목·캡션 품질 검증(내보내기 전 필수)**: 각 후보의 title을 "## 제목 작성법" 기준으로 다시 읽어라.
+       교회 전문용어·설교 요약체("~는 ~입니다")면 → 다시 써라. "안 믿는 사람이 스크롤하다 멈출까?"에
+       예스가 아니면 통과 못 한 것이다. caption도 설교 맥락을 살리되 첫 문장이 훅이 되게, 공감 언어로 다듬어라.
 5단계) **재고** — 남은 것 중 가장 약한 후보 하나를 냉정하게 탈락 후보로 재검토한다. 확신 없으면 빼라.
 6단계) 각 구간의 정확한 start/end 타임스탬프를 완결된 문장 경계(start=지시어 없이 이해되는 문장의
    시작, end=인용한 펀치라인 문장이 실제로 끝나는 초)에 맞춰 확정한다.
@@ -182,28 +224,33 @@ def build_prompt(
 
 ## 출력 형식
 다른 설명 없이, 아래 JSON 배열만 출력하라 (```json 코드블록으로 감쌀 것).
-**score 80점 미만은 배열에 넣지 마라. 배열 순서 = score 높은 순 (0번째가 가장 강력한 클립).**
+**배열 순서 = 네가 판단한 강한 순 (0번째가 가장 강력). 통합 score/viral_score는 시스템이 세부 축에서 계산하므로 넣지 마라.**
 
 ```json
 [
   {{
     "start": 123.4,
     "end": 175.0,
-    "score": 88,
     "core_score": 9,
-    "viral_score": 8,
-    "title": "영상 맨 위에 고정될 한 줄 제목 (호기심/공감 유발, 15자 내외)",
-    "caption": "유튜브/인스타/틱톡 게시글 캡션 (2~3문장, 설교 맥락 살려서)",
+    "hook": 9,
+    "retention": 8,
+    "emotion": 8,
+    "relatability": 8,
+    "payoff": 9,
+    "quotability": 7,
+    "title": "영상 맨 위에 고정될 한 줄 제목 ('## 제목 작성법' 기준 통과, 15자 내외)",
+    "title_candidates": ["대안 제목1(통념뒤집기)", "대안2(뜨끔한지적)", "대안3(직접호명)", "대안4(궁금증격차)", "대안5(숫자·사실)"],
+    "caption": "유튜브/인스타/틱톡 게시글 캡션 (2~3문장, 첫 문장이 훅, 설교 맥락 살려서)",
     "hashtags": ["#설교", "#은혜", "..."],
     "keywords": ["룻", "보아스", "나오미", "맥추감사절"],
-    "reason": "담은 핵심 메시지 + core/viral/score 근거 + 마지막 문장을 그대로 인용하고 왜 그게 강한 마무리인지"
+    "reason": "담은 핵심 메시지 + 세부 축 근거 + 마지막 문장을 그대로 인용하고 왜 그게 강한 마무리인지"
   }}
 ]
 ```
 - **keywords**: 이 클립 구간에 등장하는 고유명사(성경 인물·지명·용어, 설교 주제어)를 정확한 철자로 적어라.
   최종 자막을 정밀 전사할 때 이 이름들의 철자를 고정하는 힌트로 쓴다(유튜브 자막이 룻→'루시', 기드온→'기도원'처럼
   틀리는 걸 막기 위함). 전사본에 틀리게 적혀 있어도 너는 맥락으로 올바른 표기를 알 것이니 바르게 적어라.
-- score는 0~100 정수. 80 미만은 출력 금지.
+- 세부 축(core_score/hook/retention/emotion/relatability/payoff/quotability)은 모두 1~10 정수. 통합 score는 넣지 마라(시스템이 계산).
 - start/end는 전사본 타임스탬프 기준 **초 단위 숫자**로 변환해서 적을 것. end는 반드시 펀치라인이 끝나는 지점이어야 한다.
 """
 
@@ -247,6 +294,10 @@ def _validate_and_build_clips(
             except (TypeError, ValueError):
                 return None
 
+        # 세부 축(1~10)으로부터 viral_score/score를 결정론적으로 계산한다(scoring.py).
+        # 세부 축이 없는 예전 응답은 c의 viral_score/score를 존중(하위호환).
+        computed = compute_scores(c)
+
         clips.append(
             Clip(
                 start=start,
@@ -255,9 +306,18 @@ def _validate_and_build_clips(
                 caption=str(c.get("caption", "")).strip(),
                 hashtags=list(c.get("hashtags", [])),
                 reason=str(c.get("reason", "")).strip(),
-                score=_as_score(c.get("score")),
-                core_score=_as_score(c.get("core_score")),
-                viral_score=_as_score(c.get("viral_score")),
+                score=computed["score"],
+                core_score=computed["core_score"],
+                viral_score=computed["viral_score"],
+                hook_score=_as_score(c.get("hook")),
+                retention_score=_as_score(c.get("retention")),
+                emotion_score=_as_score(c.get("emotion")),
+                relatability_score=_as_score(c.get("relatability")),
+                payoff_score=_as_score(c.get("payoff")),
+                quotability_score=_as_score(c.get("quotability")),
+                title_candidates=[
+                    str(t).strip() for t in c.get("title_candidates", []) if str(t).strip()
+                ],
                 keywords=[str(k).strip() for k in c.get("keywords", []) if str(k).strip()],
             )
         )
@@ -273,6 +333,7 @@ def select_highlights_auto(
     max_duration_sec: int,
     categories: list[str],
     timeout_sec: int = 900,
+    feedback_block: str = "",
 ) -> list[Clip]:
     """`claude -p` 서브프로세스를 호출해 자동으로 하이라이트를 선정한다."""
     prompt = build_prompt(
@@ -284,6 +345,7 @@ def select_highlights_auto(
         max_duration_sec=max_duration_sec,
         categories=categories,
         video_duration_sec=transcript.duration_sec,
+        feedback_block=feedback_block,
     )
 
     claude_path = shutil.which("claude")

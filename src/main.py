@@ -27,8 +27,14 @@ from src.highlights import (
     save_prompt_for_manual_mode,
     select_highlights_auto,
 )
+from src.feedback import format_feedback_for_prompt, load_feedback
 from src.render import render_clip
 from src.transcribe import Segment, Word, transcribe_and_save, transcribe_clip_precise, Transcript
+from src.transcript_import import (
+    align_plain_text_to_reference,
+    parse_pasted_transcript,
+    snap_clips_to_reference,
+)
 from src.youtube_captions import get_transcript_from_youtube
 
 
@@ -203,7 +209,8 @@ def json_load_transcript(path: Path) -> dict:
 
 
 def analyze(
-    url: str, config_path: Path = Path("config.yaml"), progress=_default_progress
+    url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
+    transcript_text: str = "",
 ) -> tuple[Path, list[Clip]]:
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
@@ -232,9 +239,33 @@ def analyze(
         # 2) 전사 --------------------------------------------------------------
         sp.advance("자막 준비 중...")
         transcript_path = video_dir / "transcript.json"
+        # 순수 텍스트를 비례정렬한 경우, 선정 후 클립 경계를 실제 시각으로 스냅하기 위해 참조 자막을 보관.
+        snap_reference: Transcript | None = None
         if transcript_path.exists():
             sp.set_fraction(1.0, "기존 자막 재사용")
             transcript = Transcript(**json_load_transcript(transcript_path))
+        elif transcript_text.strip():
+            # 사용자가 붙여넣은 자막을 최우선으로 사용(전사 건너뜀).
+            sp.message("붙여넣은 자막 사용 중...")
+            transcript = parse_pasted_transcript(transcript_text, dl.duration_sec)
+            if transcript is None:
+                # 타임스탬프가 없는 순수 텍스트 → 유튜브 자동자막 시간축에 정렬해 시간 복원.
+                sp.message("붙여넣은 자막에 시간정보가 없어 유튜브 자막에 정렬 중...")
+                reference = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
+                if reference and reference.segments:
+                    transcript = align_plain_text_to_reference(
+                        transcript_text, reference, dl.duration_sec
+                    )
+                    snap_reference = reference
+                else:
+                    raise RuntimeError(
+                        "붙여넣은 자막에 타임스탬프가 없고 유튜브 자동자막도 없어 시간을 매길 수 없습니다. "
+                        "유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사하거나 SRT/VTT를 붙여넣으세요."
+                    )
+            sp.set_fraction(1.0, "붙여넣은 자막 사용")
+            transcript_path.write_text(
+                json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         else:
             sp.message("유튜브 자동 자막 확인 중...")
             transcript = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
@@ -274,12 +305,16 @@ def analyze(
                 hop_length_sec=cfg["audio_peaks"]["hop_length_sec"],
             )
 
+        # 피드백 루프: 과거 클립들의 실제 성과를 캘리브레이션 사례로 프롬프트에 주입한다.
+        feedback_block = format_feedback_for_prompt(load_feedback())
+
         if h["mode"] == "manual":
             prompt = build_prompt(
                 transcript=transcript, peak_hints=peak_hints,
                 min_clips=h["min_clips"], max_clips=h["max_clips"],
                 min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
                 categories=h["categories"], video_duration_sec=transcript.duration_sec,
+                feedback_block=feedback_block,
             )
             prompt_path = video_dir / "highlight_prompt.txt"
             save_prompt_for_manual_mode(prompt, prompt_path)
@@ -295,7 +330,12 @@ def analyze(
             min_clips=h["min_clips"], max_clips=h["max_clips"],
             min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
             categories=h["categories"],
+            feedback_block=feedback_block,
         )
+        # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
+        if snap_reference is not None:
+            sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")
+            clips = snap_clips_to_reference(clips, transcript, snap_reference)
         save_clips_json(clips, clips_path)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips

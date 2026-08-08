@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 from flask import Flask, jsonify, render_template_string, request, send_file
 
+from src.feedback import PerformanceRecord, upsert_feedback
 from src.highlights import load_clips_json, save_clips_json
 from src.main import analyze, render_selected, render_signature
 
@@ -87,6 +88,40 @@ BASE_STYLE = """
   input[type=text]:focus {
     outline: none; border-color: var(--accent); background: #fff;
   }
+  textarea {
+    width: 100%; padding: 14px 16px; font-size: 14px; font-family: inherit; line-height: 1.5;
+    border: 1.5px solid var(--border); border-radius: 14px; background: #fafbfc;
+    transition: border-color .15s, background .15s; margin-top: 12px; resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); background: #fff; }
+  .hint { color: var(--text-faint); font-size: 12.5px; margin: 10px 2px 0; }
+  input[type=number] {
+    padding: 9px 11px; font-size: 13px; font-family: inherit; width: 100%;
+    border: 1.5px solid var(--border); border-radius: 10px; background: #fafbfc;
+  }
+  input[type=number]:focus { outline: none; border-color: var(--accent); background: #fff; }
+  /* 점수 세부축 막대 */
+  .subscores { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0 2px; }
+  .subscore { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+  .subscore b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 700; }
+  .sbar { width: 46px; height: 5px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  .sbar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+  /* 성과 피드백 폼 */
+  .fb { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 14px; }
+  .fb summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+  .fb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+  .fb-grid label { font-size: 11.5px; color: var(--text-faint); font-weight: 600; display: block; margin-bottom: 4px; }
+  .fb-rate { display: flex; gap: 8px; margin-top: 10px; }
+  .fb-rate button {
+    flex: 1; padding: 9px; font-size: 13px; font-weight: 600; font-family: inherit;
+    border: 1.5px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer; color: var(--text-muted);
+  }
+  .fb-rate button.sel { border-color: var(--accent); color: var(--accent); background: #f0f6ff; }
+  .fb-save {
+    margin-top: 12px; padding: 10px 14px; font-size: 13px; font-weight: 600; font-family: inherit;
+    color: #fff; background: var(--accent); border: none; border-radius: 10px; cursor: pointer;
+  }
+  .fb-saved { font-size: 12.5px; color: #12b886; font-weight: 600; margin-left: 10px; }
   button.primary {
     width: 100%; margin-top: 16px; padding: 16px; font-size: 15px; font-weight: 600;
     font-family: inherit; color: #fff; background: var(--accent); border: none;
@@ -159,8 +194,10 @@ INDEX_TEMPLATE = f"""
   <div class="card">
     <form id="f">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
+      <textarea id="transcript" rows="6" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다.&#10;· 권장: 유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사, 또는 SRT/VTT&#10;· 순수 텍스트(노트북LM 등)도 가능하나, 정확한 클립 시간을 위해 유튜브 자동자막에 자동 정렬합니다."></textarea>
       <button class="primary" type="submit">분석 시작</button>
     </form>
+    <p class="hint">자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용합니다.</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -170,10 +207,11 @@ const statusEl = document.getElementById('status');
 f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   const url = document.getElementById('url').value;
+  const transcript_text = document.getElementById('transcript').value;
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중...';
   const res = await fetch('/analyze', {{
-    method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url}})
+    method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text}})
   }});
   const data = await res.json();
   if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; return; }}
@@ -210,6 +248,7 @@ CANDIDATES_TEMPLATE = f"""
   .score-badge.tier-top {{ background: #fff4e5; color: #c2620c; }}       /* 90점 이상: 최상 */
   .score-badge.tier-high {{ background: #e7f7ec; color: #1a7f37; }}      /* 85점 이상: 추천 */
   .score-badge.tier-ok {{ background: #eaf1ff; color: #2563eb; }}        /* 80점 이상: 후보 */
+  .score-badge.tier-low {{ background: #f1f3f5; color: #868e96; }}       /* 80점 미만: 참고용 */
   .dur {{ font-size: 12.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }}
   .pick {{
     display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; flex-shrink: 0;
@@ -278,14 +317,13 @@ CANDIDATES_TEMPLATE = f"""
   {{% else %}}
   <form id="renderForm">
   {{% for c in clips %}}
-  {{% if c.score is none or c.score >= 80 %}}
   <div class="card candidate{{% if loop.index == 1 %}} top{{% endif %}}">
     <div class="cand-head">
       <div class="cand-meta">
         <span class="rank">{{% if loop.index == 1 %}}TOP{{% else %}}{{{{ loop.index }}}}위{{% endif %}}</span>
         {{% if c.score is not none %}}
         <span class="dot-sep"></span>
-        <span class="score-badge {{% if c.score >= 90 %}}tier-top{{% elif c.score >= 85 %}}tier-high{{% else %}}tier-ok{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 90 %}} · 최상{{% elif c.score >= 85 %}} · 추천{{% endif %}}</span>
+        <span class="score-badge {{% if c.score >= 90 %}}tier-top{{% elif c.score >= 85 %}}tier-high{{% elif c.score >= 80 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 90 %}} · 최상{{% elif c.score >= 85 %}} · 추천{{% elif c.score < 80 %}} · 참고{{% endif %}}</span>
         {{% endif %}}
         <span class="dot-sep"></span>
         <span class="dur">{{{{ "%.0f"|format(c.end - c.start) }}}}초</span>
@@ -298,6 +336,15 @@ CANDIDATES_TEMPLATE = f"""
     <h3 class="title">{{{{ c.title }}}}</h3>
     <p class="caption">{{{{ c.caption }}}}</p>
     <p class="hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
+    {{% if c.hook_score is not none %}}
+    <div class="subscores">
+      {{% for lbl, val in [('훅', c.hook_score), ('리텐션', c.retention_score), ('감정', c.emotion_score), ('공감', c.relatability_score), ('마무리', c.payoff_score), ('인용각', c.quotability_score)] %}}
+      {{% if val is not none %}}
+      <span class="subscore" title="{{{{ lbl }}}} {{{{ val }}}}/10">{{{{ lbl }}}} <span class="sbar"><i style="width: {{{{ (val * 10)|int }}}}%"></i></span> <b>{{{{ "%.0f"|format(val) }}}}</b></span>
+      {{% endif %}}
+      {{% endfor %}}
+    </div>
+    {{% endif %}}
     <div class="cand-foot">
       <button type="button" class="reason-toggle" aria-expanded="false">왜 추천하나요? <span class="chev">▾</span></button>
       <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
@@ -306,8 +353,29 @@ CANDIDATES_TEMPLATE = f"""
     {{% if c.rendered %}}
       <video controls src="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4"></video>
     {{% endif %}}
+    <details class="fb" data-idx="{{{{ loop.index0 }}}}" data-title="{{{{ c.title|e }}}}">
+      <summary>📊 실제 성과 입력 (올린 뒤 조회수·반응을 적으면 다음 선정이 똑똑해져요)</summary>
+      <div class="fb-grid">
+        <div><label>조회수</label><input type="number" class="fb-views" min="0" placeholder="예: 12000"></div>
+        <div><label>평균 조회율(%)</label><input type="number" class="fb-ret" min="0" max="100" placeholder="예: 45"></div>
+        <div><label>저장</label><input type="number" class="fb-saves" min="0" placeholder="예: 320"></div>
+        <div><label>공유</label><input type="number" class="fb-shares" min="0" placeholder="예: 80"></div>
+        <div><label>좋아요</label><input type="number" class="fb-likes" min="0" placeholder="예: 540"></div>
+        <div><label>댓글</label><input type="number" class="fb-comments" min="0" placeholder="예: 25"></div>
+      </div>
+      <div class="fb-rate">
+        <button type="button" data-rate="hit">잘 됨 ✅</button>
+        <button type="button" data-rate="ok">보통</button>
+        <button type="button" data-rate="flop">망함 ❌</button>
+      </div>
+      <div style="margin-top:12px">
+        <label style="font-size:11.5px;color:var(--text-faint);font-weight:600;display:block;margin-bottom:4px">메모(선택)</label>
+        <input type="text" class="fb-notes" placeholder="예: 훅이 강했다 / 초반 이탈 많음">
+      </div>
+      <button type="button" class="fb-save">성과 저장</button>
+      <span class="fb-saved" hidden>저장됨 ✓</span>
+    </details>
   </div>
-  {{% endif %}}
   {{% endfor %}}
   <div class="actions">
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
@@ -365,6 +433,33 @@ CANDIDATES_TEMPLATE = f"""
       reason.hidden = !willOpen;
       btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
       btn.firstChild.textContent = willOpen ? '분석 접기 ' : '왜 추천하나요? ';
+    }});
+  }});
+
+  // 성과 피드백: 등급 선택 + 저장 → 서버에 기록(다음 선정 프롬프트에 캘리브레이션으로 주입됨).
+  document.querySelectorAll('details.fb').forEach(function(fb) {{
+    var rate = 'ok';
+    fb.querySelectorAll('.fb-rate button').forEach(function(b) {{
+      b.addEventListener('click', function() {{
+        rate = b.dataset.rate;
+        fb.querySelectorAll('.fb-rate button').forEach(x => x.classList.remove('sel'));
+        b.classList.add('sel');
+      }});
+    }});
+    var num = function(sel) {{ var v = fb.querySelector(sel).value.trim(); return v === '' ? null : parseFloat(v); }};
+    fb.querySelector('.fb-save').addEventListener('click', async function() {{
+      var payload = {{
+        clip_index: parseInt(fb.dataset.idx), title: fb.dataset.title, rating: rate,
+        views: num('.fb-views'), retention_pct: num('.fb-ret'), saves: num('.fb-saves'),
+        shares: num('.fb-shares'), likes: num('.fb-likes'), comments: num('.fb-comments'),
+        notes: fb.querySelector('.fb-notes').value.trim(),
+      }};
+      var res = await fetch('/video/{{{{ video_id }}}}/feedback', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(payload)
+      }});
+      var saved = fb.querySelector('.fb-saved');
+      if (res.ok) {{ saved.hidden = false; setTimeout(() => {{ saved.hidden = true; }}, 2500); }}
+      else {{ alert('저장 실패'); }}
     }});
   }});
   </script>
@@ -430,13 +525,14 @@ CANDIDATES_TEMPLATE = f"""
 """
 
 
-def _run_analyze_job(video_id_holder: dict, url: str) -> None:
+def _run_analyze_job(video_id_holder: dict, url: str, transcript_text: str = "") -> None:
     try:
         video_dir, clips = analyze(
             url,
             progress=lambda msg, pct, eta=None: _update_job(
                 video_id_holder["id"], message=msg, pct=pct, eta_seconds=eta
             ),
+            transcript_text=transcript_text,
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -453,7 +549,9 @@ def index():
 
 @app.route("/analyze", methods=["POST"])
 def analyze_route():
-    url = request.get_json().get("url", "").strip()
+    body = request.get_json()
+    url = body.get("url", "").strip()
+    transcript_text = (body.get("transcript_text") or "").strip()
     if not url:
         return jsonify({"error": "URL이 비어있습니다"}), 400
 
@@ -466,7 +564,9 @@ def analyze_route():
 
     _update_job(video_id, status="analyzing", message="분석 시작...", pct=0, started=time.time())
     holder = {"id": video_id}
-    threading.Thread(target=_run_analyze_job, args=(holder, url), daemon=True).start()
+    threading.Thread(
+        target=_run_analyze_job, args=(holder, url, transcript_text), daemon=True
+    ).start()
     return jsonify({"video_id": video_id})
 
 
@@ -569,6 +669,64 @@ def render_route(video_id: str):
             _update_job(video_id, rendering=False)
 
     threading.Thread(target=_job, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/video/<video_id>/feedback", methods=["POST"])
+def feedback_route(video_id: str):
+    """올린 클립의 실제 성과를 기록한다. 다음 선정 프롬프트에 캘리브레이션 사례로 주입된다."""
+    body = request.get_json() or {}
+    try:
+        clip_index = int(body.get("clip_index"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "clip_index가 필요합니다"}), 400
+
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    clip = None
+    if clips_path.exists():
+        clips = load_clips_json(clips_path)
+        if 0 <= clip_index < len(clips):
+            clip = clips[clip_index]
+
+    def _num(key, cast=float):
+        v = body.get(key)
+        try:
+            return cast(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    hook_text = ""
+    if clip is not None and clip.caption_overrides:
+        hook_text = (clip.caption_overrides[0] or {}).get("text", "")
+
+    record = PerformanceRecord(
+        video_id=video_id,
+        clip_index=clip_index,
+        title=(body.get("title") or (clip.title if clip else "")).strip(),
+        hook_text=hook_text,
+        start=clip.start if clip else 0.0,
+        end=clip.end if clip else 0.0,
+        predicted_score=clip.score if clip else None,
+        predicted_core=clip.core_score if clip else None,
+        predicted_viral=clip.viral_score if clip else None,
+        predicted_subscores=(
+            {
+                "hook": clip.hook_score, "retention": clip.retention_score,
+                "emotion": clip.emotion_score, "relatability": clip.relatability_score,
+                "payoff": clip.payoff_score, "quotability": clip.quotability_score,
+            }
+            if clip else {}
+        ),
+        views=_num("views", int),
+        retention_pct=_num("retention_pct", float),
+        saves=_num("saves", int),
+        shares=_num("shares", int),
+        likes=_num("likes", int),
+        comments=_num("comments", int),
+        rating=(body.get("rating") or "ok").strip(),
+        notes=(body.get("notes") or "").strip(),
+    )
+    upsert_feedback(record)
     return jsonify({"ok": True})
 
 
@@ -775,6 +933,27 @@ __BASE_STYLE__
     border-radius: 9px; background: #fafbfc; min-width: 0;
   }
   .sty-grid select:focus, .sty-grid input:focus, .sty-row select:focus, .sty-row input:focus { outline: none; border-color: var(--accent); background: #fff; }
+  /* 추천 제목 후보 칩 */
+  .title-cands { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .title-cand {
+    text-align: left; padding: 12px 14px; font-size: 14.5px; font-weight: 600; font-family: inherit;
+    color: var(--text); background: #fafbfc; border: 1.5px solid var(--border); border-radius: 12px;
+    cursor: pointer; transition: border-color .15s, background .15s; line-height: 1.4;
+  }
+  .title-cand:hover { border-color: var(--accent); background: #f0f6ff; }
+  .title-cand.sel { border-color: var(--accent); background: #eef4ff; color: var(--accent); }
+  /* 세부 편집 접기 */
+  details.advanced { background: transparent; box-shadow: none; padding: 0; margin-bottom: 14px; }
+  details.advanced > summary {
+    cursor: pointer; list-style: none; padding: 15px 20px; background: var(--card);
+    border-radius: 14px; box-shadow: var(--shadow); font-size: 15px; font-weight: 700;
+    color: var(--text); display: flex; align-items: center; justify-content: space-between;
+  }
+  details.advanced > summary::-webkit-details-marker { display: none; }
+  details.advanced > summary::after { content: '▾'; color: var(--text-faint); font-size: 13px; transition: transform .2s; }
+  details.advanced[open] > summary::after { transform: rotate(180deg); }
+  details.advanced > summary .sum-sub { font-size: 12.5px; font-weight: 500; color: var(--text-faint); }
+  details.advanced .adv-body { margin-top: 12px; }
 </style>
 <style>
 /* 각 글꼴을 실제 모양으로 미리보기(드롭다운 옵션 + 캔버스). font-display:swap로 늦게 떠도 UI는 안 막힘 */
@@ -817,61 +996,74 @@ __BASE_STYLE__
   <p class="hint">글자를 드래그해 위치를 옮기고, 아래에서 화면·글꼴·자막을 편집하세요. 최종 결과는 렌더링해야 반영됩니다.</p>
 
   <section class="ed-card">
-    <h2>영상 길이</h2>
-    <p class="cap-sub">클립 시작·끝을 초 단위로 조절합니다. (전체 {{ '%.1f'|format(clip.end - clip.start) }}초) · 시작을 음수로, 끝을 전체보다 크게 하면 원본에서 앞뒤로 <b>최대 10초까지 늘릴</b> 수 있어요.</p>
-    <div class="sty-row">
-      <label>시작</label>
-      <input type="number" id="trimStart" class="trim-num" min="-10" step="0.5"> <span class="unit">초</span>
-      <label style="width:auto">끝</label>
-      <input type="number" id="trimEnd" class="trim-num" min="0" max="{{ '%.1f'|format(clip.end - clip.start + 10) }}" step="0.5"> <span class="unit">초</span>
-    </div>
-  </section>
-
-  <section class="ed-card">
-    <h2>스타일</h2>
-    <div class="sty-row">
-      <label>화면</label>
-      <select id="fillMode">
-        <option value="fit">풀 화면 (유튜브 원본 그대로, 안 잘림)</option>
-        <option value="cover">화면 확대 (세로 꽉 채움, 좌우·하단 잘림)</option>
-      </select>
-    </div>
-    <div class="sty-h">제목 — 글꼴 · 크기 · 정렬 · 자간</div>
-    <div class="sty-grid">
-      <select id="titleFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
-      <input type="number" id="titleSize" min="20" max="400" step="2" title="크기(px)">
-      <select id="titleAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
-      <input type="number" id="titleSpacing" step="0.5" title="자간(px)">
-    </div>
-    <div class="sty-h">자막 — 글꼴 · 크기 · 정렬 · 자간</div>
-    <div class="sty-grid">
-      <select id="captionFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
-      <input type="number" id="captionSize" min="20" max="300" step="2" title="크기(px)">
-      <select id="captionAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
-      <input type="number" id="captionSpacing" step="0.5" title="자간(px)">
-    </div>
-  </section>
-
-  <section class="ed-card">
     <h2>제목</h2>
     <input type="text" id="titleInput" class="title-input" value="{{ clip.title }}">
-  </section>
-
-  <section class="ed-card">
-    <h2>자막</h2>
-    <p class="cap-sub">왼쪽 두 칸은 시작·끝 시간(클립 시작 기준 초). 내용을 고치고 칸을 추가/삭제하세요.</p>
-    <div id="capList">
-      {% for c in caption_lines %}
-      <div class="cap-row">
-        <input type="number" class="cap-num cap-start" step="0.1" value="{{ '%.1f'|format(c.start - clip.start) }}">
-        <input type="number" class="cap-num cap-end" step="0.1" value="{{ '%.1f'|format(c.end - clip.start) }}">
-        <input type="text" class="cap-input" value="{{ c.text }}">
-        <button type="button" class="cap-del" title="삭제">&times;</button>
-      </div>
+    {% if clip.title_candidates %}
+    <p class="cap-sub" style="margin:12px 0 0">추천 제목 — 누르면 위에 바로 적용돼요</p>
+    <div class="title-cands">
+      {% for t in clip.title_candidates %}
+      <button type="button" class="title-cand">{{ t }}</button>
       {% endfor %}
     </div>
-    <button type="button" class="cap-add" id="capAdd">+ 자막 칸 추가</button>
+    {% endif %}
   </section>
+
+  <details class="advanced">
+    <summary>세부 편집 <span class="sum-sub">화면·글꼴·길이·자막 손보기</span></summary>
+    <div class="adv-body">
+      <section class="ed-card">
+        <h2>영상 길이</h2>
+        <p class="cap-sub">클립 시작·끝을 초 단위로 조절합니다. (전체 {{ '%.1f'|format(clip.end - clip.start) }}초) · 시작을 음수로, 끝을 전체보다 크게 하면 원본에서 앞뒤로 <b>최대 10초까지 늘릴</b> 수 있어요.</p>
+        <div class="sty-row">
+          <label>시작</label>
+          <input type="number" id="trimStart" class="trim-num" min="-10" step="0.5"> <span class="unit">초</span>
+          <label style="width:auto">끝</label>
+          <input type="number" id="trimEnd" class="trim-num" min="0" max="{{ '%.1f'|format(clip.end - clip.start + 10) }}" step="0.5"> <span class="unit">초</span>
+        </div>
+      </section>
+
+      <section class="ed-card">
+        <h2>스타일</h2>
+        <div class="sty-row">
+          <label>화면</label>
+          <select id="fillMode">
+            <option value="fit">풀 화면 (유튜브 원본 그대로, 안 잘림)</option>
+            <option value="cover">화면 확대 (세로 꽉 채움, 좌우·하단 잘림)</option>
+          </select>
+        </div>
+        <div class="sty-h">제목 — 글꼴 · 크기 · 정렬 · 자간</div>
+        <div class="sty-grid">
+          <select id="titleFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
+          <input type="number" id="titleSize" min="20" max="400" step="2" title="크기(px)">
+          <select id="titleAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
+          <input type="number" id="titleSpacing" step="0.5" title="자간(px)">
+        </div>
+        <div class="sty-h">자막 — 글꼴 · 크기 · 정렬 · 자간</div>
+        <div class="sty-grid">
+          <select id="captionFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
+          <input type="number" id="captionSize" min="20" max="300" step="2" title="크기(px)">
+          <select id="captionAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
+          <input type="number" id="captionSpacing" step="0.5" title="자간(px)">
+        </div>
+      </section>
+
+      <section class="ed-card">
+        <h2>자막</h2>
+        <p class="cap-sub">왼쪽 두 칸은 시작·끝 시간(클립 시작 기준 초). 내용을 고치고 칸을 추가/삭제하세요.</p>
+        <div id="capList">
+          {% for c in caption_lines %}
+          <div class="cap-row">
+            <input type="number" class="cap-num cap-start" step="0.1" value="{{ '%.1f'|format(c.start - clip.start) }}">
+            <input type="number" class="cap-num cap-end" step="0.1" value="{{ '%.1f'|format(c.end - clip.start) }}">
+            <input type="text" class="cap-input" value="{{ c.text }}">
+            <button type="button" class="cap-del" title="삭제">&times;</button>
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="cap-add" id="capAdd">+ 자막 칸 추가</button>
+      </section>
+    </div>
+  </details>
 
   <div class="prog-card hidden" id="renderProg" style="margin-top:16px">
     <div class="prog-head">
@@ -956,6 +1148,16 @@ titleInput.addEventListener('input', () => {
   titleEl.textContent = titleInput.value || ' ';
   titleEl.style.fontSize = TITLE_BASE_FS + 'px';
   fitToWidth(titleEl, USABLE_W);
+});
+
+// 추천 제목 후보: 누르면 제목 칸에 적용 + 미리보기 갱신.
+document.querySelectorAll('.title-cand').forEach(function(chip) {
+  chip.addEventListener('click', function() {
+    titleInput.value = chip.textContent.trim();
+    titleInput.dispatchEvent(new Event('input'));
+    document.querySelectorAll('.title-cand').forEach(x => x.classList.remove('sel'));
+    chip.classList.add('sel');
+  });
 });
 
 // 자막 칸 추가/삭제
