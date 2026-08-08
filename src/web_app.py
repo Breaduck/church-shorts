@@ -195,13 +195,9 @@ INDEX_TEMPLATE = f"""
     <form id="f">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
       <textarea id="transcript" rows="6" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다.&#10;· 권장: 유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사, 또는 SRT/VTT&#10;· 순수 텍스트(노트북LM 등)도 가능하나, 정확한 클립 시간을 위해 유튜브 자동자막에 자동 정렬합니다."></textarea>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px;color:var(--text-muted);cursor:pointer">
-        <input type="checkbox" id="force" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer">
-        기존 결과 무시하고 새로 분석 (이미 분석한 영상을 새 로직으로 다시 뽑을 때)
-      </label>
       <button class="primary" type="submit">분석 시작</button>
     </form>
-    <p class="hint">자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용합니다. 자막을 붙여넣으면 자동으로 새로 분석돼요.</p>
+    <p class="hint">링크를 넣을 때마다 항상 새로 분석합니다. 자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용해요.</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -212,7 +208,7 @@ f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   const url = document.getElementById('url').value;
   const transcript_text = document.getElementById('transcript').value;
-  const force = document.getElementById('force').checked;
+  const force = true;  // 링크 넣을 때마다 항상 새로 분석
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중...';
   const res = await fetch('/analyze', {{
@@ -290,6 +286,34 @@ CANDIDATES_TEMPLATE = f"""
   .actions button {{ box-shadow: 0 8px 24px rgba(49, 130, 246, 0.35); }}
   .actions button:disabled {{ opacity: .5; cursor: not-allowed; box-shadow: none; }}
   .error-box {{ color: #e02424; }}
+  /* 스크롤해도 항상 보이는 우측 하단 고정 진행 위젯 */
+  .mini-prog {{
+    position: fixed; right: 20px; bottom: 20px; z-index: 9999; width: 268px; max-width: calc(100vw - 40px);
+    background: var(--card); border-radius: 16px; padding: 14px 16px;
+    box-shadow: 0 10px 30px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.08);
+    border: 1px solid var(--border); animation: miniIn .25s ease;
+  }}
+  @keyframes miniIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+  .mini-prog.hidden {{ display: none; }}
+  .mini-top {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }}
+  .mini-msg {{ font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .mini-x {{ cursor: pointer; color: var(--text-faint); font-size: 18px; line-height: 1; flex-shrink: 0; padding: 0 2px; }}
+  .mini-x:hover {{ color: var(--text); }}
+  .mini-track {{ width: 100%; height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }}
+  .mini-fill {{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #5aa2ff); width: 0%; transition: width .5s cubic-bezier(.22,.61,.36,1); }}
+  .mini-bot {{ display: flex; align-items: center; justify-content: space-between; margin-top: 7px; }}
+  .mini-eta {{ font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }}
+  .mini-pct {{ font-size: 15px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }}
+  .mini-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }}
+  .mini-go {{ padding: 8px 12px; font-size: 13px; font-weight: 700; font-family: inherit; color: #fff; background: var(--accent); border: none; border-radius: 10px; cursor: pointer; }}
+  .mini-go:hover {{ background: var(--accent-hover); }}
+  .mini-spinner {{ display: inline-block; width: 11px; height: 11px; border-radius: 50%; border: 2px solid #dbe4f0; border-top-color: var(--accent); animation: spin .8s linear infinite; margin-right: 6px; vertical-align: -1px; }}
+  .cand-video {{ display: block; }}
+  .cand-video video {{ width: 100%; max-width: 260px; border-radius: 14px; background: #000; margin-top: 14px; display: block; }}
+  .dl-link {{ display: inline-block; margin-top: 8px; font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; }}
+  .dl-link:hover {{ text-decoration: underline; }}
+  .candidate.flash {{ box-shadow: 0 0 0 2px var(--accent), 0 10px 30px rgba(49,130,246,0.22); transition: box-shadow .3s; }}
+  .candidate.rendered-done {{ box-shadow: 0 0 0 1.5px #12b886, 0 6px 22px rgba(18,184,134,0.10); }}
 </style>
 </head>
 <body>
@@ -322,7 +346,7 @@ CANDIDATES_TEMPLATE = f"""
   {{% else %}}
   <form id="renderForm">
   {{% for c in clips %}}
-  <div class="card candidate{{% if loop.index == 1 %}} top{{% endif %}}">
+  <div class="card candidate{{% if loop.index == 1 %}} top{{% endif %}}" id="cand-{{{{ loop.index0 }}}}">
     <div class="cand-head">
       <div class="cand-meta">
         <span class="rank">{{% if loop.index == 1 %}}TOP{{% else %}}{{{{ loop.index }}}}위{{% endif %}}</span>
@@ -355,9 +379,12 @@ CANDIDATES_TEMPLATE = f"""
       <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
     </div>
     <p class="reason" hidden>{{{{ c.reason }}}}</p>
+    <div class="cand-video" id="candvid-{{{{ loop.index0 }}}}">
     {{% if c.rendered %}}
       <video controls src="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4"></video>
+      <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4" download>⬇ 영상 저장</a>
     {{% endif %}}
+    </div>
     <details class="fb" data-idx="{{{{ loop.index0 }}}}" data-title="{{{{ c.title|e }}}}">
       <summary>📊 실제 성과 입력 (올린 뒤 조회수·반응을 적으면 다음 선정이 똑똑해져요)</summary>
       <div class="fb-grid">
@@ -412,15 +439,13 @@ CANDIDATES_TEMPLATE = f"""
     e.preventDefault();
     const idx = [...document.querySelectorAll('input[name=idx]:checked')].map(el => parseInt(el.value));
     if (idx.length === 0) {{ alert('클립을 하나 이상 선택하세요'); return; }}
-    const box = document.getElementById('renderStatus');
-    box.style.display = 'block';
-    box.innerHTML = '<span class="spinner"></span>렌더링 요청 중...';
     const res = await fetch('/video/{{{{ video_id }}}}/render', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{indices: idx}})
     }});
-    const data = await res.json();
-    if (!res.ok) {{ box.innerText = '오류: ' + data.error; return; }}
-    location.reload();
+    const data = await res.json().catch(function() {{ return {{}}; }});
+    if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
+    // 리로드하지 않는다. 고정 미니위젯이 진행률을 보여주고, 완료되면 그 자리에 영상을 꽂는다.
+    window.__startRenderWatch(idx);
   }});
 
   // 선택한 카드에 파란 테두리(picked) 표시 — 무엇을 만들지 한눈에 보이게.
@@ -522,6 +547,101 @@ CANDIDATES_TEMPLATE = f"""
       }}).catch(function() {{ setTimeout(poll, 1200); }});
     }}
     setTimeout(poll, 650);
+  }})();
+  </script>
+
+  <div class="mini-prog hidden" id="miniProg">
+    <div class="mini-top">
+      <span class="mini-msg" id="miniMsg"><span class="mini-spinner"></span>진행 중…</span>
+      <span class="mini-x" id="miniClose" title="닫기" hidden>&times;</span>
+    </div>
+    <div class="mini-track" id="miniTrack"><div class="mini-fill" id="miniFill"></div></div>
+    <div class="mini-bot">
+      <span class="mini-eta" id="miniEta"></span>
+      <span class="mini-pct" id="miniPct">0%</span>
+    </div>
+    <div class="mini-actions" id="miniActions" hidden></div>
+  </div>
+  <script>
+  // 스크롤 위치와 무관하게 항상 보이는 고정 진행 위젯. 분석/렌더 상태를 폴링해 갱신하고,
+  // 렌더가 끝나면 그 자리(카드)에 영상을 꽂고 위젯을 '완성' 상태로 남긴다(사라지지 않게).
+  (function() {{
+    var VID = "{{{{ video_id }}}}";
+    var box = document.getElementById('miniProg');
+    var msg = document.getElementById('miniMsg'), pct = document.getElementById('miniPct');
+    var fill = document.getElementById('miniFill'), eta = document.getElementById('miniEta');
+    var track = document.getElementById('miniTrack'), actions = document.getElementById('miniActions');
+    var closeBtn = document.getElementById('miniClose');
+    var statusUrl = "/video/" + VID + "/status";
+    var renderIndices = null;   // 이번 세션에서 렌더 요청한 클립들(버튼 클릭 시 채워짐)
+    var wasRendering = false;   // 렌더 진행 중이었는지(완료 전이 감지용)
+    var polling = false;
+    closeBtn.addEventListener('click', function() {{ box.classList.add('hidden'); }});
+
+    function fmtEta(s) {{
+      if (s == null || s < 0) return '';
+      s = Math.round(s);
+      return s < 60 ? ('약 ' + Math.max(1, s) + '초 남음') : ('약 ' + Math.round(s / 60) + '분 남음');
+    }}
+    function showProg(p, m, e) {{
+      box.classList.remove('hidden'); track.hidden = false; actions.hidden = true; closeBtn.hidden = true;
+      p = Math.max(0, Math.min(100, p || 0));
+      fill.style.width = p + '%'; pct.style.display = '';
+      pct.textContent = Math.round(p) + '%';
+      msg.innerHTML = '<span class="mini-spinner"></span>' + (m || '진행 중…');
+      eta.textContent = fmtEta(e) || (p >= 100 ? '거의 완료…' : '예상 시간 계산 중…');
+    }}
+    function injectVideo(i) {{
+      var slot = document.getElementById('candvid-' + i);
+      if (!slot) return;
+      var src = '/media/' + VID + '/' + (i + 1) + '.mp4?t=' + Date.now();
+      slot.innerHTML = '<video controls src="' + src + '"></video>' +
+        '<a class="dl-link" href="/media/' + VID + '/' + (i + 1) + '.mp4" download>⬇ 영상 저장</a>';
+      var card = document.getElementById('cand-' + i);
+      if (card) card.classList.add('rendered-done');
+    }}
+    function showDone(indices) {{
+      box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display = 'none';
+      msg.innerHTML = '✅ 쇼츠 완성! 영상은 자동 저장됐어요';
+      eta.textContent = '';
+      actions.hidden = false;
+      actions.innerHTML = '';
+      indices.forEach(function(i) {{
+        var b = document.createElement('button');
+        b.className = 'mini-go';
+        b.textContent = '#' + (i + 1) + ' 영상 보기';
+        b.addEventListener('click', function() {{
+          var card = document.getElementById('cand-' + i);
+          if (card) {{ card.scrollIntoView({{behavior: 'smooth', block: 'center'}}); card.classList.add('flash'); setTimeout(function() {{ card.classList.remove('flash'); }}, 1500); }}
+        }});
+        actions.appendChild(b);
+      }});
+    }}
+    function onRenderDone() {{
+      if (renderIndices && renderIndices.length) {{
+        renderIndices.forEach(injectVideo);
+        showDone(renderIndices);
+        renderIndices = null;
+      }} else {{
+        location.reload();  // 렌더 중 새로고침한 경우 등: 서버 렌더 상태로 복원
+      }}
+    }}
+    function poll() {{
+      fetch(statusUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
+        if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '⚠️ 오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
+        if (j.rendering) {{ wasRendering = true; showProg(j.render_pct, j.render_message || '쇼츠 렌더링 중…', j.render_eta_seconds); }}
+        else if (wasRendering) {{ wasRendering = false; onRenderDone(); }}
+        else if (!j.ready && j.status !== 'error') {{ showProg(j.pct, j.message || '분석 중…', j.eta_seconds); }}
+        setTimeout(poll, 800);
+      }}).catch(function() {{ setTimeout(poll, 1500); }});
+    }}
+    // 버튼 클릭 시 호출: 이번에 렌더할 인덱스를 기억하고 즉시 위젯을 띄운다.
+    window.__startRenderWatch = function(indices) {{
+      renderIndices = indices; wasRendering = true;
+      showProg(0, '렌더링 시작…', null);
+      if (!polling) {{ polling = true; poll(); }}
+    }};
+    poll(); polling = true;
   }})();
   </script>
 </div>
