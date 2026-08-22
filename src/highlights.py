@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -375,6 +376,10 @@ def select_highlights_auto(
     cmd = [claude_path, "-p", "--output-format", "json"]
     if model:
         cmd += ["--model", model]  # 비우면 CLI 기본 모델(비쌀 수 있음). 보통 sonnet으로 고정.
+    # 실측: 선정 호출 279초 중 261초가 첫 토큰 대기(ttft) = 모델의 사전 '생각(thinking)'.
+    # 프롬프트가 이미 "초 단위 자가검증 말고 한 번 읽고 골라라"를 요구하므로 thinking 상한을
+    # 낮춰 대기시간을 크게 줄인다(품질 영향 최소, 토큰 소모도 감소).
+    env = {**os.environ, "MAX_THINKING_TOKENS": "6000"}
     proc = subprocess.run(
         cmd,
         input=prompt,
@@ -382,21 +387,29 @@ def select_highlights_auto(
         encoding="utf-8",
         capture_output=True,
         timeout=timeout_sec,
+        env=env,
     )
-    # claude -p는 사용량 한도/오류일 때 exit code와 출력 형태가 제각각이다(때론 exit 0으로
-    # 한도 안내문을 result에 담아 돌려준다). stdout/stderr를 함께 살펴, 예전처럼 "JSON 배열을
-    # 못 찾음" 같은 의미불명 오류로 죽지 않고 사람이 알아볼 수 있는 원인으로 바꿔준다.
-    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
-    if any(s in combined for s in (
-        "session limit", "usage limit", "hit your", "rate limit", "quota",
-        "too many requests", "resets", "출력 한도", "한도에 도달",
-    )):
+    # 한도 안내문 감지는 반드시 "호출이 실패한 경우"에만 쓴다. 성공 응답(JSON 결과)에도
+    # 'resets' 같은 단어가 메타데이터로 들어올 수 있어, 성공 전체를 먼저 문자열 검사하면
+    # 4~5분 걸려 성공한 분석을 한도 오류로 오판해 통째로 버리는 치명적 버그가 된다
+    # (실측: subtype=success에 클립 JSON까지 있는 응답을 한도 도달로 폐기).
+    def _quota_hint(text: str) -> bool:
+        t = (text or "").lower()
+        return any(s in t for s in (
+            "session limit", "usage limit", "hit your", "rate limit", "quota",
+            "too many requests", "출력 한도", "한도에 도달",
+        ))
+
+    def _raise_quota(raw: str):
         raise RuntimeError(
             "Claude 사용량(세션) 한도에 도달했습니다. 한도가 리셋된 뒤 다시 시도하거나, "
             "구독과 별개인 ANTHROPIC_API_KEY를 설정해 API 경로로 돌리세요.\n"
-            f"원문: {(proc.stdout or proc.stderr or '').strip()[:300]}"
+            f"원문: {raw.strip()[:300]}"
         )
+
     if proc.returncode != 0:
+        if _quota_hint(f"{proc.stdout}\n{proc.stderr}"):
+            _raise_quota(proc.stdout or proc.stderr or "")
         raise RuntimeError(
             f"claude -p 실행 실패 (exit {proc.returncode}).\n"
             f"stderr: {(proc.stderr or '').strip()[:300]}\n"
@@ -405,14 +418,24 @@ def select_highlights_auto(
     try:
         outer = json.loads(proc.stdout)
     except json.JSONDecodeError:
+        if _quota_hint(f"{proc.stdout}\n{proc.stderr}"):
+            _raise_quota(proc.stdout or proc.stderr or "")
         raise RuntimeError(
             "claude -p 응답을 JSON으로 읽지 못했습니다(한도/오류 안내문일 수 있음).\n"
             f"응답: {(proc.stdout or '').strip()[:300]}"
         )
-    if outer.get("is_error") or outer.get("subtype") not in (None, "success"):
-        raise RuntimeError(f"claude -p 오류: {str(outer.get('result', ''))[:300]}")
     result_text = outer.get("result", "")
-    raw_clips = _extract_json_array(result_text)
+    if outer.get("is_error") or outer.get("subtype") not in (None, "success"):
+        if _quota_hint(result_text):
+            _raise_quota(result_text)
+        raise RuntimeError(f"claude -p 오류: {str(result_text)[:300]}")
+    try:
+        raw_clips = _extract_json_array(result_text)
+    except ValueError:
+        # 성공 형식이지만 result가 클립 배열이 아니라 한도 안내문인 경우(실측 존재).
+        if _quota_hint(result_text):
+            _raise_quota(result_text)
+        raise
     return _validate_and_build_clips(
         raw_clips, transcript.duration_sec, min_duration_sec, max_duration_sec
     )
