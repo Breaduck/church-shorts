@@ -221,6 +221,16 @@ def _start_download_bg(url: str, output_root: Path) -> None:
         traceback.print_exc()
 
 
+def _rlog(video_dir: Path, msg: str) -> None:
+    """렌더 진단 로그. 자막 폴백 같은 중요한 분기가 조용히 지나가 원인 추적이 불가능했던
+    사고(오디오-자막 어긋남)를 겪은 뒤 추가 — 어떤 자막 소스를 왜 썼는지 파일로 남긴다."""
+    try:
+        with (video_dir / "render_log.txt").open("a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
+
+
 def wait_for_download(video_id: str, timeout: float = 1800) -> None:
     """백그라운드 다운로드가 돌고 있으면 완료(또는 timeout)까지 기다린다."""
     with _bg_downloads_lock:
@@ -594,12 +604,15 @@ def render_selected(
     base_transcript_path = video_dir / "transcript.json"
     if reference_path.exists():
         base_segments = json_load_transcript(reference_path)["segments"]
+        _rlog(video_dir, "base=transcript_reference.json")
     elif json3_path.exists():
         from src.youtube_captions import parse_json3_to_transcript
 
         base_segments = parse_json3_to_transcript(json3_path, 0.0).segments
+        _rlog(video_dir, "base=youtube_auto_caption.json3")
     elif base_transcript_path.exists():
         base_segments = json_load_transcript(base_transcript_path)["segments"]
+        _rlog(video_dir, "base=transcript.json (참조/json3 없음 - 붙여넣기 영상이면 시간 부정확 가능)")
 
     def _count_words(segments: list[Segment], a: float, b: float) -> int:
         return sum(1 for s in segments for wd in s.words if wd.start >= a and wd.end <= b)
@@ -677,6 +690,7 @@ def render_selected(
                 )
             except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
                 progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
+                _rlog(video_dir, f"clip{idx} 정밀 재전사 예외: {type(e).__name__}: {e}")
                 segs = []
 
             base_n = _count_words(base_segments, clip.start, clip.end)
@@ -705,8 +719,10 @@ def render_selected(
                     f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
                     base + step * 0.5,
                 )
+                _rlog(video_dir, f"clip{idx} 폴백: precise {precise_n}단어 < base {base_n}단어의 절반")
                 segs = base_segments
             elif segs and precise_n > 0:
+                _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
                 # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
                 _precise_cache_save(
                     cache_dir, precise_model, clip.start, clip.end + END_BUFFER_SEC, segs
