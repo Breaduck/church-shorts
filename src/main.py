@@ -270,6 +270,13 @@ def analyze(
                         transcript_text, reference, dl.duration_sec
                     )
                     snap_reference = reference
+                    # 참조 자막(실제 발화 시각)을 따로 저장해 둔다. 이 경로의 transcript.json은
+                    # '비례배분된 대략 시간'이라, 렌더 단계의 문장 끝 스냅/정밀전사 실패 폴백이
+                    # 그걸 그대로 쓰면 자막 싱크가 통째로 어긋난다(실측 원인). 렌더는 이 파일을 우선 쓴다.
+                    (video_dir / "transcript_reference.json").write_text(
+                        json.dumps(reference.to_json(), ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
                 else:
                     raise RuntimeError(
                         "붙여넣은 자막에 타임스탬프가 없고 유튜브 자동자막도 없어 시간을 매길 수 없습니다. "
@@ -428,6 +435,69 @@ def _snap_clip_end_to_sentence(
     return end
 
 
+def _advance_clip_start(min_start: float, segs: list[Segment]) -> float:
+    """클립이 길이 상한을 넘을 때 시작점을 min_start 이후의 첫 발화(세그먼트) 시작으로 당긴다.
+
+    쇼츠는 1분 내외여야 한다(절대 규칙). 상한을 넘으면 끝(가장 강한 펀치라인)은 지키고
+    앞을 잘라내는 게 이 파이프라인의 원칙("펀치라인 하나만 남기고 앞을 잘라라")이므로
+    end가 아니라 start를 움직인다. 문장 한가운데서 툭 시작하지 않도록 세그먼트 경계에
+    스냅하되, 너무 멀면(8초 이상) 그냥 min_start에서 자른다(길이 보장이 우선)."""
+    for s in sorted(segs, key=lambda s: s.start):
+        if min_start - 0.01 <= s.start <= min_start + 8.0:
+            return s.start
+    return min_start
+
+
+def _precise_cache_find(
+    cache_dir: Path, model: str, start: float, end: float
+) -> list[Segment] | None:
+    """이전 렌더에서 저장한 정밀 재전사 결과 중 [start, end]를 덮는 것을 찾는다.
+
+    large-v3 CPU 재전사는 클립당 1~3분 걸리는데, 편집기에서 제목/폰트/위치만 바꿔
+    재렌더할 때마다 같은 구간을 매번 다시 전사하는 게 렌더가 느린 주범이었다.
+    세그먼트 타임스탬프는 원본 절대시간이라, 캐시 창이 현재 클립 구간을 포함하기만 하면
+    구간이 다소 달라져도(스냅/살짝 트림) 그대로 재사용할 수 있다."""
+    if not cache_dir.exists():
+        return None
+    for f in cache_dir.glob(f"*_{model}.json"):
+        try:
+            a_str, b_str = f.stem.rsplit(f"_{model}", 1)[0].split("_")[:2]
+            a, b = float(a_str), float(b_str)
+        except ValueError:
+            continue
+        if a <= start + 0.01 and b >= end - 0.01:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                return [
+                    Segment(
+                        start=s["start"], end=s["end"], text=s["text"],
+                        words=[Word(**w) for w in s["words"]],
+                    )
+                    for s in data["segments"]
+                ]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                return None
+    return None
+
+
+def _precise_cache_save(
+    cache_dir: Path, model: str, start: float, end: float, segs: list[Segment]
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{start:.2f}_{end:.2f}_{model}.json"
+    path.write_text(
+        json.dumps(
+            {"segments": [
+                {"start": s.start, "end": s.end, "text": s.text,
+                 "words": [{"start": w.start, "end": w.end, "text": w.text} for w in s.words]}
+                for s in segs
+            ]},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def render_selected(
     video_dir: Path,
     clip_indices: list[int],
@@ -465,8 +535,14 @@ def render_selected(
     # 정밀 재전사가 이따금 한두 단어만 뱉고 사실상 실패할 때가 있다(자막이 통째로 비는
     # 치명적 결과 — 실제로 겪음). 그럴 때 폴백할 원본 전사(유튜브 자동자막/medium)를 미리 로드.
     base_segments: list[Segment] = []
+    # 순수 텍스트 붙여넣기 경로에선 transcript.json이 '비례배분된 대략 시간'이라 문장 끝
+    # 스냅/자막 폴백의 시간 기준으로 부적합하다. 그때 함께 저장된 실제 발화 시각의 참조
+    # 자막(transcript_reference.json)이 있으면 그것을 우선 쓴다(자막 싱크의 진실의 원천).
+    reference_path = video_dir / "transcript_reference.json"
     base_transcript_path = video_dir / "transcript.json"
-    if base_transcript_path.exists():
+    if reference_path.exists():
+        base_segments = json_load_transcript(reference_path)["segments"]
+    elif base_transcript_path.exists():
         base_segments = json_load_transcript(base_transcript_path)["segments"]
 
     def _count_words(segments: list[Segment], a: float, b: float) -> int:
@@ -507,62 +583,78 @@ def render_selected(
             continue
 
         hotwords = " ".join(filter(None, [w.get("bible_hotwords", ""), " ".join(clip.keywords)])).strip() or None
-        # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
-        # 멈춰 있으면 사용자가 "안 만들어진다"고 오해한다(실제로 겪은 피드백). 재전사/렌더
-        # 두 무진행 구간 모두 흉내 진행률 티커로 부드럽게 채워 "작동 중"임을 보여준다.
         clip_len = clip.end - clip.start
-        # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
-        # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
-        # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
-        def _precise(vad: bool) -> list[Segment]:
-            return transcribe_clip_precise(
-                video_path, clip.start, clip.end + END_BUFFER_SEC,
-                model_size=w.get("precise_model_size", w["model_size"]),
-                device=w["device"], compute_type=w["compute_type"],
-                language=w["language"], vad_filter=vad,
-                initial_prompt=w.get("initial_prompt"),
-                hotwords=hotwords,
-            )
+        precise_model = w.get("precise_model_size", w["model_size"])
+        cache_dir = video_dir / "precise_cache"
 
-        vad_default = w.get("vad_filter", True)
-        try:
-            segs = _run_with_progress_ticker(
-                lambda: _precise(vad_default),
-                start_pct=base, end_pct=base + step * 0.45, progress=progress,
-                message=f"[{idx+1}/{total}] 자막 정밀 인식 중: {clip.title}",
-                est_seconds=max(20.0, clip_len * 1.8),
-            )
-        except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
-            progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
-            segs = []
+        # 같은 구간을 이미 정밀 재전사했다면 재사용한다. 편집기에서 제목/폰트/위치만 바꿔
+        # 재렌더할 때도 클립당 1~3분짜리 large-v3 CPU 재전사를 매번 다시 돌리던 것이
+        # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
+        cached_segs = _precise_cache_find(cache_dir, precise_model, clip.start, clip.end)
+        if cached_segs is not None:
+            progress(f"[{idx+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
+            segs = cached_segs
+        else:
+            # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
+            # 멈춰 있으면 사용자가 "안 만들어진다"고 오해한다(실제로 겪은 피드백). 재전사/렌더
+            # 두 무진행 구간 모두 흉내 진행률 티커로 부드럽게 채워 "작동 중"임을 보여준다.
+            # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
+            # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
+            # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
+            def _precise(vad: bool) -> list[Segment]:
+                return transcribe_clip_precise(
+                    video_path, clip.start, clip.end + END_BUFFER_SEC,
+                    model_size=precise_model,
+                    device=w["device"], compute_type=w["compute_type"],
+                    language=w["language"], vad_filter=vad,
+                    initial_prompt=w.get("initial_prompt"),
+                    hotwords=hotwords,
+                )
 
-        base_n = _count_words(base_segments, clip.start, clip.end)
-        precise_n = _count_words(segs, clip.start, clip.end)
-        # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
-        # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
-        # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
-        # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
-        # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
-        weak = (precise_n < max(3, int(base_n * 0.5))) if base_n >= 5 else (precise_n == 0)
-        if weak and vad_default:
+            vad_default = w.get("vad_filter", True)
             try:
-                segs2 = _run_with_progress_ticker(
-                    lambda: _precise(False),
-                    start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
-                    message=f"[{idx+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                segs = _run_with_progress_ticker(
+                    lambda: _precise(vad_default),
+                    start_pct=base, end_pct=base + step * 0.45, progress=progress,
+                    message=f"[{idx+1}/{total}] 자막 정밀 인식 중: {clip.title}",
                     est_seconds=max(20.0, clip_len * 1.8),
                 )
-                if _count_words(segs2, clip.start, clip.end) > precise_n:
-                    segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
-            except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
-                pass
-        # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
-        if base_n >= 5 and precise_n < max(3, int(base_n * 0.5)):
-            progress(
-                f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
-                base + step * 0.5,
-            )
-            segs = base_segments
+            except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
+                progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
+                segs = []
+
+            base_n = _count_words(base_segments, clip.start, clip.end)
+            precise_n = _count_words(segs, clip.start, clip.end)
+            # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
+            # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
+            # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
+            # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
+            # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
+            weak = (precise_n < max(3, int(base_n * 0.5))) if base_n >= 5 else (precise_n == 0)
+            if weak and vad_default:
+                try:
+                    segs2 = _run_with_progress_ticker(
+                        lambda: _precise(False),
+                        start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
+                        message=f"[{idx+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                        est_seconds=max(20.0, clip_len * 1.8),
+                    )
+                    if _count_words(segs2, clip.start, clip.end) > precise_n:
+                        segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
+                except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
+                    pass
+            # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
+            if base_n >= 5 and precise_n < max(3, int(base_n * 0.5)):
+                progress(
+                    f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
+                    base + step * 0.5,
+                )
+                segs = base_segments
+            elif segs and precise_n > 0:
+                # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
+                _precise_cache_save(
+                    cache_dir, precise_model, clip.start, clip.end + END_BUFFER_SEC, segs
+                )
         # 스냅은 반드시 신뢰도 높은 원본 전사로 판단한다(정밀 재전사는 실패 시 세그먼트가
         # 비어 문장 끝 감지가 무력화됨). 원본이 없을 때만 정밀 결과로 폴백.
         # 사용자가 직접 구간을 자른 경우(trimmed)엔 자동 확장하지 않는다.
@@ -570,6 +662,17 @@ def render_selected(
             new_end = _snap_clip_end_to_sentence(clip, base_segments or segs)
             if new_end != clip.end:
                 clip.end = new_end
+            # 길이 절대 규칙: 쇼츠는 1분 내외. 스냅까지 끝난 최종 길이가 상한(max+5초)을
+            # 넘으면 끝(펀치라인)은 지키고 시작을 당겨 상한 안으로 넣는다. 선정 단계의
+            # 상한(1.5배=90초)만으로는 60~90초 후보가 그대로 렌더돼 "1분 내외"가 깨졌다.
+            hard_len = float(cfg["highlights"]["max_duration_sec"]) + 5.0
+            if clip.end - clip.start > hard_len:
+                new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
+                progress(
+                    f"[{idx+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",
+                    base + step * 0.5,
+                )
+                clip.start = new_start
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         _run_with_progress_ticker(

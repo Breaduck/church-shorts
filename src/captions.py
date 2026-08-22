@@ -50,10 +50,16 @@ def _collect_words_in_range(
         if seg.end < clip_start or seg.start > clip_end:
             continue
         for w in seg.words:
-            if w.start >= clip_start and w.end <= clip_end:
+            # 완전 포함(start>=clip_start and end<=clip_end)으로 거르면 클립 경계에 걸친
+            # 첫/끝 단어가 자막에서 통째로 빠져 "첫 마디부터 자막이 안 맞는" 체감 싱크 문제가
+            # 생긴다. 단어 중간점이 클립 안이면 포함시키고, 시간만 클립 경계로 클램프한다.
+            mid = (w.start + w.end) / 2.0
+            if clip_start <= mid <= clip_end:
                 cleaned = _clean_word_text(w.text)
                 if cleaned:
-                    words.append(Word(start=w.start, end=w.end, text=cleaned))
+                    ws = max(w.start, clip_start)
+                    we = min(w.end, clip_end)
+                    words.append(Word(start=ws, end=max(we, ws + 0.05), text=cleaned))
     # 유튜브 자동자막은 '롤링' 방식이라 연속 자막 이벤트가 같은 단어를 겹쳐서 반복한다.
     # 그대로 두면 자막이 겹쳐 2줄로 뜨고 싱크가 어긋난다. 시간 순 정렬 후 같은 단어가
     # 겹치거나 거의 같은 시각에 중복되면 하나만 남긴다.
