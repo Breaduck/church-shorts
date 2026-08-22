@@ -83,6 +83,35 @@ def _purge_non_final(video_dir: Path) -> None:
                 pass
 
 
+def find_cached(url: str, output_root: Path) -> Optional[DownloadResult]:
+    """이미 받아둔 완성본(source.mp4, 오디오 포함)이 있으면 즉시 반환, 없으면 None."""
+    video_id = extract_video_id(url)
+    target = output_root / video_id / "source.mp4"
+    if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
+        return DownloadResult(
+            video_id=video_id, title=video_id, video_path=target,
+            duration_sec=_probe_duration_sec(target),
+        )
+    return None
+
+
+def probe_video(url: str, output_root: Path) -> DownloadResult:
+    """다운로드 없이 메타데이터(제목/길이)만 몇 초 만에 가져온다.
+
+    하이라이트 '후보 뽑기'는 자막(텍스트)만 있으면 되고 영상 파일은 렌더 때에야 필요하다.
+    그래서 분석 크리티컬 패스에서 몇 분짜리 다운로드를 빼고(백그라운드로 돌리고),
+    여기서 얻은 길이/제목만으로 분석을 바로 진행한다."""
+    video_id = extract_video_id(url)
+    with yt_dlp.YoutubeDL({"quiet": True, "noprogress": True, "skip_download": True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return DownloadResult(
+        video_id=video_id,
+        title=info.get("title", video_id),
+        video_path=output_root / video_id / "source.mp4",
+        duration_sec=float(info.get("duration") or 0.0),
+    )
+
+
 def download_video(
     url: str, output_root: Path, on_progress: Optional[Callable[[float], None]] = None
 ) -> DownloadResult:

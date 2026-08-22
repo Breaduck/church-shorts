@@ -13,12 +13,13 @@ import json
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import yaml
 
 from src.audio_peaks import detect_peak_hints
-from src.download import download_video
+from src.download import download_video, find_cached, probe_video
 from src.highlights import (
     Clip,
     build_prompt,
@@ -206,6 +207,28 @@ def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, me
         ticker.join(timeout=2.0)
 
 
+# 백그라운드 다운로드 스레드 레지스트리. 하이라이트 '후보 뽑기'는 자막만 있으면 되고 영상
+# 파일은 렌더 때에야 필요하므로, 분석 크리티컬 패스에서 몇 분짜리 다운로드를 빼고 여기서
+# 병렬로 받는다. 렌더는 wait_for_download()로 완료를 보장받은 뒤 시작한다.
+_bg_downloads: dict[str, threading.Thread] = {}
+_bg_downloads_lock = threading.Lock()
+
+
+def _start_download_bg(url: str, output_root: Path) -> None:
+    try:
+        download_video(url, output_root)
+    except Exception:  # noqa: BLE001 - 실패해도 렌더 단계의 자기치유(재다운로드)가 다시 시도한다
+        traceback.print_exc()
+
+
+def wait_for_download(video_id: str, timeout: float = 1800) -> None:
+    """백그라운드 다운로드가 돌고 있으면 완료(또는 timeout)까지 기다린다."""
+    with _bg_downloads_lock:
+        t = _bg_downloads.get(video_id)
+    if t is not None and t.is_alive():
+        t.join(timeout)
+
+
 def json_load_transcript(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     segments = [
@@ -234,21 +257,34 @@ def analyze(
     output_root = Path("output")
 
     # 각 단계 예상시간(초). 실제 소요와 다르면 런타임에 보정한다(다운로드 %/전사 %/전사 분기).
+    # 다운로드는 크리티컬 패스에서 뺐다(메타데이터만 몇 초 확인, 실제 파일은 백그라운드).
     stages = [
-        _Stage("download", "영상 다운로드 중...", est=40),
+        _Stage("download", "영상 정보 확인 중...", est=8),
         _Stage("transcript", "자막 준비 중...", est=12),
-        _Stage("hints", "핵심 구간 분석 중...", est=15),
-        # 하이라이트 선정(claude -p)은 설교 전체를 읽는 단계라 실측 2~5분 걸린다. est를 90초로
-        # 잡으면 바가 일찍 95~97%에 붙어 "멈췄다"고 오해하게 만든다(실제 사용자 불만).
-        _Stage("highlight", "하이라이트 후보 선정 중...", est=240),
+        _Stage("hints", "핵심 구간 분석 중...", est=5),
+        # 하이라이트 선정(claude -p): sonnet-4.5 + thinking 상한 + 축소 출력 기준 실측 목표 ~2분.
+        _Stage("highlight", "하이라이트 후보 선정 중...", est=150),
     ]
     sp = StageProgress(progress, stages)
     try:
-        dl = download_video(
-            url, output_root,
-            on_progress=lambda p: sp.set_fraction(p / 100.0, f"영상 다운로드 중... {p:.0f}%"),
-        )
+        # 완성본이 이미 있으면 그대로, 없으면 메타데이터만 받고 다운로드는 백그라운드로.
+        # (후보 뽑기는 자막 텍스트만 필요 — 영상 파일은 렌더 때 wait_for_download로 보장)
+        dl = find_cached(url, output_root)
+        if dl is not None:
+            sp.set_fraction(1.0, "영상 준비됨")
+        else:
+            dl = probe_video(url, output_root)
+            with _bg_downloads_lock:
+                t = _bg_downloads.get(dl.video_id)
+                if t is None or not t.is_alive():
+                    t = threading.Thread(
+                        target=_start_download_bg, args=(url, output_root), daemon=True
+                    )
+                    _bg_downloads[dl.video_id] = t
+                    t.start()
+            sp.set_fraction(1.0, "영상은 백그라운드로 받는 중 (분석은 계속 진행돼요)")
         video_dir = output_root / dl.video_id
+        video_dir.mkdir(parents=True, exist_ok=True)
 
         # 2) 전사 --------------------------------------------------------------
         sp.advance("자막 준비 중...")
@@ -294,6 +330,10 @@ def analyze(
             if transcript is None or not transcript.segments:
                 # 로컬 전사는 영상 길이에 비례해 오래 걸린다 → 예상시간을 크게 잡아 ETA를 맞춘다.
                 sp.set_current_est(max(30.0, dl.duration_sec * 0.5))
+                # 로컬 전사는 영상(오디오) 파일이 필요한 유일한 분석 단계 — 백그라운드
+                # 다운로드가 아직이면 여기서만 기다린다(자동자막/붙여넣기 경로는 안 기다림).
+                sp.message("전사를 위해 영상 다운로드를 기다리는 중...")
+                wait_for_download(dl.video_id)
                 sp.message("자동 자막이 없어 직접 전사 중 (시간이 걸릴 수 있어요)...")
                 w = cfg["whisper"]
                 transcript = transcribe_and_save(
@@ -327,6 +367,7 @@ def analyze(
         sp.advance("핵심 구간 분석 중...")
         peak_hints = []
         if cfg["audio_peaks"].get("enabled", True):
+            wait_for_download(dl.video_id)  # 오디오 분석은 실제 파일 필요 (기본은 비활성)
             peak_hints = detect_peak_hints(
                 dl.video_path,
                 frame_length_sec=cfg["audio_peaks"]["frame_length_sec"],
@@ -517,6 +558,11 @@ def render_selected(
     cfg = load_config(config_path)
     clips = load_clips_json(video_dir / "clips.json")
     video_path = video_dir / "source.mp4"
+    # 분석 단계에서 시작한 백그라운드 다운로드가 아직 진행 중이면 먼저 완료를 기다린다
+    # (아래 자기치유가 같은 파일을 이중으로 받다 꼬이지 않게 하기 위함이기도 하다).
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        progress("영상 다운로드 마무리 중...", 0)
+        wait_for_download(video_dir.name)
     # 자기치유: 원본(source.mp4)이 없거나 깨졌으면(예: 이전 다운로드가 중단돼 조각만 남은
     # 경우) 렌더가 raw ffmpeg 오류로 죽지 않도록, video id로 유튜브 URL을 복원해 다시 받는다.
     if not video_path.exists() or video_path.stat().st_size == 0:
@@ -538,12 +584,20 @@ def render_selected(
     # 치명적 결과 — 실제로 겪음). 그럴 때 폴백할 원본 전사(유튜브 자동자막/medium)를 미리 로드.
     base_segments: list[Segment] = []
     # 순수 텍스트 붙여넣기 경로에선 transcript.json이 '비례배분된 대략 시간'이라 문장 끝
-    # 스냅/자막 폴백의 시간 기준으로 부적합하다. 그때 함께 저장된 실제 발화 시각의 참조
-    # 자막(transcript_reference.json)이 있으면 그것을 우선 쓴다(자막 싱크의 진실의 원천).
+    # 스냅/자막 폴백의 시간 기준으로 부적합하다(폴백 시 자막이 오디오와 통째로 어긋난 실측
+    # 사고: tMJLm4Hrax8 — 모든 단어가 0.69초 균일 간격). 시간축 우선순위:
+    #   1) transcript_reference.json (분석 때 따로 저장한 실제 발화 시각)
+    #   2) youtube_auto_caption.ko.json3 (유튜브 자동자막 원본 — 과거 분석 폴더에도 있음)
+    #   3) transcript.json (붙여넣기 경로면 비례배분이라 최후순위)
     reference_path = video_dir / "transcript_reference.json"
+    json3_path = video_dir / "youtube_auto_caption.ko.json3"
     base_transcript_path = video_dir / "transcript.json"
     if reference_path.exists():
         base_segments = json_load_transcript(reference_path)["segments"]
+    elif json3_path.exists():
+        from src.youtube_captions import parse_json3_to_transcript
+
+        base_segments = parse_json3_to_transcript(json3_path, 0.0).segments
     elif base_transcript_path.exists():
         base_segments = json_load_transcript(base_transcript_path)["segments"]
 
