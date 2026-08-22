@@ -49,6 +49,10 @@ whisper:
 
 highlights:
   mode: "auto"              # "auto" = claude -p 서브프로세스 자동 호출 / "manual" = 이 세션에서 수동 선정
+  # 하이라이트 선정에 쓸 모델. 이 단계는 전사본을 읽고 판단하는 작업이라 Sonnet으로 충분하고,
+  # Opus 대비 토큰 비용이 몇 배 저렴하다. 빈 값("")이면 claude CLI 기본 모델을 따른다(예전 동작).
+  # 예전보다 비용이 확 늘었다면 CLI 기본이 Opus로 바뀐 탓 — 여기서 sonnet으로 못박아 되돌린다.
+  model: "sonnet"
   min_clips: 3
   max_clips: 5
   min_duration_sec: 20
@@ -146,6 +150,10 @@ upload:
     enabled: true
     default_privacy: "unlisted"   # 테스트 단계는 unlisted 권장
     category_id: "22"             # People & Blogs (설교/종교는 별도 카테고리 없음)
+    # 업로드 후 성과 자동 추적: 주 1회, 최대 track_max_checks회(기본 4회=한달) 조회수/좋아요/댓글을
+    # YouTube Data API로 가져와 feedback.json에 자동 반영한다(사람이 입력한 rating/메모는 보존).
+    track_interval_days: 7
+    track_max_checks: 4
   instagram:
     enabled: false   # Phase C: Meta 앱 심사 후 활성화
   tiktok:

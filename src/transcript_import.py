@@ -224,14 +224,23 @@ def snap_clips_to_reference(clips, aligned: Transcript, reference: Transcript) -
                     return char_time[idx][1]
         return None
 
+    # 역스냅은 비례배분 오차(수초~수십초)를 바로잡는 '미세 보정'일 뿐이다. 그런데 끝 문장의
+    # 짧은 앵커("~습니다" 등 설교에 반복되는 어구)가 클립 밖 먼 지점에 오매칭되면 clip.end가
+    # 몇 분 뒤로 튀어 4분·13분짜리 '쇼츠'가 만들어졌다(실측: 3k01rvZhW_M clip0=237초).
+    # 그래서 추정 위치에서 이 허용범위(초)를 넘게 이동시키는 스냅 결과는 오매칭으로 보고 버린다.
+    SNAP_TOLERANCE_SEC = 40.0
     for clip in clips:
         segs = [s for s in aligned.segments if s.start < clip.end and s.end > clip.start]
         if not segs:
             continue
         new_start = _find(segs[0].text, clip.start, "start")
         new_end = _find(segs[-1].text, clip.end, "end")
-        if new_start is not None:
+        if new_start is not None and abs(new_start - clip.start) <= SNAP_TOLERANCE_SEC:
             clip.start = round(new_start, 2)
-        if new_end is not None and new_end > clip.start + 1.0:
+        if (
+            new_end is not None
+            and new_end > clip.start + 1.0
+            and abs(new_end - clip.end) <= SNAP_TOLERANCE_SEC
+        ):
             clip.end = round(new_end, 2)
     return clips

@@ -92,6 +92,7 @@ class StageProgress:
         self._min_floor = min_floor  # finish() 전까지 넘지 않을 상한(거짓 100% 방지)
         self._stage_start = time.time()
         self._last_pct = 0.0
+        self._overrun_sec = 0.0  # 예상시간을 넘겨 진행률이 0.95에 고정된 뒤 실제 경과시간(초)
         self._lock = threading.RLock()
         self._done = threading.Event()
         self._ticker = threading.Thread(target=self._tick, daemon=True)
@@ -109,8 +110,16 @@ class StageProgress:
         pct = min(self._min_floor, gfrac * 100.0)
         pct = max(pct, self._last_pct)  # 단조 증가 보장
         self._last_pct = pct
-        eta = max(0.0, total - done_est)
-        _safe_progress(self._cb, cur.message, pct, eta)
+        # 예상시간을 넘겨 frac이 0.95에 고정되면 eta도 같이 고정돼 "5초 남음"이 몇 분째
+        # 안 바뀌는 것처럼 보인다(실제로는 멈춘 게 아님). 이 경우 거짓 ETA 대신 실제 경과시간을
+        # 메시지에 보여줘 "아직 일하는 중"임을 알린다.
+        if self._overrun_sec > 0:
+            eta = None
+            message = f"{cur.message} (예상보다 오래 걸리는 중... {int(self._overrun_sec)}초 경과)"
+        else:
+            eta = max(0.0, total - done_est)
+            message = cur.message
+        _safe_progress(self._cb, message, pct, eta)
 
     def _tick(self) -> None:
         while not self._done.wait(timeout=0.5):
@@ -120,6 +129,7 @@ class StageProgress:
                 target = min(0.95, elapsed / cur.est)
                 if target > self._frac:
                     self._frac = target
+                self._overrun_sec = max(0.0, elapsed - cur.est)
                 self._emit_locked()
 
     def set_fraction(self, frac: float, message: str | None = None) -> None:
@@ -127,6 +137,7 @@ class StageProgress:
             if message:
                 self._stages[self._i].message = message
             self._frac = max(self._frac, min(1.0, frac))
+            self._overrun_sec = 0.0  # 실제 진행률 콜백이 왔으니 더는 opaque 초과 상태가 아님
             self._emit_locked()
 
     def set_current_est(self, est_seconds: float) -> None:
@@ -146,6 +157,7 @@ class StageProgress:
             if self._i < len(self._stages) - 1:
                 self._i += 1
                 self._frac = 0.0
+                self._overrun_sec = 0.0
                 self._stage_start = time.time()
                 if message:
                     self._stages[self._i].message = message
@@ -338,11 +350,21 @@ def analyze(
             min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
             categories=h["categories"],
             feedback_block=feedback_block,
+            model=h.get("model", ""),  # 기본 sonnet(config) — 하이라이트 선정 비용 절감
         )
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
             sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")
             clips = snap_clips_to_reference(clips, transcript, snap_reference)
+        # 안전망: 스냅(또는 다른 후처리)이 경계를 늘려 길이 상한을 넘긴 클립을 최종적으로 제외한다.
+        # _validate_and_build_clips의 상한은 스냅 '이전'에만 적용되므로, 여기서 한 번 더 막는다.
+        hard_max = h["max_duration_sec"] * 1.5
+        kept = [c for c in clips if (c.end - c.start) <= hard_max]
+        if len(kept) != len(clips):
+            for c in clips:
+                if (c.end - c.start) > hard_max:
+                    print(f"[main] 스냅 후 과확장 클립 제외: {c.end - c.start:.0f}초 (상한 {hard_max:.0f}초) - {c.title!r}")
+            clips = kept
         save_clips_json(clips, clips_path)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -19,6 +20,7 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 from src.feedback import PerformanceRecord, upsert_feedback
 from src.highlights import load_clips_json, save_clips_json
 from src.main import analyze, render_selected, render_signature
+from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
 app = Flask(__name__)
 OUTPUT_ROOT = Path("output")
@@ -122,6 +124,17 @@ BASE_STYLE = """
     color: #fff; background: var(--accent); border: none; border-radius: 10px; cursor: pointer;
   }
   .fb-saved { font-size: 12.5px; color: #12b886; font-weight: 600; margin-left: 10px; }
+  /* YouTube 업로드 */
+  .yt-upload { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .yt-upload-btn {
+    padding: 9px 14px; font-size: 13px; font-weight: 600; font-family: inherit;
+    border: 1.5px solid var(--accent); border-radius: 10px; background: #fff; color: var(--accent); cursor: pointer;
+  }
+  .yt-upload-btn:disabled { opacity: 0.6; cursor: default; }
+  .yt-status { font-size: 12.5px; color: var(--text-muted); }
+  .yt-link { font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; }
+  .yt-link:hover { text-decoration: underline; }
+  .yt-track { font-size: 12px; color: var(--text-faint); }
   button.primary {
     width: 100%; margin-top: 16px; padding: 16px; font-size: 15px; font-weight: 600;
     font-family: inherit; color: #fff; background: var(--accent); border: none;
@@ -195,9 +208,13 @@ INDEX_TEMPLATE = f"""
     <form id="f">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
       <textarea id="transcript" rows="6" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다.&#10;· 권장: 유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사, 또는 SRT/VTT&#10;· 순수 텍스트(노트북LM 등)도 가능하나, 정확한 클립 시간을 위해 유튜브 자동자막에 자동 정렬합니다."></textarea>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="force"> 새로 분석 (저장된 후보 무시하고 다시 뽑기)
+      </label>
       <button class="primary" type="submit">분석 시작</button>
     </form>
-    <p class="hint">링크를 넣을 때마다 항상 새로 분석합니다. 자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용해요.</p>
+    <p class="hint">같은 영상은 저장된 후보를 재사용해 사용량을 아낍니다. 새로 뽑고 싶을 때만 위 '새로 분석'을 체크하세요.
+    자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용해요. (자막을 붙여넣으면 항상 새로 분석합니다.)</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -208,7 +225,7 @@ f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   const url = document.getElementById('url').value;
   const transcript_text = document.getElementById('transcript').value;
-  const force = true;  // 링크 넣을 때마다 항상 새로 분석
+  const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중...';
   const res = await fetch('/analyze', {{
@@ -365,15 +382,7 @@ CANDIDATES_TEMPLATE = f"""
     <h3 class="title">{{{{ c.title }}}}</h3>
     <p class="caption">{{{{ c.caption }}}}</p>
     <p class="hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
-    {{% if c.hook_score is not none %}}
-    <div class="subscores">
-      {{% for lbl, val in [('훅', c.hook_score), ('리텐션', c.retention_score), ('감정', c.emotion_score), ('공감', c.relatability_score), ('마무리', c.payoff_score), ('인용각', c.quotability_score)] %}}
-      {{% if val is not none %}}
-      <span class="subscore" title="{{{{ lbl }}}} {{{{ val }}}}/10">{{{{ lbl }}}} <span class="sbar"><i style="width: {{{{ (val * 10)|int }}}}%"></i></span> <b>{{{{ "%.0f"|format(val) }}}}</b></span>
-      {{% endif %}}
-      {{% endfor %}}
-    </div>
-    {{% endif %}}
+    {{# 세부 축(훅·리텐션·감정 등) 막대는 사용자에게 직접 노출하지 않는다(내부 우선순위 도구일 뿐). #}}
     <div class="cand-foot">
       <button type="button" class="reason-toggle" aria-expanded="false">왜 추천하나요? <span class="chev">▾</span></button>
       <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
@@ -385,6 +394,21 @@ CANDIDATES_TEMPLATE = f"""
       <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4" download>⬇ 영상 저장</a>
     {{% endif %}}
     </div>
+    {{% if c.rendered %}}
+    <div class="yt-upload" data-idx="{{{{ loop.index0 }}}}">
+      {{% if c.youtube_id %}}
+      <a class="yt-link" href="https://youtu.be/{{{{ c.youtube_id }}}}" target="_blank" rel="noopener">▶ YouTube에서 보기</a>
+      <span class="yt-track">
+        {{% if c.upload_done %}}자동 성과 체크 완료 (4/4주)
+        {{% elif c.upload_max_checks %}}자동 성과 체크 진행 중 ({{{{ c.upload_checks_done }}}}/{{{{ c.upload_max_checks }}}}주, 매주 자동 확인)
+        {{% endif %}}
+      </span>
+      {{% else %}}
+      <button type="button" class="yt-upload-btn">YouTube에 업로드</button>
+      <span class="yt-status"></span>
+      {{% endif %}}
+    </div>
+    {{% endif %}}
     <details class="fb" data-idx="{{{{ loop.index0 }}}}" data-title="{{{{ c.title|e }}}}">
       <summary>📊 실제 성과 입력 (올린 뒤 조회수·반응을 적으면 다음 선정이 똑똑해져요)</summary>
       <div class="fb-grid">
@@ -490,6 +514,28 @@ CANDIDATES_TEMPLATE = f"""
       var saved = fb.querySelector('.fb-saved');
       if (res.ok) {{ saved.hidden = false; setTimeout(() => {{ saved.hidden = true; }}, 2500); }}
       else {{ alert('저장 실패'); }}
+    }});
+  }});
+
+  // YouTube 업로드 버튼: 눌러 업로드되면 이후 성과는 주 1회 최대 4주 자동으로 체크된다.
+  document.querySelectorAll('.yt-upload').forEach(function(box) {{
+    var btn = box.querySelector('.yt-upload-btn');
+    if (!btn) return;
+    var status = box.querySelector('.yt-status');
+    btn.addEventListener('click', async function() {{
+      btn.disabled = true;
+      status.textContent = '업로드 중... (영상 크기에 따라 시간이 걸릴 수 있어요)';
+      try {{
+        var res = await fetch('/video/{{{{ video_id }}}}/clip/' + box.dataset.idx + '/upload', {{ method: 'POST' }});
+        var data = await res.json();
+        if (!res.ok) throw new Error(data.error || '업로드 실패');
+        status.textContent = '';
+        box.innerHTML = '<a class="yt-link" href="' + data.url + '" target="_blank" rel="noopener">▶ YouTube에서 보기</a>' +
+          '<span class="yt-track">자동 성과 체크 예약됨 (매주, 최대 4주)</span>';
+      }} catch (e) {{
+        btn.disabled = false;
+        status.textContent = '실패: ' + e.message;
+      }}
     }});
   }});
   </script>
@@ -734,6 +780,11 @@ def video_detail(video_id: str):
             mp4.exists() and src.exists()
             and src.read_text(encoding="utf-8").strip() == sig
         )
+        up = find_upload(video_id, i - 1)
+        c.youtube_id = up.youtube_video_id if up else ""
+        c.upload_checks_done = up.checks_done if up else 0
+        c.upload_max_checks = up.max_checks if up else 0
+        c.upload_done = up.done if up else False
 
     return render_template_string(
         CANDIDATES_TEMPLATE,
@@ -857,6 +908,44 @@ def feedback_route(video_id: str):
     )
     upsert_feedback(record)
     return jsonify({"ok": True})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/upload", methods=["POST"])
+def upload_clip_route(video_id: str, idx: int):
+    """렌더된 클립을 YouTube에 업로드하고, 이후 자동 성과 체크(주 1회, 최대 한달)를 예약한다."""
+    from src.upload.youtube import upload_short
+
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "clips.json이 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "invalid index"}), 400
+    clip = clips[idx]
+
+    video_path = OUTPUT_ROOT / video_id / "clips" / f"short_{idx + 1}.mp4"
+    if not video_path.exists():
+        return jsonify({"error": "먼저 이 클립을 렌더링하세요"}), 400
+
+    cfg = _load_config()["upload"]["youtube"]
+    if not cfg.get("enabled", True):
+        return jsonify({"error": "config.yaml에서 upload.youtube가 비활성화돼 있습니다"}), 400
+
+    try:
+        yt_id = upload_short(
+            video_path,
+            title=clip.title or f"{video_id} 쇼츠 {idx + 1}",
+            description=clip.caption,
+            tags=[h.lstrip("#") for h in clip.hashtags],
+            category_id=cfg.get("category_id", "22"),
+            privacy_status=cfg.get("default_privacy", "unlisted"),
+        )
+    except Exception as e:  # noqa: BLE001 - 업로드 실패 사유를 그대로 사용자에게 보여줘야 함
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    record_upload(video_id, idx, yt_id, title=clip.title)
+    return jsonify({"ok": True, "youtube_id": yt_id, "url": f"https://youtu.be/{yt_id}"})
 
 
 @app.route("/media/<video_id>/<int:rank>.mp4")
@@ -1596,5 +1685,24 @@ def clip_preview_frame(video_id: str, idx: int):
     return send_file(out_path)
 
 
+def _tracking_scheduler_loop() -> None:
+    """앱이 켜져 있는 동안 주기적으로 성과 자동 체크를 돌린다(예정일 지난 업로드만 실제로 호출됨).
+    앱이 꺼져 있는 동안 예정일이 지난 건 `python -m src.upload.tracking`(작업 스케줄러)이 대신 처리한다."""
+    while True:
+        try:
+            done = run_due_checks()
+            if done:
+                print(f"[tracking] 자동 성과 체크 {len(done)}건 완료")
+        except Exception:  # noqa: BLE001 - 스케줄러는 죽으면 안 됨, 다음 주기에 재시도
+            traceback.print_exc()
+        time.sleep(6 * 3600)
+
+
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    threading.Thread(target=_tracking_scheduler_loop, daemon=True).start()
+    # use_reloader=False: 리로더(파일 변경 감지 자동재시작)를 끈다. 분석/렌더가 백그라운드
+    # 스레드+서브프로세스로 몇 분씩 걸리는데, 리로더가 프로젝트 폴더 아무 .py 파일 변경에나
+    # 반응해 서버를 재시작하면 진행 중이던 작업(및 메모리 상 _jobs 상태)이 통째로 날아간다
+    # (실제로 겪은 문제: 관련 없는 스크립트 파일이 바뀌었는데도 분석 작업이 끊김).
+    # 코드를 고친 뒤에는 터미널에서 수동으로 재시작해야 한다.
+    app.run(debug=True, use_reloader=False, host="0.0.0.0", port=5000)
