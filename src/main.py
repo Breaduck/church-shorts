@@ -310,17 +310,16 @@ def analyze(
             sp.message("붙여넣은 자막 사용 중...")
             transcript = parse_pasted_transcript(transcript_text, dl.duration_sec)
             if transcript is None:
-                # 타임스탬프가 없는 순수 텍스트 → 유튜브 자동자막 시간축에 정렬해 시간 복원.
-                sp.message("붙여넣은 자막에 시간정보가 없어 유튜브 자막에 정렬 중...")
+                # 타임스탬프가 없는 순수 텍스트(노트북LM 등): 예전엔 비례배분으로 시간을 지어냈는데,
+                # 문장부호·줄바꿈 없는 통짜 텍스트는 세그먼트 1개가 되어 AI가 받은 전사본에
+                # 타임스탬프가 [00:00:00] 하나뿐이었다(실측). 그러면 AI가 내용은 잘 골라도
+                # start/end를 알 길이 없어 아무 데나 찍는다 → 제목-내용 불일치의 근본 원인.
+                # 해법: 시간이 '진짜'인 유튜브 자동자막을 선정용 전사본으로 쓴다. (내용 오탈자는
+                # 선정 판단에 지장 없고, 화면 자막은 어차피 정밀 재전사가 만든다.)
+                sp.message("붙여넣은 자막에 시간정보가 없어 유튜브 자동자막(실제 시각)으로 선정합니다...")
                 reference = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
                 if reference and reference.segments:
-                    transcript = align_plain_text_to_reference(
-                        transcript_text, reference, dl.duration_sec
-                    )
-                    snap_reference = reference
-                    # 참조 자막(실제 발화 시각)을 따로 저장해 둔다. 이 경로의 transcript.json은
-                    # '비례배분된 대략 시간'이라, 렌더 단계의 문장 끝 스냅/정밀전사 실패 폴백이
-                    # 그걸 그대로 쓰면 자막 싱크가 통째로 어긋난다(실측 원인). 렌더는 이 파일을 우선 쓴다.
+                    transcript = reference
                     (video_dir / "transcript_reference.json").write_text(
                         json.dumps(reference.to_json(), ensure_ascii=False, indent=2),
                         encoding="utf-8",
