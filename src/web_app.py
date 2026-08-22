@@ -199,6 +199,15 @@ INDEX_TEMPLATE = f"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>교회 쇼츠 생성기</title>
 {BASE_STYLE}
+<style>
+  .adv {{ margin-top: 12px; }}
+  .adv summary {{
+    cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted);
+    padding: 4px 2px; user-select: none; list-style-position: inside;
+  }}
+  .adv summary:hover {{ color: var(--text); }}
+  .adv-sub {{ font-weight: 500; color: var(--text-faint); margin-left: 4px; }}
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -207,14 +216,16 @@ INDEX_TEMPLATE = f"""
   <div class="card">
     <form id="f">
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
-      <textarea id="transcript" rows="6" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다.&#10;· 권장: 유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사, 또는 SRT/VTT&#10;· 순수 텍스트(노트북LM 등)도 가능하나, 정확한 클립 시간을 위해 유튜브 자동자막에 자동 정렬합니다."></textarea>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
-        <input type="checkbox" id="force"> 새로 분석 (저장된 후보 무시하고 다시 뽑기)
-      </label>
+      <details class="adv">
+        <summary>고급 옵션 <span class="adv-sub">자막 붙여넣기 · 새로 분석</span></summary>
+        <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다. 유튜브 '스크립트 표시' 복사 또는 SRT/VTT 권장."></textarea>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
+          <input type="checkbox" id="force"> 새로 분석 (저장된 후보 무시하고 다시 뽑기)
+        </label>
+      </details>
       <button class="primary" type="submit">분석 시작</button>
     </form>
-    <p class="hint">같은 영상은 저장된 후보를 재사용해 사용량을 아낍니다. 새로 뽑고 싶을 때만 위 '새로 분석'을 체크하세요.
-    자막을 비워두면 유튜브 자동자막(없으면 로컬 전사)을 사용해요. (자막을 붙여넣으면 항상 새로 분석합니다.)</p>
+    <p class="hint">같은 영상은 저장된 후보를 재사용해 사용량을 아껴요.</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -295,9 +306,11 @@ CANDIDATES_TEMPLATE = f"""
   .edit-link {{ font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }}
   .edit-link:hover {{ text-decoration: underline; }}
   .reason {{
-    color: var(--text-muted); font-size: 13px; line-height: 1.65; white-space: pre-line;
     background: #f7f8fa; border-radius: 12px; padding: 13px 15px; margin: 12px 0 0;
   }}
+  .reason-caption {{ color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0 0 8px; }}
+  .reason-hashtags {{ color: var(--text-faint); font-size: 12.5px; margin: 0 0 10px; }}
+  .reason-text {{ color: var(--text-muted); font-size: 13px; line-height: 1.65; white-space: pre-line; margin: 0; }}
   video {{ width: 100%; max-width: 260px; border-radius: 14px; background: #000; margin-top: 14px; display: block; }}
   .actions {{ position: sticky; bottom: 20px; margin-top: 24px; }}
   .actions button {{ box-shadow: 0 8px 24px rgba(49, 130, 246, 0.35); }}
@@ -380,14 +393,16 @@ CANDIDATES_TEMPLATE = f"""
       </label>
     </div>
     <h3 class="title">{{{{ c.title }}}}</h3>
-    <p class="caption">{{{{ c.caption }}}}</p>
-    <p class="hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
-    {{# 세부 축(훅·리텐션·감정 등) 막대는 사용자에게 직접 노출하지 않는다(내부 우선순위 도구일 뿐). #}}
+    {{# 캡션·해시태그·추천 이유는 기본으로 접어 화면을 조용하게 유지한다(제목이 주인공). #}}
     <div class="cand-foot">
-      <button type="button" class="reason-toggle" aria-expanded="false">왜 추천하나요? <span class="chev">▾</span></button>
+      <button type="button" class="reason-toggle" aria-expanded="false">상세 보기 <span class="chev">▾</span></button>
       <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
     </div>
-    <p class="reason" hidden>{{{{ c.reason }}}}</p>
+    <div class="reason" hidden>
+      <p class="reason-caption">{{{{ c.caption }}}}</p>
+      <p class="reason-hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
+      <p class="reason-text">{{{{ c.reason }}}}</p>
+    </div>
     <div class="cand-video" id="candvid-{{{{ loop.index0 }}}}">
     {{% if c.rendered %}}
       <video controls src="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4"></video>
@@ -409,8 +424,10 @@ CANDIDATES_TEMPLATE = f"""
       {{% endif %}}
     </div>
     {{% endif %}}
+    {{% if c.rendered %}}
+    {{# 성과 입력은 실제로 만든(렌더된) 클립에서만 의미가 있다 — 안 만든 후보 카드는 조용하게. #}}
     <details class="fb" data-idx="{{{{ loop.index0 }}}}" data-title="{{{{ c.title|e }}}}">
-      <summary>📊 실제 성과 입력 (올린 뒤 조회수·반응을 적으면 다음 선정이 똑똑해져요)</summary>
+      <summary>📊 실제 성과 입력 (업로드 후 조회수는 매주 자동 수집돼요 — 느낀 점만 적어도 충분)</summary>
       <div class="fb-grid">
         <div><label>조회수</label><input type="number" class="fb-views" min="0" placeholder="예: 12000"></div>
         <div><label>평균 조회율(%)</label><input type="number" class="fb-ret" min="0" max="100" placeholder="예: 45"></div>
@@ -431,6 +448,7 @@ CANDIDATES_TEMPLATE = f"""
       <button type="button" class="fb-save">성과 저장</button>
       <span class="fb-saved" hidden>저장됨 ✓</span>
     </details>
+    {{% endif %}}
   </div>
   {{% endfor %}}
   <div class="actions">
@@ -486,7 +504,7 @@ CANDIDATES_TEMPLATE = f"""
       var willOpen = reason.hidden;
       reason.hidden = !willOpen;
       btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-      btn.firstChild.textContent = willOpen ? '분석 접기 ' : '왜 추천하나요? ';
+      btn.firstChild.textContent = willOpen ? '접기 ' : '상세 보기 ';
     }});
   }});
 

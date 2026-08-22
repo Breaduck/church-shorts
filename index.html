@@ -3,100 +3,74 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>교회 쇼츠 편집기 여는 중…</title>
+<title>교회 쇼츠 편집기</title>
 <style>
   :root {
-    --bg: #f7f7f5; --fg: #1c1c1a; --muted: #6b6b64;
-    --card: #ffffff; --border: #e4e3de; --accent: #b45309;
+    --bg: #f7f8fa; --card: #ffffff; --text: #191f28; --muted: #6b7684;
+    --faint: #8b95a1; --accent: #3182f6; --accent-hover: #1b64da; --border: #f0f1f3;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#171715; --fg:#ececea; --muted:#9a9a92; --card:#201f1d; --border:#34332f; --accent:#f2a65a; }
+    :root { --bg:#151617; --card:#1f2123; --text:#ececea; --muted:#9a9aa2;
+            --faint:#77777e; --accent:#5aa2ff; --accent-hover:#7ab4ff; --border:#2e3033; }
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
     line-height: 1.6; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 520px; padding: 40px 24px; text-align: center; }
-  h1 { font-size: 1.5rem; margin: 0 0 10px; }
-  p { color: var(--muted); margin: 0 0 20px; }
-  .spinner {
-    width: 42px; height: 42px; margin: 0 auto 24px;
-    border: 4px solid var(--border); border-top-color: var(--accent);
-    border-radius: 50%; animation: spin 0.9s linear infinite;
+  .card {
+    background: var(--card); border-radius: 24px; max-width: 420px; width: calc(100% - 40px);
+    padding: 40px 32px; text-align: center;
+    box-shadow: 0 2px 8px rgba(15,23,42,.04), 0 1px 2px rgba(15,23,42,.03);
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .logo { font-size: 40px; margin-bottom: 14px; }
+  h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 8px; }
+  p { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
   .btn {
-    display: inline-block; background: var(--accent); color: #fff; border: none;
-    border-radius: 10px; padding: 14px 28px; font-size: 1.05rem; font-weight: 600;
-    cursor: pointer; text-decoration: none;
+    display: block; width: 100%; background: var(--accent); color: #fff;
+    border: none; border-radius: 14px; padding: 16px; font-size: 15px; font-weight: 600;
+    cursor: pointer; text-decoration: none; transition: background .15s;
   }
-  .btn:hover { filter: brightness(1.05); }
+  .btn:hover { background: var(--accent-hover); }
+  .state { font-size: 12.5px; color: var(--faint); margin: 16px 0 0; }
+  .state .ok { color: #12b886; font-weight: 600; }
   code {
-    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-    padding: 3px 8px; font-size: 0.95rem;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 7px; font-size: 12px;
   }
-  .hidden { display: none; }
-  .hint { font-size: 0.9rem; margin-top: 22px; }
-  a { color: var(--accent); }
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <!-- 편집기가 켜져 있으면: 자동 이동 중 표시 -->
-    <div id="loading">
-      <div class="spinner"></div>
-      <h1>편집기를 여는 중…</h1>
-      <p>로컬 편집기로 자동 이동합니다.</p>
-    </div>
-
-    <!-- 편집기가 꺼져 있으면: 실행 안내 -->
-    <div id="offline" class="hidden">
-      <h1>편집기가 꺼져 있어요</h1>
-      <p>프로젝트 폴더의 <code>편집기.bat</code> 을 더블클릭해 켠 뒤<br>아래 버튼을 누르세요.</p>
-      <a class="btn" id="openBtn" href="http://localhost:5000/">편집기 열기</a>
-      <p class="hint">켜져 있다면 자동으로 넘어갑니다. 계속 이 화면이면 편집기가 아직 안 뜬 상태예요.<br>
-        다른 기기(폰 등)에서 쓰려면 터널 주소가 필요합니다.</p>
-    </div>
+  <div class="card">
+    <div class="logo">🎬</div>
+    <h1>교회 쇼츠 편집기</h1>
+    <p>편집기는 이 PC 안에서 실행돼요.<br>아래 버튼을 누르면 편집기가 열립니다.</p>
+    <a class="btn" href="http://localhost:5000/">편집기 열기</a>
+    <p class="state" id="state">꺼져 있다면 프로젝트 폴더의 <code>편집기.bat</code> 을 더블클릭해 켜주세요.</p>
   </div>
 
 <script>
-  // 로컬 편집기 주소 후보(같은 PC에서 접속하는 경우). Flask web_app.py 기본 포트 5000.
-  var TARGETS = ["http://localhost:5000/", "http://127.0.0.1:5000/"];
-
-  // 편집기가 실제로 응답하는지 확인. no-cors라 성공하면 resolve(opaque), 꺼져 있으면 reject.
-  // (브라우저는 localhost/127.0.0.1을 mixed-content 예외로 허용 — https 페이지에서도 조회 가능)
-  function reachable(url) {
+  // 편집기가 켜져 있으면 자동으로 넘어간다. 단, 최신 크롬은 https 페이지에서 localhost
+  // 감지(fetch)를 보안 정책(Local Network Access)으로 막을 수 있어 감지 실패가 "꺼짐"을
+  // 뜻하지 않는다 — 그래서 버튼은 항상 즉시 보여주고, 감지는 되면 좋은 보너스로만 쓴다.
+  // (버튼의 직접 이동(top-level navigation)은 정책과 무관하게 항상 동작한다.)
+  var stateEl = document.getElementById("state");
+  function probe() {
     return new Promise(function (resolve) {
       var done = false;
       var t = setTimeout(function () { if (!done) { done = true; resolve(false); } }, 1500);
-      fetch(url, { mode: "no-cors", cache: "no-store" })
+      fetch("http://localhost:5000/", { mode: "no-cors", cache: "no-store" })
         .then(function () { if (!done) { done = true; clearTimeout(t); resolve(true); } })
         .catch(function () { if (!done) { done = true; clearTimeout(t); resolve(false); } });
     });
   }
-
-  async function findEditor() {
-    for (var i = 0; i < TARGETS.length; i++) {
-      if (await reachable(TARGETS[i])) return TARGETS[i];
-    }
-    return null;
-  }
-
-  async function tryGo() {
-    var url = await findEditor();
-    if (url) { window.location.replace(url); return true; }
-    return false;
-  }
-
-  // 진입 시: 편집기 켜져 있으면 즉시 이동, 아니면 안내 화면 + 2.5초마다 자동 재확인.
-  // ('편집기 열기'는 실제 <a> 링크라, 프로브가 브라우저에 막혀도 클릭하면 바로 이동한다.)
   (async function () {
-    if (await tryGo()) return;
-    document.getElementById("loading").classList.add("hidden");
-    document.getElementById("offline").classList.remove("hidden");
-    setInterval(tryGo, 2500);
+    if (await probe()) {
+      stateEl.innerHTML = '<span class="ok">편집기 켜짐</span> — 자동으로 이동합니다…';
+      setTimeout(function () { window.location.replace("http://localhost:5000/"); }, 400);
+    }
   })();
 </script>
 </body>
