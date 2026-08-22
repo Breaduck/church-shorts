@@ -447,8 +447,33 @@ def _is_sentence_final(text: str) -> bool:
     return t.endswith(endings)
 
 
+def _snap_clip_start_to_sentence(
+    clip: Clip, segs: list[Segment], max_back: float = 4.0, tail_max: float = 3.0
+) -> float:
+    """clip.start가 문장 중간에 떨어지는 어색함을 잡는다 (실측: 클립이 앞 문장의 꼬리
+    '…되기를 축원합니다 아멘'으로 시작). 정밀 전사(문장 단위 세그먼트)를 기준으로:
+      - 시작이 문장 초입이면(문장 시작이 max_back초 이내 앞) → 문장 시작으로 살짝 당긴다.
+      - 시작이 문장 꼬리면(남은 길이 tail_max초 이하) → 다음 문장 시작으로 민다(꼬리 제거).
+    반드시 clip.start 이전(START_BUFFER)까지 포함해 전사한 세그먼트를 넘겨야 당기기가 가능하다."""
+    ordered = sorted(segs, key=lambda s: s.start)
+    for i, seg in enumerate(ordered):
+        if seg.start <= clip.start <= seg.end:
+            into = clip.start - seg.start
+            remain = seg.end - clip.start
+            if 0.35 <= into <= max_back and into <= remain:
+                return seg.start
+            if remain <= tail_max and i + 1 < len(ordered):
+                nxt = ordered[i + 1].start
+                if nxt < clip.end - 5.0:  # 클립이 사실상 사라질 정도로 밀지는 않는다
+                    return nxt
+            return clip.start
+        if seg.start > clip.start:
+            break
+    return clip.start
+
+
 def _snap_clip_end_to_sentence(
-    clip: Clip, segs: list[Segment], max_extend: float = 3.0, pause_gap: float = 0.35
+    clip: Clip, segs: list[Segment], max_extend: float = 6.0, pause_gap: float = 0.35
 ) -> float:
     """Claude가 대략 지정한 clip.end가 문장/발화 중간을 잘라 "말이 안 끝났는데 뚝 끊기는"
     문제를 막는다. clip.end가 발화 중간이면 그 발화가 끝나는 곳까지만 살짝 늘린다.
@@ -588,7 +613,8 @@ def render_selected(
             )
     w = cfg["whisper"]
     outputs = []
-    END_BUFFER_SEC = 5.0  # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
+    END_BUFFER_SEC = 8.0    # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
+    START_BUFFER_SEC = 4.0  # clip.start 앞도 전사해, 시작이 문장 중간이면 문장 시작으로 당긴다
 
     # 정밀 재전사가 이따금 한두 단어만 뱉고 사실상 실패할 때가 있다(자막이 통째로 비는
     # 치명적 결과 — 실제로 겪음). 그럴 때 폴백할 원본 전사(유튜브 자동자막/medium)를 미리 로드.
@@ -659,7 +685,9 @@ def render_selected(
         # 같은 구간을 이미 정밀 재전사했다면 재사용한다. 편집기에서 제목/폰트/위치만 바꿔
         # 재렌더할 때도 클립당 1~3분짜리 large-v3 CPU 재전사를 매번 다시 돌리던 것이
         # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
-        cached_segs = _precise_cache_find(cache_dir, precise_model, clip.start, clip.end)
+        tr_a = max(0.0, clip.start - START_BUFFER_SEC)
+        tr_b = clip.end + END_BUFFER_SEC
+        cached_segs = _precise_cache_find(cache_dir, precise_model, tr_a, clip.end)
         if cached_segs is not None:
             progress(f"[{idx+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
             segs = cached_segs
@@ -672,7 +700,7 @@ def render_selected(
             # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
             def _precise(vad: bool) -> list[Segment]:
                 return transcribe_clip_precise(
-                    video_path, clip.start, clip.end + END_BUFFER_SEC,
+                    video_path, tr_a, tr_b,
                     model_size=precise_model,
                     device=w["device"], compute_type=w["compute_type"],
                     language=w["language"], vad_filter=vad,
@@ -700,7 +728,10 @@ def render_selected(
             # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
             # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
             # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
-            weak = (precise_n < max(3, int(base_n * 0.5))) if base_n >= 5 else (precise_n == 0)
+            # 판정 여유: 정밀 전사는 실제 발화만 세고 base(유튜브 자막)는 롤링 중복·추임새가 섞여
+            # 단어 수가 부풀기 쉽다. 50%로 잡으면 멀쩡한 정밀 자막이 51 vs 50처럼 아슬아슬하게
+            # 버려지는 사고가 난다(실측) - 35%면 "진짜 부실"만 걸러진다.
+            weak = (precise_n < max(3, int(base_n * 0.35))) if base_n >= 5 else (precise_n == 0)
             if weak and vad_default:
                 try:
                     segs2 = _run_with_progress_ticker(
@@ -714,25 +745,32 @@ def render_selected(
                 except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
                     pass
             # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
-            if base_n >= 5 and precise_n < max(3, int(base_n * 0.5)):
+            if base_n >= 5 and precise_n < max(3, int(base_n * 0.35)):
                 progress(
                     f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
                     base + step * 0.5,
                 )
-                _rlog(video_dir, f"clip{idx} 폴백: precise {precise_n}단어 < base {base_n}단어의 절반")
+                _rlog(video_dir, f"clip{idx} 폴백: precise {precise_n}단어 < base {base_n}단어의 35%")
                 segs = base_segments
             elif segs and precise_n > 0:
                 _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
                 # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
-                _precise_cache_save(
-                    cache_dir, precise_model, clip.start, clip.end + END_BUFFER_SEC, segs
-                )
-        # 스냅은 반드시 신뢰도 높은 원본 전사로 판단한다(정밀 재전사는 실패 시 세그먼트가
-        # 비어 문장 끝 감지가 무력화됨). 원본이 없을 때만 정밀 결과로 폴백.
-        # 사용자가 직접 구간을 자른 경우(trimmed)엔 자동 확장하지 않는다.
+                _precise_cache_save(cache_dir, precise_model, tr_a, tr_b, segs)
+        # 경계 스냅 기준: 정밀 전사가 건강하면 그것을 쓴다 — large-v3는 구두점 있는 진짜
+        # 문장 단위라 "문장 중간 끊김/앞 문장 꼬리 시작"을 정확히 잡는다. 유튜브 자막 조각
+        # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
+        # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
+        used_precise = bool(segs) and (segs is not base_segments)
         if not getattr(clip, "trimmed", False):
-            new_end = _snap_clip_end_to_sentence(clip, base_segments or segs)
+            snap_src = segs if used_precise else (base_segments or segs)
+            if used_precise:
+                new_start = _snap_clip_start_to_sentence(clip, snap_src)
+                if new_start != clip.start:
+                    _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
+                    clip.start = new_start
+            new_end = _snap_clip_end_to_sentence(clip, snap_src)
             if new_end != clip.end:
+                _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
                 clip.end = new_end
             # 길이 절대 규칙: 쇼츠는 1분 내외. 스냅까지 끝난 최종 길이가 상한(max+5초)을
             # 넘으면 끝(펀치라인)은 지키고 시작을 당겨 상한 안으로 넣는다. 선정 단계의
