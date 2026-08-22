@@ -51,8 +51,10 @@ highlights:
   mode: "auto"              # "auto" = claude -p 서브프로세스 자동 호출 / "manual" = 이 세션에서 수동 선정
   # 하이라이트 선정에 쓸 모델. 이 단계는 전사본을 읽고 판단하는 작업이라 Sonnet으로 충분하고,
   # Opus 대비 토큰 비용이 몇 배 저렴하다. 빈 값("")이면 claude CLI 기본 모델을 따른다(예전 동작).
-  # 예전보다 비용이 확 늘었다면 CLI 기본이 Opus로 바뀐 탓 — 여기서 sonnet으로 못박아 되돌린다.
-  model: "sonnet"
+  # 주의: 별칭 "sonnet"은 CLI가 최신 세대(Sonnet 5)로 연결하는데, Sonnet 5는 장문 분석에서
+  # 기본으로 수 분씩 '생각(thinking)'해 선정이 4~7분까지 늘어진다(실측: ttft 261초/총 279초,
+  # 미니 프롬프트는 5초 → 계정·API 문제 아님). 예전처럼 빠르던 4.5 세대로 명시 고정한다(실측 정상).
+  model: "claude-sonnet-4-5"
   min_clips: 3
   max_clips: 5
   min_duration_sec: 20
