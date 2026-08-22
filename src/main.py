@@ -238,7 +238,9 @@ def analyze(
         _Stage("download", "영상 다운로드 중...", est=40),
         _Stage("transcript", "자막 준비 중...", est=12),
         _Stage("hints", "핵심 구간 분석 중...", est=15),
-        _Stage("highlight", "하이라이트 후보 선정 중...", est=90),
+        # 하이라이트 선정(claude -p)은 설교 전체를 읽는 단계라 실측 2~5분 걸린다. est를 90초로
+        # 잡으면 바가 일찍 95~97%에 붙어 "멈췄다"고 오해하게 만든다(실제 사용자 불만).
+        _Stage("highlight", "하이라이트 후보 선정 중...", est=240),
     ]
     sp = StageProgress(progress, stages)
     try:
@@ -350,7 +352,7 @@ def analyze(
             )
 
         # 4) 하이라이트 선정 (opaque: 티커가 부드럽게 채움) ---------------------
-        sp.advance("하이라이트 후보 선정 중 (AI 분석)...")
+        sp.advance("AI가 설교 전체를 읽으며 하이라이트 선정 중 (보통 2~5분 걸려요)...")
         clips = select_highlights_auto(
             transcript=transcript, peak_hints=peak_hints,
             min_clips=h["min_clips"], max_clips=h["max_clips"],
