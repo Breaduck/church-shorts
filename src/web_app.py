@@ -264,14 +264,17 @@ f.addEventListener('submit', async (e) => {{
   const transcript_text = document.getElementById('transcript').value;
   const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
   statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중... (하이라이트 선정은 AI가 전체를 읽고 고르는 단계라 보통 2~5분 걸려요. 다시 누르지 않아도 자동으로 진행됩니다)';
+  statusEl.innerHTML = '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
   try {{
     const res = await fetch('/analyze', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force}})
     }});
     const data = await res.json();
     if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }}
-    window.location = '/video/' + data.video_id;
+    // 진행률(%)과 ETA는 영상 진행바 페이지에서 폴링으로 실시간 표시된다. 링크만 넣어도
+    // 이 페이지로 즉시 이동해 %가 바로 보이게 한다(예전엔 이 인덱스 문구에 %가 없어
+    // "몇 %인지 안 나온다"는 오해가 있었다).
+    window.location.replace('/video/' + data.video_id);
   }} catch (err) {{
     statusEl.innerText = '오류: ' + err;
     submitBtn.disabled = false;
@@ -399,9 +402,9 @@ CANDIDATES_TEMPLATE = f"""
     </div>
     <div class="stepper">
       <div class="rail"><div class="rail-fill"></div></div>
-      <div class="step" data-min="0" data-max="30"><span class="dot"></span><span class="lbl">다운로드</span></div>
-      <div class="step" data-min="30" data-max="75"><span class="dot"></span><span class="lbl">전사</span></div>
-      <div class="step" data-min="75" data-max="100"><span class="dot"></span><span class="lbl">하이라이트 선정</span></div>
+      <div class="step" data-min="0" data-max="10"><span class="dot"></span><span class="lbl">다운로드</span></div>
+      <div class="step" data-min="10" data-max="30"><span class="dot"></span><span class="lbl">전사</span></div>
+      <div class="step" data-min="30" data-max="100"><span class="dot"></span><span class="lbl">하이라이트 선정</span></div>
     </div>
   </div>
   {{% else %}}

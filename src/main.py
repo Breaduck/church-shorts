@@ -67,12 +67,19 @@ def render_signature(start: float, end: float) -> str:
 
 
 class _Stage:
-    __slots__ = ("key", "message", "est")
+    __slots__ = ("key", "message", "est", "span")
 
-    def __init__(self, key: str, message: str, est: float):
+    def __init__(self, key: str, message: str, est: float, span: float | None = None):
         self.key = key
         self.message = message
         self.est = max(1.0, float(est))
+        # span: 이 단계가 진행바에서 차지하는 '시각적 폭'(%). est(예상초)와 분리한다.
+        # 예전엔 pct를 est 비율로 채웠는데, 준비 단계(다운로드/전사)는 est는 작지만 순식간에
+        # 끝나고 하이라이트 선정(est 큼)만 몇 분 걸려서, 정작 선정 중인데 바가 14%에 있고
+        # 스텝 라벨은 '다운로드'를 가리키는 심각한 불일치가 났다(사용자: "퍼센트 너무 부정확").
+        # span을 스텝 라벨 구간과 일치시켜 "지금 몇% = 지금 무슨 단계"가 항상 맞게 한다.
+        # span 미지정 시 est로 폴백(하위호환).
+        self.span = float(span) if span is not None else self.est
 
 
 class StageProgress:
@@ -100,18 +107,21 @@ class StageProgress:
         self._ticker = threading.Thread(target=self._tick, daemon=True)
         self._ticker.start()
 
-    def _total_est(self) -> float:
-        return sum(s.est for s in self._stages) or 1.0
+    def _total_span(self) -> float:
+        return sum(s.span for s in self._stages) or 1.0
 
     def _emit_locked(self) -> None:
         cur = self._stages[self._i]
-        completed = sum(s.est for s in self._stages[: self._i])
-        done_est = completed + cur.est * self._frac
-        total = self._total_est()
-        gfrac = min(1.0, done_est / total)
+        # 진행바 %는 '시각적 폭(span)' 기준 — 스텝 라벨 구간과 일치해 "몇% = 무슨 단계"가 맞는다.
+        span_done = sum(s.span for s in self._stages[: self._i]) + cur.span * self._frac
+        gfrac = min(1.0, span_done / self._total_span())
         pct = min(self._min_floor, gfrac * 100.0)
         pct = max(pct, self._last_pct)  # 단조 증가 보장
         self._last_pct = pct
+        # ETA는 '남은 예상초' 기준(span과 별개). 현재 단계의 남은 몫 + 이후 단계 est 합.
+        remaining_est = cur.est * (1.0 - self._frac) + sum(
+            s.est for s in self._stages[self._i + 1 :]
+        )
         # 예상시간을 넘겨 frac이 0.95에 고정되면 eta도 같이 고정돼 "5초 남음"이 몇 분째
         # 안 바뀌는 것처럼 보인다(실제로는 멈춘 게 아님). 이 경우 거짓 ETA 대신 실제 경과시간을
         # 메시지에 보여줘 "아직 일하는 중"임을 알린다.
@@ -119,7 +129,7 @@ class StageProgress:
             eta = None
             message = f"{cur.message} (예상보다 오래 걸리는 중... {int(self._overrun_sec)}초 경과)"
         else:
-            eta = max(0.0, total - done_est)
+            eta = max(0.0, remaining_est)
             message = cur.message
         _safe_progress(self._cb, message, pct, eta)
 
@@ -269,12 +279,17 @@ def analyze(
 
     # 각 단계 예상시간(초). 실제 소요와 다르면 런타임에 보정한다(다운로드 %/전사 %/전사 분기).
     # 다운로드는 크리티컬 패스에서 뺐다(메타데이터만 몇 초 확인, 실제 파일은 백그라운드).
+    # span = 진행바 시각적 폭(%), est = 예상초(ETA용). 준비 3단계는 순식간에 끝나므로
+    # 시각 폭을 좁게(합 30%) 주고, 실제로 몇 분 걸리는 하이라이트 선정에 70%를 준다 →
+    # "지금 30%면 선정 중"처럼 %와 단계 라벨이 항상 일치한다. 스텝 라벨 구간(웹): 다운로드
+    # 0-10, 전사 10-30, 하이라이트 선정 30-100 과 정확히 맞춘다.
     stages = [
-        _Stage("download", "영상 정보 확인 중...", est=8),
-        _Stage("transcript", "자막 준비 중...", est=12),
-        _Stage("hints", "핵심 구간 분석 중...", est=5),
-        # 하이라이트 선정(claude -p): sonnet-4.5 + thinking 상한 + 축소 출력 기준 실측 목표 ~2분.
-        _Stage("highlight", "하이라이트 후보 선정 중...", est=150),
+        _Stage("download", "영상 정보 확인 중...", est=8, span=10),
+        _Stage("transcript", "자막 준비 중...", est=12, span=15),
+        _Stage("hints", "핵심 구간 분석 중...", est=5, span=5),
+        # 하이라이트 선정(claude -p): sonnet + thinking 상한 기준 보통 2~4분. ETA가 자주
+        # 0에 붙어 "예상보다 오래 걸리는 중"으로 새는 것보단 살짝 넉넉히(190s) 잡아 카운트다운.
+        _Stage("highlight", "하이라이트 후보 선정 중...", est=190, span=70),
     ]
     sp = StageProgress(progress, stages)
     try:
