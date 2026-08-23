@@ -80,10 +80,27 @@ def _collect_words_in_range(
 
 
 def _lines_from_overrides(
-    caption_overrides: list, clip_start: float
+    caption_overrides: list, clip_start: float, clip_words: list["Word"] | None = None
 ) -> list[CaptionLine]:
     """사용자가 편집기에서 확정한 자막 라인({start,end,text} 절대초)을 화면용 라인으로 변환한다.
-    라인 텍스트를 단어로 쪼개 라인 구간에 균등 분배해, 편집된 자막도 카라오케 강조가 유지되게 한다."""
+
+    카라오케(\\k) 강조 타이밍은 가능하면 '실제 발화 단어 시각'(clip_words: 예: 유튜브
+    json3 참조 전사)을 그대로 빌려 쓴다. 라인 텍스트를 단어 수로 그냥 '균등 분배'하면
+    강조가 실제 목소리 리듬과 무관하게 일정 속도로 쓸고 지나가 "자막이 목소리랑 따로
+    논다/느리다"는 체감이 생긴다(반복 신고된 싱크 문제의 핵심). 그래서:
+      1) 라인 구간에 걸치는 실제 단어 수가 토큰 수와 정확히 일치하면 → 실제 단어 시각을
+         그대로 사용(가장 정확). 표시 텍스트는 편집본을 유지한다.
+      2) 수가 안 맞으면(직접 편집·오인식) → 실제 발화 구간[첫 단어~끝 단어] 안에서 균등 분배.
+      3) 겹치는 실제 단어가 아예 없으면(붙여넣기 등) → 라인 구간에서 균등 분배(옛 동작).
+    """
+    rel_words = (
+        sorted(
+            (Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words),
+            key=lambda w: w.start,
+        )
+        if clip_words
+        else []
+    )
     lines: list[CaptionLine] = []
     for ov in caption_overrides:
         text = _clean_word_text(str(ov.get("text", "")))
@@ -93,12 +110,40 @@ def _lines_from_overrides(
         rel_end = max(rel_start + 0.05, float(ov["end"]) - clip_start)
         toks = text.split()
         n = len(toks) or 1
-        span = (rel_end - rel_start) / n
-        ws = [
-            Word(start=rel_start + i * span, end=rel_start + (i + 1) * span, text=tok)
-            for i, tok in enumerate(toks)
+        # 이 라인 구간에 '발화 중간점'이 들어오는 실제 단어들 (경계는 살짝 여유)
+        window = [
+            w for w in rel_words
+            if rel_start - 0.15 <= (w.start + w.end) / 2 <= rel_end + 0.15
         ]
-        lines.append(CaptionLine(start=rel_start, end=rel_end, words=ws))
+        if window and len(window) == n:
+            # (1) 단어 수 일치 → 실제 시각 그대로. 텍스트는 편집본 유지(철자 교정 존중).
+            ws = [
+                Word(start=w.start, end=max(w.end, w.start + 0.05), text=tok)
+                for w, tok in zip(window, toks)
+            ]
+            lines.append(CaptionLine(
+                start=window[0].start,
+                end=max(window[-1].end, window[0].start + 0.05),
+                words=ws,
+            ))
+        elif window:
+            # (2) 수 불일치 → 최소한 실제 발화 시작~끝 구간 안에서 균등 분배(라인 자체는 목소리에 정렬).
+            a = window[0].start
+            b = max(window[-1].end, a + 0.1)
+            span = (b - a) / n
+            ws = [
+                Word(start=a + i * span, end=a + (i + 1) * span, text=tok)
+                for i, tok in enumerate(toks)
+            ]
+            lines.append(CaptionLine(start=a, end=b, words=ws))
+        else:
+            # (3) 참조 단어 없음 → 라인 구간 균등 분배.
+            span = (rel_end - rel_start) / n
+            ws = [
+                Word(start=rel_start + i * span, end=rel_start + (i + 1) * span, text=tok)
+                for i, tok in enumerate(toks)
+            ]
+            lines.append(CaptionLine(start=rel_start, end=rel_end, words=ws))
     return lines
 
 
@@ -495,7 +540,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
     if caption_overrides:
-        lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
+        lines = _clamp_lines_non_overlap(
+            _lines_from_overrides(caption_overrides, clip_start, clip_words)
+        )
         for line in lines:
             start_t = _ass_time(line.start)
             end_t = _ass_time(line.end)

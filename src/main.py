@@ -836,8 +836,11 @@ def render_selected(
                 clip.end = _snap_clip_end_to_sentence(clip, base_segments)
             out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
             out_path.parent.mkdir(parents=True, exist_ok=True)
+            # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다. base_segments(참조
+            # 전사 = 유튜브 json3의 '실제 발화 시각')를 함께 넘겨, 카라오케 강조가 목소리 리듬을
+            # 따라가도록 한다(빈 [] 를 넘기면 균등 분배가 되어 자막이 목소리와 따로 논다).
             _run_with_progress_ticker(
-                lambda: render_clip(video_path, [], clip, out_path, cfg["render"], cfg["captions"]),
+                lambda: render_clip(video_path, base_segments, clip, out_path, cfg["render"], cfg["captions"]),
                 start_pct=base, end_pct=base + step, progress=progress,
                 message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
                 est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
