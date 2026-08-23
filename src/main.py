@@ -918,6 +918,22 @@ def render_selected(
                     )
                     if _count_words(segs2, clip.start, clip.end) > precise_n:
                         segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
+                        # 이 재시도도 배치 모드(batched=True)라 같은 '구멍' 사고가 재발할 수 있다.
+                        # 단어 수만 보고 그대로 채택하면 구멍이 다시 렌더로 새어나가므로 한 번 더 검사한다.
+                        hole2 = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+                        if hole2 >= 5.0:
+                            _rlog(video_dir, f"clip{idx} VAD끔 재시도도 자막 구멍 {hole2:.1f}초 → 순차 모드 재전사")
+                            try:
+                                segs_seq2 = _run_with_progress_ticker(
+                                    lambda: _precise(False, batched=False),
+                                    start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
+                                    message=f"[{idx+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
+                                    est_seconds=max(30.0, clip_len * 2.2),
+                                )
+                                if _precise_worst_hole(base_segments, segs_seq2, clip.start, clip.end) < hole2:
+                                    segs, precise_n = segs_seq2, _count_words(segs_seq2, clip.start, clip.end)
+                            except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
+                                _rlog(video_dir, f"clip{idx} 2차 순차 재전사 예외: {type(e).__name__}: {e}")
                 except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
                     pass
             # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
