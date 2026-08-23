@@ -228,6 +228,18 @@ INDEX_TEMPLATE = f"""
   }}
   .adv summary:hover {{ color: var(--text); }}
   .adv-sub {{ font-weight: 500; color: var(--text-faint); margin-left: 4px; }}
+  /* 모델 선택(소넷/오푸스) 세그먼트 버튼 */
+  .model-pick {{ margin: 14px 0 4px; }}
+  .model-pick-lbl {{ font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 7px; }}
+  .seg {{ display: flex; gap: 6px; background: var(--border); padding: 4px; border-radius: 12px; }}
+  .seg label {{
+    flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 9px 8px;
+    font-size: 13.5px; font-weight: 700; color: var(--text-muted); transition: background .15s, color .15s, box-shadow .15s;
+  }}
+  .seg label .seg-sub {{ display: block; font-size: 11px; font-weight: 500; color: var(--text-faint); margin-top: 2px; }}
+  .seg input {{ position: absolute; opacity: 0; pointer-events: none; }}
+  .seg label:has(input:checked) {{ background: var(--card); color: var(--accent); box-shadow: 0 1px 4px rgba(15,23,42,.12); }}
+  .seg label:has(input:checked) .seg-sub {{ color: var(--text-muted); }}
 </style>
 </head>
 <body>
@@ -244,6 +256,13 @@ INDEX_TEMPLATE = f"""
           <input type="checkbox" id="force"> 새로 분석 (저장된 후보 무시하고 다시 뽑기)
         </label>
       </details>
+      <div class="model-pick">
+        <div class="model-pick-lbl">하이라이트 선정 AI 모델</div>
+        <div class="seg">
+          <label><input type="radio" name="model" value="claude-sonnet-4-5" checked>소넷<span class="seg-sub">빠름 · 한도 절약 (기본)</span></label>
+          <label><input type="radio" name="model" value="claude-opus-4-8">오푸스<span class="seg-sub">품질 우선 · 한도 더 씀</span></label>
+        </div>
+      </div>
       <button class="primary" type="submit">분석 시작</button>
     </form>
     <p class="hint">같은 영상은 저장된 후보를 재사용해 사용량을 아껴요.</p>
@@ -263,11 +282,12 @@ f.addEventListener('submit', async (e) => {{
   const url = document.getElementById('url').value;
   const transcript_text = document.getElementById('transcript').value;
   const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
+  const model = (f.querySelector('input[name="model"]:checked') || {{}}).value || '';
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
   try {{
     const res = await fetch('/analyze', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force}})
+      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model}})
     }});
     const data = await res.json();
     if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }}
@@ -749,7 +769,8 @@ CANDIDATES_TEMPLATE = f"""
 
 
 def _run_analyze_job(
-    video_id_holder: dict, url: str, transcript_text: str = "", force: bool = False
+    video_id_holder: dict, url: str, transcript_text: str = "", force: bool = False,
+    model: str = "",
 ) -> None:
     try:
         video_dir, clips = analyze(
@@ -759,6 +780,7 @@ def _run_analyze_job(
             ),
             transcript_text=transcript_text,
             force=force,
+            model=model,
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -779,6 +801,12 @@ def analyze_route():
     url = body.get("url", "").strip()
     transcript_text = (body.get("transcript_text") or "").strip()
     force = bool(body.get("force"))
+    # 선정 모델은 UI 라디오(소넷/오푸스)에서 온다. 임의 문자열을 CLI에 넘기지 않도록
+    # 허용 목록으로 제한하고, 벗어나면 빈 값("")으로 둬 analyze()가 config 기본을 쓴다.
+    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8"}
+    model = (body.get("model") or "").strip()
+    if model and model not in _ALLOWED_MODELS:
+        model = ""
     if not url:
         return jsonify({"error": "URL이 비어있습니다"}), 400
 
@@ -803,7 +831,7 @@ def analyze_route():
 
     holder = {"id": video_id}
     threading.Thread(
-        target=_run_analyze_job, args=(holder, url, transcript_text, force), daemon=True
+        target=_run_analyze_job, args=(holder, url, transcript_text, force, model), daemon=True
     ).start()
     return jsonify({"video_id": video_id})
 

@@ -266,7 +266,7 @@ def json_load_transcript(path: Path) -> dict:
 
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
-    transcript_text: str = "", force: bool = False,
+    transcript_text: str = "", force: bool = False, model: str = "",
 ) -> tuple[Path, list[Clip]]:
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
@@ -433,7 +433,8 @@ def analyze(
             min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
             categories=h["categories"],
             feedback_block=feedback_block,
-            model=h.get("model", ""),  # 기본 sonnet(config) — 하이라이트 선정 비용 절감
+            # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
+            model=model or h.get("model", ""),
             transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
         )
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
