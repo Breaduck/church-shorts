@@ -405,9 +405,10 @@ def select_highlights_auto(
     if model:
         cmd += ["--model", model]  # 비우면 CLI 기본 모델(비쌀 수 있음). config에서 4.5로 고정.
     # 실측: 선정 지연의 대부분이 첫 토큰 전 '생각(thinking)'이다(Sonnet 5에서 261초).
-    # 프롬프트가 이미 "한 번 읽고 바로 골라라"를 요구하므로 상한을 빡빡하게 3000으로 잡아
-    # "링크 → 후보 2분 이내" 목표에 맞춘다(품질 영향 최소, 토큰 소모도 감소).
-    env = {**os.environ, "MAX_THINKING_TOKENS": "3000"}
+    # 프롬프트가 이미 "한 번 읽고 바로 골라라"를 요구하므로 상한을 빡빡하게 잡는다.
+    # 3000으로도 전사본 붙여넣기 경로가 4분 20초 걸려(실측 2026-08-23) 1024로 더 조인다 —
+    # 채점 기준·형식이 프롬프트에 전부 명시돼 있어 긴 사고가 필요 없는 작업이다.
+    env = {**os.environ, "MAX_THINKING_TOKENS": "1024"}
     proc = subprocess.run(
         cmd,
         input=prompt,
@@ -455,6 +456,16 @@ def select_highlights_auto(
             "claude -p 응답을 JSON으로 읽지 못했습니다(한도/오류 안내문일 수 있음).\n"
             f"응답: {(proc.stdout or '').strip()[:300]}"
         )
+    # 선정이 느릴 때 어디서 시간이 갔는지(모델/토큰/소요) 추적할 수 있게 서버 로그에 남긴다.
+    # (실측 4분 20초짜리 호출의 내역을 알 수 없어 튜닝이 어림짐작이 됐던 문제 해결.)
+    usage = outer.get("usage") or {}
+    print(
+        f"[highlights] claude -p 완료: model={model or '(cli기본)'} "
+        f"duration_ms={outer.get('duration_ms')} api_ms={outer.get('duration_api_ms')} "
+        f"in={usage.get('input_tokens')} out={usage.get('output_tokens')} "
+        f"cache_read={usage.get('cache_read_input_tokens')}",
+        flush=True,
+    )
     result_text = outer.get("result", "")
     if outer.get("is_error") or outer.get("subtype") not in (None, "success"):
         if _quota_hint(result_text):
