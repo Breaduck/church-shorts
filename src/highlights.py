@@ -92,11 +92,27 @@ def build_prompt(
     categories: list[str],
     video_duration_sec: float,
     feedback_block: str = "",
+    transcript_is_cleaned: bool = False,
 ) -> str:
     transcript_text = transcript.to_plain_text_with_timestamps()
     hints_text = format_hints_for_prompt(peak_hints)
     categories_text = "\n".join(f"  - {c}" for c in categories)
     feedback_section = f"\n{feedback_block}\n" if feedback_block else ""
+    # 노트북LM 등으로 '다듬어진' 텍스트로 선정할 때, 매끈함에 속아 점수를 올리는 것을 막는다.
+    # (실측: 같은 설교를 자동자막→정리된 붙여넣기로 바꾸자 평균 score가 70→78로 부풀었다.
+    #  글이 깔끔해진 건 편집 덕이지 전달이 좋아서가 아니다 = 프롬프트가 경고하는 '요약 함정'.)
+    cleaned_section = (
+        """
+### ⚠️ 이 전사본은 '정리·교정된' 텍스트다 (채점에 매우 중요)
+이 전사본은 노트북LM 등으로 다듬어져 실제 발화보다 문장이 매끄럽다. 실제 오디오엔
+더듬거림·군더더기("음…", "그래서 이제")·반복·말끊김이 그대로 있다. **텍스트가 깔끔하다는
+이유로 hook·retention·payoff를 올리지 마라 — 그건 편집 덕이지 전달이 좋아서가 아니다.**
+점수는 '실제로 그 초에 귀에 들리는 소리' 기준으로 매겨라. 다듬어진 문장이 매끈해 보일수록
+'요약 함정'을 의심하고 오히려 한 단계 낮춰라. (이 경로에서는 8·9가 특히 남발되기 쉽다.)
+"""
+        if transcript_is_cleaned
+        else ""
+    )
 
     return f"""너는 조회수가 잘 나오는 교회 쇼츠를 만드는 최고의 편집자다. {video_duration_sec/60:.0f}분 설교 전체에서
 "이 부분만큼은 사람들이 끝까지 보고, 저장하고, 공유할 것"이라 확신하는 진짜 알맹이만 골라낸다.
@@ -127,6 +143,7 @@ def build_prompt(
   - quotability (1~10): 스샷 떠서 공유할 인용각 문장이 있는가.
 점수는 **후보를 버리는 필터가 아니라 우선순위 도구**다. 최종 취사선택은 사람(편집기 UI)이 한다.
 그러니 억지로 개수를 채우지도, 약한 걸 감추지도 말고 **정직하게** 매겨라(약하면 낮게).
+{cleaned_section}
 {feedback_section}
 
 ## 실제로 잘 뜨는 숏폼의 핵심 로직 (일반 + 교회 계정 공통 분석 → 이 기준으로 viral_score를 매겨라)
@@ -353,6 +370,7 @@ def select_highlights_auto(
     timeout_sec: int = 900,
     feedback_block: str = "",
     model: str = "",
+    transcript_is_cleaned: bool = False,
 ) -> list[Clip]:
     """`claude -p` 서브프로세스를 호출해 자동으로 하이라이트를 선정한다.
 
@@ -368,6 +386,7 @@ def select_highlights_auto(
         categories=categories,
         video_duration_sec=transcript.duration_sec,
         feedback_block=feedback_block,
+        transcript_is_cleaned=transcript_is_cleaned,
     )
 
     claude_path = shutil.which("claude")

@@ -301,6 +301,9 @@ def analyze(
         transcript_path = video_dir / "transcript.json"
         # 순수 텍스트를 비례정렬한 경우, 선정 후 클립 경계를 실제 시각으로 스냅하기 위해 참조 자막을 보관.
         snap_reference: Transcript | None = None
+        # 노트북LM 등 '다듬어진' 붙여넣기로 선정하면 매끈함에 속아 점수가 부풀려진다(요약 함정).
+        # 이 경로에서만 채점을 냉정하게 하도록 프롬프트 경고를 켜는 플래그.
+        transcript_is_cleaned = False
         # 붙여넣은 자막이 있으면 캐시된 transcript.json보다 그것을 우선(사용자 의도 존중).
         if transcript_path.exists() and not transcript_text.strip():
             sp.set_fraction(1.0, "기존 자막 재사용")
@@ -323,6 +326,7 @@ def analyze(
                         transcript_text, reference, dl.duration_sec
                     )
                     snap_reference = reference  # 선정 후 경계를 실제 시각으로 스냅하기 위해 보관
+                    transcript_is_cleaned = True  # 다듬어진 텍스트 → 채점 냉정하게(요약 함정 경고 on)
                     (video_dir / "transcript_reference.json").write_text(
                         json.dumps(reference.to_json(), ensure_ascii=False, indent=2),
                         encoding="utf-8",
@@ -413,6 +417,7 @@ def analyze(
             categories=h["categories"],
             feedback_block=feedback_block,
             model=h.get("model", ""),  # 기본 sonnet(config) — 하이라이트 선정 비용 절감
+            transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
         )
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
