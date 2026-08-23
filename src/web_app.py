@@ -35,6 +35,27 @@ def _update_job(video_id: str, **fields) -> None:
         _jobs.setdefault(video_id, {}).update(fields)
 
 
+def _clips_ready(video_id: str, job: dict | None) -> bool:
+    """이 영상의 분석이 '지금 요청 기준으로' 끝났는지 판정한다.
+
+    단순히 clips.json 존재만 보면, 이전에 분석했던 링크에 '새로 분석'을 걸었을 때
+    옛 clips.json이 아직 디스크에 남아 있어(재선정 job이 .bak으로 옮기기 직전 찰나)
+    즉시 '완료+옛 캐시'로 오인된다. 그래서 재분석 job이 도는 중(status=analyzing)이면
+    clips.json이 '그 job 시작 시각(started) 이후'에 쓰였을 때만 완료로 인정한다.
+    (분석 중이 아닌 경우엔 디스크를 진실의 원천으로 삼아 캐시 재사용을 그대로 허용.)"""
+    p = OUTPUT_ROOT / video_id / "clips.json"
+    if not p.exists():
+        return False
+    if job and job.get("status") == "analyzing":
+        try:
+            # 2초 여유: 파일시스템 mtime이 초 단위로 내림돼 started보다 살짝 작아지는 경계
+            # 오차만 흡수한다. 옛 캐시는 수 분~수일 전이라 이 여유로도 절대 통과하지 못한다.
+            return p.stat().st_mtime >= float(job.get("started", 0) or 0) - 2.0
+        except OSError:
+            return False
+    return True
+
+
 def _load_config() -> dict:
     return yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
@@ -769,13 +790,13 @@ def video_detail(video_id: str):
         job = _jobs.get(video_id)
 
     clips_path = OUTPUT_ROOT / video_id / "clips.json"
+
+    # 재분석 중이면 옛 clips.json을 완료로 오인하지 않는다(_clips_ready). 그 외엔 디스크가
+    # 진실의 원천 — 렌더링이 job status를 흔들어도 완료 상태가 유지된다.
+    clips_ready = _clips_ready(video_id, job)
     job = job or {}
 
-    # clips.json이 디스크에 있으면 분석은 이미 끝난 것 -> 항상 'ready'로 취급한다.
-    # (render_route가 _update_job으로 job dict에 rendering/render_pct만 채워 넣으면
-    # status/clips 키가 없는 채로 남는데, 그걸 그대로 쓰면 렌더링 시작과 동시에 상태가
-    # "분석 중"으로 되돌아가 버리는 버그가 있었다. 디스크를 진실의 원천으로 삼아 방지.)
-    if clips_path.exists():
+    if clips_ready:
         status = "ready"
         clips = load_clips_json(clips_path)
         pct = 100
@@ -824,7 +845,7 @@ def video_status(video_id: str):
     스텝 진행바를 부드럽게 갱신한다 (분석/렌더 두 단계 모두 커버)."""
     with _jobs_lock:
         job = dict(_jobs.get(video_id) or {})
-    clips_ready = (OUTPUT_ROOT / video_id / "clips.json").exists()
+    clips_ready = _clips_ready(video_id, job)
     analyze_pct = 100 if clips_ready else job.get("pct", 0)
     return jsonify({
         "status": "ready" if clips_ready else job.get("status", "analyzing"),
