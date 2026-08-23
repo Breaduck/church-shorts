@@ -253,19 +253,29 @@ INDEX_TEMPLATE = f"""
 <script>
 const f = document.getElementById('f');
 const statusEl = document.getElementById('status');
+const submitBtn = f.querySelector('button[type="submit"]');
 f.addEventListener('submit', async (e) => {{
   e.preventDefault();
+  if (submitBtn.disabled) return;  // 중복 클릭 방지: 하이라이트 선정은 AI가 실제로 읽고 고르는
+                                    // 단계라 보통 2~5분 걸린다. 재클릭하면 같은 영상 분석이
+                                    // 중복 실행돼 진행률이 널뛰고 세션 한도만 낭비된다.
+  submitBtn.disabled = true;
   const url = document.getElementById('url').value;
   const transcript_text = document.getElementById('transcript').value;
   const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
   statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중...';
-  const res = await fetch('/analyze', {{
-    method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force}})
-  }});
-  const data = await res.json();
-  if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; return; }}
-  window.location = '/video/' + data.video_id;
+  statusEl.innerHTML = '<span class="spinner"></span>분석 요청 중... (하이라이트 선정은 AI가 전체를 읽고 고르는 단계라 보통 2~5분 걸려요. 다시 누르지 않아도 자동으로 진행됩니다)';
+  try {{
+    const res = await fetch('/analyze', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force}})
+    }});
+    const data = await res.json();
+    if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }}
+    window.location = '/video/' + data.video_id;
+  }} catch (err) {{
+    statusEl.innerText = '오류: ' + err;
+    submitBtn.disabled = false;
+  }}
 }});
 </script>
 </body>
@@ -776,7 +786,18 @@ def analyze_route():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    _update_job(video_id, status="analyzing", message="분석 시작...", pct=0, started=time.time())
+    # 같은 영상이 이미 분석 중이면 재요청은 새 스레드를 또 띄우지 않는다. 인덱스 페이지를
+    # 다시 열고 폼을 재제출하는 식으로 중복 POST가 오면(실측: 30초 새 3번), analyze()마다
+    # 독립된 StageProgress 티커가 같은 job의 pct를 동시에 덮어써 진행률이 40%→80%→50%처럼
+    # 널뛰었고, claude -p 하이라이트 선정도 그만큼 중복 실행돼 세션 한도만 낭비됐다.
+    with _jobs_lock:
+        existing = _jobs.get(video_id)
+        if existing and existing.get("status") == "analyzing":
+            return jsonify({"video_id": video_id})
+        _jobs.setdefault(video_id, {}).update(
+            status="analyzing", message="분석 시작...", pct=0, started=time.time()
+        )
+
     holder = {"id": video_id}
     threading.Thread(
         target=_run_analyze_job, args=(holder, url, transcript_text, force), daemon=True
