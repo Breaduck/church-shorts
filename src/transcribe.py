@@ -178,6 +178,7 @@ def transcribe_clip_precise(
     hotwords: Optional[str] = None,
     cpu_threads: int = 0,
     batch_size: int = 8,
+    batched: bool = True,
 ) -> list[Segment]:
     """클립 구간(1~5분 이내의 짧은 분량)만 오려서 정밀 재전사한다.
 
@@ -217,7 +218,10 @@ def transcribe_clip_precise(
                 hotwords=hw,
                 condition_on_previous_text=False,
                 cpu_threads=cpu_threads,
-                batched=True,
+                # 배치 모드는 2~4배 빠르지만 VAD 오판으로 조용한 발화 구간(20초+)을 통째로
+                # 빼먹은 실측 사고가 있다. 호출자(main.py)가 base 전사 대비 '구멍 검사'를 하고,
+                # 구멍이 크면 batched=False(순차, 검증된 경로)로 재시도한다.
+                batched=batched,
                 batch_size=batch_size,
             )
 

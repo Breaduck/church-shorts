@@ -597,6 +597,45 @@ def _build_clip_hotwords(
     return " ".join(parts) or None
 
 
+def _precise_worst_hole(
+    base_segments: list[Segment], segs: list[Segment], a: float, b: float
+) -> float:
+    """base 전사에는 발화(단어)가 있는데 정밀 전사 결과에는 단어가 전혀 없는
+    가장 긴 '구멍'(초)을 잰다.
+
+    배치 정밀 전사가 조용한 발화 구간 20여 초를 통째로 빼먹는 사고가 있었는데(실측:
+    Ywng7CLK3Ko — 초반 22초 자막 실종), 단어 수 비교(35% 기준)만으로는 '부분 실종'을
+    못 잡는다(72/99단어로 통과). base 단어 시각마다 정밀 단어가 ±2.5초 안에 하나도
+    없으면 그 지점은 구멍으로 보고, 연속 구멍의 최대 길이를 돌려준다."""
+    if not base_segments or not segs:
+        return 0.0
+    base_ts = sorted(
+        w.start for s in base_segments for w in s.words if a <= w.start <= b
+    )
+    precise_ts = sorted(w.start for s in segs for w in s.words if a - 3 <= w.start <= b + 3)
+    if not base_ts:
+        return 0.0
+    if not precise_ts:
+        return b - a
+    import bisect
+
+    worst = 0.0
+    run_start: float | None = None
+    for t in base_ts:
+        i = bisect.bisect_left(precise_ts, t)
+        near = min(
+            (abs(precise_ts[j] - t) for j in (i - 1, i) if 0 <= j < len(precise_ts)),
+            default=1e9,
+        )
+        if near > 2.5:  # 이 base 단어 주변에 정밀 단어가 없다 = 구멍
+            if run_start is None:
+                run_start = t
+            worst = max(worst, t - run_start)
+        else:
+            run_start = None
+    return worst
+
+
 def _apply_corrections(segs: list[Segment], corrections: dict) -> None:
     """전사 오인식 확정 교정(config captions.corrections). 성경 용어처럼 절대 틀리면
     안 되는 단어의 최종 안전망 — hotwords 편향으로도 새는 반복 오탈자만 치환한다."""
@@ -633,7 +672,9 @@ def _precise_cache_find(
             a, b = float(a_str), float(b_str)
         except ValueError:
             continue
-        if a <= start + 0.01 and b >= end - 0.01:
+        # 여유 0.3초: 시작 문장 스냅이 clip.start를 첫 단어보다 0.05초 앞으로 당겨 저장하므로,
+        # 딱 맞는 비교(0.01)면 재렌더마다 캐시를 놓치고 매번 재전사한다(실측).
+        if a <= start + 0.3 and b >= end - 0.3:
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 return [
@@ -790,7 +831,18 @@ def render_selected(
         # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
         tr_a = max(0.0, clip.start - START_BUFFER_SEC)
         tr_b = clip.end + END_BUFFER_SEC
-        cached_segs = _precise_cache_find(cache_dir, precise_model, sig, tr_a, clip.end)
+        # 캐시 요구 범위는 [시작, 끝+4초]면 충분하다: 시작 스냅으로 당겨져 저장된 start 때문에
+        # tr_a(시작-4초)로 찾으면 자기 자신이 만든 캐시도 못 찾아 매번 재전사했다(실측).
+        # 끝+4초는 "이미 문장 끝에 스냅돼 있는지" 확인에 필요한 최소 버퍼.
+        cached_segs = _precise_cache_find(
+            cache_dir, precise_model, sig, clip.start, clip.end + 4.0
+        )
+        if cached_segs is not None and _precise_worst_hole(
+            base_segments, cached_segs, clip.start, clip.end
+        ) >= 5.0:
+            # 과거에 '부분 실종' 결과가 캐시된 경우(초반 20초 자막 실종 사고) 재사용하지 않는다.
+            _rlog(video_dir, f"clip{idx} 캐시에 자막 구멍 발견 → 캐시 무시, 재전사")
+            cached_segs = None
         if cached_segs is not None:
             progress(f"[{idx+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
             segs = cached_segs
@@ -801,7 +853,7 @@ def render_selected(
             # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
             # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
             # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
-            def _precise(vad: bool) -> list[Segment]:
+            def _precise(vad: bool, batched: bool = True) -> list[Segment]:
                 return transcribe_clip_precise(
                     video_path, tr_a, tr_b,
                     model_size=precise_model,
@@ -811,6 +863,7 @@ def render_selected(
                     hotwords=hotwords,
                     cpu_threads=int(w.get("cpu_threads", 0)),
                     batch_size=int(w.get("batch_size", 8)),
+                    batched=batched,
                 )
 
             vad_default = w.get("vad_filter", True)
@@ -825,6 +878,24 @@ def render_selected(
                 progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
                 _rlog(video_dir, f"clip{idx} 정밀 재전사 예외: {type(e).__name__}: {e}")
                 segs = []
+
+            # 배치 모드 '부분 실종' 검사: 단어 수(35% 기준)로는 못 잡는, base엔 발화가
+            # 있는데 정밀 결과가 통째로 빈 구간(실측: 초반 22초 자막 실종)을 잡는다.
+            # 구멍이 크면 느리지만 검증된 순차 모드로 다시 전사한다.
+            hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+            if segs and hole >= 5.0:
+                _rlog(video_dir, f"clip{idx} 정밀(배치) 자막 구멍 {hole:.1f}초 → 순차 모드 재전사")
+                try:
+                    segs_seq = _run_with_progress_ticker(
+                        lambda: _precise(vad_default, batched=False),
+                        start_pct=base + step * 0.4, end_pct=base + step * 0.45, progress=progress,
+                        message=f"[{idx+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
+                        est_seconds=max(30.0, clip_len * 2.2),
+                    )
+                    if _precise_worst_hole(base_segments, segs_seq, clip.start, clip.end) < hole:
+                        segs = segs_seq
+                except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
+                    _rlog(video_dir, f"clip{idx} 순차 재전사 예외: {type(e).__name__}: {e}")
 
             base_n = _count_words(base_segments, clip.start, clip.end)
             precise_n = _count_words(segs, clip.start, clip.end)
@@ -860,7 +931,9 @@ def render_selected(
             elif segs and precise_n > 0:
                 _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
                 # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
-                _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
+                # 자막 구멍이 남아 있는 결과도 캐시하지 않는다(불량 캐시가 계속 재사용되는 사고 방지).
+                if _precise_worst_hole(base_segments, segs, clip.start, clip.end) < 5.0:
+                    _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
         # 확정 오탈자 교정(출애굽기/여호와 등). 캐시는 원본 그대로 저장하고 매번 여기서 교정한다
         # (교정 사전을 나중에 더 채워도 재전사 없이 다음 렌더부터 바로 반영되게).
         _apply_corrections(segs, corrections)

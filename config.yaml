@@ -114,6 +114,9 @@ audio_peaks:
 render:
   aspect_ratio: "9:16"
   resolution: [1080, 1920]
+  # 비디오 인코더: 이 PC의 Intel Arc iGPU 하드웨어 인코딩(h264_qsv)이 기본. 실패 시
+  # render.py가 자동으로 libx264로 폴백한다. 강제 소프트웨어 인코딩은 "libx264"로.
+  video_encoder: "h264_qsv"
   # "card" (흰 배경 + 둥근 모서리 영상 박스 + 상단 고정 제목 + 하단 캡션, 참고 이미지 스타일)
   # | "pad" (흰 여백만) | "blur" (배경 블러 채움) | "crop" (중앙 크롭)
   background_mode: "card"

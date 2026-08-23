@@ -420,16 +420,22 @@ def render_clip(
         if audio_filter:
             cmd += ["-af", audio_filter]
 
-    cmd += [
+    # 인코더: 이 PC엔 Intel Arc iGPU가 있어 h264_qsv 하드웨어 인코딩이 가능하다(실측 인코딩
+    # 17~28초 → 수 초). 쇼츠는 플랫폼이 재인코딩하므로 화질 차이는 체감 없음. QSV가 드라이버
+    # 문제 등으로 실패하면 자동으로 libx264(소프트웨어)로 다시 인코딩한다.
+    encoder = render_cfg.get("video_encoder", "h264_qsv")
+    if encoder == "h264_qsv":
+        video_args = ["-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]
+    else:
         # preset slow/crf16은 화질은 최고지만 클립 하나에 1~2분씩 걸려 렌더가 느렸다.
-        # 쇼츠는 어차피 플랫폼이 업로드 시 재인코딩하므로 crf 20/veryfast로 낮춰도 체감 화질
-        # 차이는 없고 인코딩은 5~8배 빨라진다(속도 우선). 화질 이슈 생기면 fast/crf18로 조정.
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "192k",
-        str(output_path),
-    ]
+        # crf 20/veryfast면 체감 화질 차이 없이 인코딩이 5~8배 빠르다(속도 우선).
+        video_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    tail = ["-c:a", "aac", "-b:a", "192k", str(output_path)]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd + video_args + tail, capture_output=True, text=True)
+    if proc.returncode != 0 and encoder == "h264_qsv":
+        fallback_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        proc = subprocess.run(cmd + fallback_args + tail, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 렌더링 실패:\n{proc.stderr[-3000:]}")
 
