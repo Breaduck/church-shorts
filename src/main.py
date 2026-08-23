@@ -432,6 +432,11 @@ def analyze(
                 if (c.end - c.start) > hard_max:
                     print(f"[main] 스냅 후 과확장 클립 제외: {c.end - c.start:.0f}초 (상한 {hard_max:.0f}초) - {c.title!r}")
             clips = kept
+        # 검토 UI는 clips.json 배열 순서 = 표시 순서다. 모델의 배열 순서("강한 순")와
+        # 시스템이 따로 계산한 통합 score(scoring.py)가 어긋나면 목록이 뒤죽박죽으로
+        # 보이므로(실측: 74,59,64,58), 저장 전에 score 내림차순으로 확정한다.
+        # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
+        clips.sort(key=lambda c: c.score or 0, reverse=True)
         save_clips_json(clips, clips_path)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips
