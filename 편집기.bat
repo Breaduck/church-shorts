@@ -2,6 +2,9 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
+REM yt-dlp의 유튜브 추출에 JS 런타임(deno)이 필요하다(없으면 일부 포맷 누락/403 위험).
+REM winget 설치본이 Links 별칭 없이 Packages 폴더에만 있어 PATH에 직접 추가한다.
+set PATH=%LOCALAPPDATA%\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%
 
 echo ================================================
 echo   church-shorts editor   http://localhost:5000
