@@ -29,6 +29,20 @@ def get_credentials() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            if not Path(client_secrets_path).exists():
+                raise RuntimeError(
+                    "YouTube 업로드에 필요한 OAuth 인증 파일이 없습니다: "
+                    f"{client_secrets_path}\n"
+                    "이 파일은 Google에서 직접 발급받아야 합니다(코드로 만들 수 없음):\n"
+                    "1) https://console.cloud.google.com 에서 프로젝트 생성\n"
+                    "2) 'API 및 서비스 > 라이브러리'에서 'YouTube Data API v3' 사용 설정\n"
+                    "3) 'OAuth 동의 화면' 구성(외부, 테스트 사용자에 본인 Gmail 추가)\n"
+                    "4) '사용자 인증 정보 > 사용자 인증 정보 만들기 > OAuth 클라이언트 ID > "
+                    "애플리케이션 유형: 데스크톱 앱' 생성\n"
+                    "5) 내려받은 JSON을 이 경로에 저장: "
+                    f"{Path(client_secrets_path).resolve()}\n"
+                    "저장 후 업로드 버튼을 다시 누르면 브라우저에서 1회 로그인 창이 뜹니다."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(client_secrets_path, SCOPES)
             creds = flow.run_local_server(port=0)
         TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -396,6 +396,17 @@ def render_clip(
         "-ss", str(clip.start), "-to", str(clip.end), "-i", str(video_path),
     ]
 
+    # 클립 끝 여운: 마지막 프레임을 정지(tpad clone)시키고 오디오엔 무음(apad)을 덧붙여
+    # 문장이 끝나자마자 뚝 끊기는 느낌을 없앤다. 영상·오디오 둘 다 같은 길이만큼 늘려야
+    # (-shortest / 기본 종료 조건에서) 여운이 잘리지 않는다.
+    end_pad = float(render_cfg.get("end_pad_sec", 0.0) or 0.0)
+    vpad_vf = f"tpad=stop_mode=clone:stop_duration={end_pad}" if end_pad > 0 else None
+    apad_af = f"apad=pad_dur={end_pad}" if end_pad > 0 else None
+
+    def _join_af(base: str | None) -> list[str]:
+        chain = ",".join(p for p in (base, apad_af) if p)
+        return ["-af", chain] if chain else []
+
     source_fps = _probe_fps(video_path)
     if is_card:
         mask_path = _get_or_create_rounded_mask(
@@ -406,19 +417,23 @@ def render_clip(
             render_cfg, captions_cfg, resolution, duration, select_expr, ass_path_ff, font_dir,
             source_fps, card_layout["video_box_height"], card_layout["video_box_y"],
         )
+        if vpad_vf:
+            filter_complex += f";{vout_label}{vpad_vf}[vpad]"
+            vout_label = "[vpad]"
         cmd += ["-filter_complex", filter_complex, "-map", vout_label]
-        if audio_filter:
-            cmd += ["-af", audio_filter]
+        cmd += _join_af(audio_filter)
         # 마스크 입력(-loop 1)이 무한 스트림이라 -shortest 없이는 ffmpeg가 멈출 시점을 몰라
-        # 인코딩이 끝나지 않는다. 반드시 필요.
+        # 인코딩이 끝나지 않는다. 반드시 필요. (tpad/apad로 영상·오디오 둘 다 +end_pad가 되어
+        # -shortest가 여운을 자르지 않는다.)
         cmd += ["-map", "0:a", "-shortest"]
     else:
         video_filter = _build_video_filter(
             render_cfg, captions_cfg, resolution, select_expr, ass_path_ff, font_dir, source_fps
         )
+        if vpad_vf:
+            video_filter += f",{vpad_vf}"
         cmd += ["-vf", video_filter]
-        if audio_filter:
-            cmd += ["-af", audio_filter]
+        cmd += _join_af(audio_filter)
 
     # 인코더: 이 PC엔 Intel Arc iGPU가 있어 h264_qsv 하드웨어 인코딩이 가능하다(실측 인코딩
     # 17~28초 → 수 초). 쇼츠는 플랫폼이 재인코딩하므로 화질 차이는 체감 없음. QSV가 드라이버
