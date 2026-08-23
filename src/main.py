@@ -461,6 +461,13 @@ def _is_sentence_final(text: str) -> bool:
     return t.endswith(endings)
 
 
+def _is_question_ending(text: str) -> bool:
+    """물음표로 끝나는 문장인지. 설교체 수사의문문("~하면 어때요?")은 그 자체가 완결된
+    펀치라인이 아니라 다음 문장이 답인 경우가 많아 끝 스냅에서 후순위로 다룬다."""
+    t = (text or "").strip().rstrip('"\'”’)』」')
+    return bool(t) and t[-1] == "?"
+
+
 def _flatten_words(segs: list[Segment]) -> list[Word]:
     """세그먼트들의 단어를 시간순으로 평탄화하고, 유튜브 롤링 자막의 중복 단어를 제거한다.
 
@@ -534,8 +541,12 @@ def _snap_clip_end_to_sentence(
     - 과확장 금지: clip.end 직전(0.8초 이내)에 이미 문장이 끝났으면 그대로 둔다.
       펀치라인이 끝났는데 다음 새 주제까지 끌고 가 마무리가 흐지부지되는 문제 방지(실측).
     - 세그먼트가 아니라 단어 기준인 이유는 _flatten_words 주석 참고(롤링 자막 사고).
-    - 문장 종결 단어를 max_extend 안에서 못 찾으면 건드리지 않는다(기존 동작 유지)."""
+    - 문장 종결 단어를 max_extend 안에서 못 찾으면 건드리지 않는다(기존 동작 유지).
+    - 물음표 종결은 후순위: "죄가 들어오면 어때요?"처럼 수사의문문에서 바로 멈추면 답
+      문장("아무리 좋은 관계도 깨져요")이 잘린다(실측). 예산 안에 평서형 종결이 더 있으면
+      그쪽을 우선하고, 물음표 후보뿐이면 그걸로 폴백한다."""
     words = _flatten_words(segs)
+    question_fallback: float | None = None
     for i, w in enumerate(words):
         e = _word_true_end(words, i)
         if e < clip.end - 0.8:
@@ -550,8 +561,13 @@ def _snap_clip_end_to_sentence(
             pad = 0.25
             if i + 1 < len(words):
                 pad = min(pad, max(0.0, words[i + 1].start - e))
-            return e + pad
-    return clip.end
+            candidate = e + pad
+            if _is_question_ending(w.text):
+                if question_fallback is None:
+                    question_fallback = candidate
+                continue
+            return candidate
+    return question_fallback if question_fallback is not None else clip.end
 
 
 def _advance_clip_start(min_start: float, segs: list[Segment]) -> float:

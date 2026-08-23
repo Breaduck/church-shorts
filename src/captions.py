@@ -351,7 +351,12 @@ def compute_card_margins(card_layout: dict, resolution: tuple[int, int], title_s
     실제 렌더링과 일치하므로, 계산 로직을 이 함수 하나로 모은다."""
     video_box_y = card_layout["video_box_y"]
     line_height_estimate = int(title_size * 1.25)
-    title_margin_v = max(20, video_box_y - line_height_estimate - 90)
+    # 제목 위치는 영상 박스 y좌표가 아니라 제목 영역(title_area_height) 자체를 기준으로 잡는다.
+    # 기존엔 video_box_y 기준(영상 박스 바로 위 90px)이라, 원본 비율상 영상 박스가 세로로
+    # 중앙 정렬되어 아래로 내려가면 제목도 함께 아래로 밀려 화면 위쪽에 여백만 남았다(실측 불만).
+    # 제목 영역 안에서 살짝 위쪽으로 치우치게 배치해 항상 화면 최상단 가까이 고정한다.
+    title_h = card_layout.get("title_area_height", 360)
+    title_margin_v = max(20, (title_h - line_height_estimate) // 2 - 20)
     video_box_bottom = video_box_y + card_layout["video_box_height"]
     caption_margin_v = video_box_bottom + 60
     return title_margin_v, caption_margin_v
