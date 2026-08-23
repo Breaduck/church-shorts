@@ -82,6 +82,7 @@ def transcribe(
     on_segment: Optional[Callable[[float, float], None]] = None,
     initial_prompt: Optional[str] = None,
     hotwords: Optional[str] = None,
+    condition_on_previous_text: bool = True,
 ) -> Transcript:
     model = _get_model(model_size, device, compute_type)
 
@@ -96,6 +97,7 @@ def transcribe(
         hotwords=hotwords,
         word_timestamps=True,
         vad_filter=vad_filter,
+        condition_on_previous_text=condition_on_previous_text,
     )
 
     segments: list[Segment] = []
@@ -175,16 +177,33 @@ def transcribe_clip_precise(
         if proc.returncode != 0:
             raise RuntimeError(f"클립 오디오 추출 실패:\n{proc.stderr[-2000:]}")
 
-        transcript = transcribe(
-            clip_audio_path,
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            language=language,
-            vad_filter=vad_filter,
-            initial_prompt=initial_prompt,
-            hotwords=hotwords,
-        )
+        def _run(hw: Optional[str]) -> Transcript:
+            # condition_on_previous_text=False가 핵심: 켜져 있으면 30초 창마다
+            # "이전 창 디코딩 결과(최대 223토큰) + hotwords(성경 사전, 잘라도 223토큰)"가
+            # 함께 프롬프트에 들어가 Whisper 컨텍스트 한도(448토큰)를 넘겨
+            # 'The maximum decoding length must be > 0' 예외로 정밀 재전사가 통째로
+            # 죽는다(실측: 말이 빽빽한 클립에서 재시도까지 전부 실패 → 유튜브 자막 폴백).
+            # 짧은 클립이라 창 간 문맥 이어붙이기의 이득은 거의 없고, 끄면 예외가 원천 차단된다.
+            return transcribe(
+                clip_audio_path,
+                model_size=model_size,
+                device=device,
+                compute_type=compute_type,
+                language=language,
+                vad_filter=vad_filter,
+                initial_prompt=initial_prompt,
+                hotwords=hw,
+                condition_on_previous_text=False,
+            )
+
+        try:
+            transcript = _run(hotwords)
+        except ValueError as e:
+            # 안전망: 그래도 프롬프트 초과류 오류가 나면 hotwords를 빼고 한 번 더 시도한다
+            # (고유명사 정확도는 조금 잃지만 자막이 통째로 유튜브 폴백으로 떨어지는 것보다 낫다).
+            if "decoding length" not in str(e):
+                raise
+            transcript = _run(None)
 
     shifted_segments: list[Segment] = []
     for seg in transcript.segments:

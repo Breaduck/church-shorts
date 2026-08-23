@@ -454,70 +454,97 @@ def _is_sentence_final(text: str) -> bool:
     return t.endswith(endings)
 
 
+def _flatten_words(segs: list[Segment]) -> list[Word]:
+    """세그먼트들의 단어를 시간순으로 평탄화하고, 유튜브 롤링 자막의 중복 단어를 제거한다.
+
+    스냅의 기준을 세그먼트가 아니라 단어로 삼는 이유: 유튜브 자동자막(폴백 경로)은
+    세그먼트가 서로 겹치는 '롤링' 구조라 세그먼트 경계가 문장 경계와 무관하다
+    (실측: 세그먼트 끝 915.88에 스냅했지만 실제 문장은 918.08 '…것입니다.'에서 끝나
+    "말이 안 끝났는데 뚝 끊기는" 사고). 단어 타임스탬프는 롤링과 무관하게 정확하다."""
+    words = [w for s in segs for w in s.words if (w.text or "").strip()]
+    words.sort(key=lambda w: (w.start, w.end))
+    out: list[Word] = []
+    for w in words:
+        t = w.text.strip()
+        if any(d.text == t and abs(d.start - w.start) < 0.25 for d in out[-3:]):
+            continue
+        out.append(Word(start=w.start, end=w.end, text=t))
+    return out
+
+
+def _word_true_end(words: list[Word], i: int) -> float:
+    """단어 i의 '실질 발화 끝'. 롤링 자막은 세그먼트 마지막 단어의 end가 다음 발화
+    시작까지 수 초씩 부풀어 있어(실측: '듣고서' 912.4→915.9), 다음 단어 start로 잘라야
+    실제 발화 끝에 가깝다."""
+    e = words[i].end
+    if i + 1 < len(words) and words[i + 1].start > words[i].start:
+        e = min(e, max(words[i + 1].start, words[i].start + 0.05))
+    return e
+
+
 def _snap_clip_start_to_sentence(
     clip: Clip, segs: list[Segment], max_back: float = 4.0, tail_max: float = 3.0
 ) -> float:
     """clip.start가 문장 중간에 떨어지는 어색함을 잡는다 (실측: 클립이 앞 문장의 꼬리
-    '…되기를 축원합니다 아멘'으로 시작). 정밀 전사(문장 단위 세그먼트)를 기준으로:
+    '겁니다.'로 시작). 단어 단위 문장 경계(이전 단어가 문장 종결로 끝난 다음 단어) 기준:
       - 시작이 문장 초입이면(문장 시작이 max_back초 이내 앞) → 문장 시작으로 살짝 당긴다.
-      - 시작이 문장 꼬리면(남은 길이 tail_max초 이하) → 다음 문장 시작으로 민다(꼬리 제거).
-    반드시 clip.start 이전(START_BUFFER)까지 포함해 전사한 세그먼트를 넘겨야 당기기가 가능하다."""
-    ordered = sorted(segs, key=lambda s: s.start)
-    for i, seg in enumerate(ordered):
-        if seg.start <= clip.start <= seg.end:
-            into = clip.start - seg.start
-            remain = seg.end - clip.start
-            if 0.35 <= into <= max_back and into <= remain:
-                return seg.start
-            if remain <= tail_max and i + 1 < len(ordered):
-                nxt = ordered[i + 1].start
-                if nxt < clip.end - 5.0:  # 클립이 사실상 사라질 정도로 밀지는 않는다
-                    return nxt
-            return clip.start
-        if seg.start > clip.start:
+      - 시작이 문장 꼬리면(다음 문장이 tail_max초 이내) → 다음 문장 시작으로 민다(꼬리 제거).
+    반드시 clip.start 이전(START_BUFFER)까지 포함한 세그먼트를 넘겨야 당기기가 가능하다."""
+    words = _flatten_words(segs)
+    if not words:
+        return clip.start
+    # 문장 시작 시각 목록: 첫 단어, 그리고 문장 종결 단어 바로 다음 단어.
+    sentence_starts = [words[0].start] + [
+        words[i + 1].start
+        for i in range(len(words) - 1)
+        if _is_sentence_final(words[i].text)
+    ]
+    prev_start = None
+    next_start = None
+    for s in sentence_starts:
+        if s <= clip.start + 0.05:
+            prev_start = s
+        else:
+            next_start = s
             break
+    if prev_start is not None and 0.35 <= clip.start - prev_start <= max_back:
+        return max(0.0, prev_start - 0.05)
+    if (
+        next_start is not None
+        and next_start - clip.start <= tail_max
+        and next_start < clip.end - 5.0  # 클립이 사실상 사라질 정도로 밀지는 않는다
+    ):
+        return next_start - 0.1
     return clip.start
 
 
 def _snap_clip_end_to_sentence(
-    clip: Clip, segs: list[Segment], max_extend: float = 6.0, pause_gap: float = 0.35
+    clip: Clip, segs: list[Segment], max_extend: float = 6.0
 ) -> float:
     """Claude가 대략 지정한 clip.end가 문장/발화 중간을 잘라 "말이 안 끝났는데 뚝 끊기는"
-    문제를 막는다. clip.end가 발화 중간이면 그 발화가 끝나는 곳까지만 살짝 늘린다.
+    문제를 막는다. clip.end 부근에서 처음으로 문장이 끝나는 '단어'까지만 살짝 늘린다.
 
-    단, 과확장 금지가 최우선: 현재 세그먼트가 이미 문장 종결(마침표/종결어미)로 끝나면
-    거기서 멈춘다. 펀치라인이 끝났는데도 다음 새 주제(예: "그래서 어 6월 27일이죠…")까지
-    끝을 끌고 가 마무리가 흐지부지되는 문제가 있어(실측), 문장 경계 신호를 우선한다.
-    보조로 침묵 간격(pause_gap)과 확장 한도(max_extend)로 이중 제한한다.
-
-    반드시 신뢰도 높은 원본 전사(base_segments)를 넘겨야 한다 — 정밀 재전사는 이따금 실패해
-    세그먼트가 비어 스냅이 무력화된다(실제로 겪은 버그)."""
-    if not segs:
-        return clip.end
-    segs = sorted(segs, key=lambda s: s.start)
-    end = clip.end
-    idx = -1
-    for i, seg in enumerate(segs):
-        if seg.start <= end <= seg.end:
-            end = seg.end
-            idx = i
+    - 과확장 금지: clip.end 직전(0.8초 이내)에 이미 문장이 끝났으면 그대로 둔다.
+      펀치라인이 끝났는데 다음 새 주제까지 끌고 가 마무리가 흐지부지되는 문제 방지(실측).
+    - 세그먼트가 아니라 단어 기준인 이유는 _flatten_words 주석 참고(롤링 자막 사고).
+    - 문장 종결 단어를 max_extend 안에서 못 찾으면 건드리지 않는다(기존 동작 유지)."""
+    words = _flatten_words(segs)
+    for i, w in enumerate(words):
+        e = _word_true_end(words, i)
+        if e < clip.end - 0.8:
+            continue
+        if w.start > clip.end + max_extend:
             break
-        if seg.start > end:
-            idx = i - 1
-            break
-        idx = i
-    if idx < 0:
-        return clip.end
-    # 이미 문장 종결로 끝나는 세그먼트에 걸쳐 있으면 확장하지 않는다(펀치라인에서 딱 끝).
-    if _is_sentence_final(segs[idx].text):
-        return end
-    limit = clip.end + max_extend
-    while idx + 1 < len(segs) and segs[idx + 1].start - end <= pause_gap and segs[idx + 1].end <= limit:
-        idx += 1
-        end = segs[idx].end
-        if _is_sentence_final(segs[idx].text):
-            break  # 문장이 끝나는 지점에 도달하면 더 늘리지 않는다
-    return end
+        if _is_sentence_final(w.text) and e <= clip.end + max_extend:
+            if e < clip.end:
+                return clip.end
+            # 문장 끝 단어 뒤 살짝 여유를 줘 말끝이 딱 잘리지 않게 하되, 다음 단어
+            # 시작을 넘지 않게 제한한다(넘으면 다음 문장 첫 단어가 끝에 깜빡 노출됨).
+            pad = 0.25
+            if i + 1 < len(words):
+                pad = min(pad, max(0.0, words[i + 1].start - e))
+            return e + pad
+    return clip.end
 
 
 def _advance_clip_start(min_start: float, segs: list[Segment]) -> float:
@@ -770,11 +797,13 @@ def render_selected(
         used_precise = bool(segs) and (segs is not base_segments)
         if not getattr(clip, "trimmed", False):
             snap_src = segs if used_precise else (base_segments or segs)
-            if used_precise:
-                new_start = _snap_clip_start_to_sentence(clip, snap_src)
-                if new_start != clip.start:
-                    _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
-                    clip.start = new_start
+            # 시작 스냅도 폴백(base) 경로에서 함께 돌린다: 이제 세그먼트가 아니라 단어 단위
+            # 문장 경계 기준이라 롤링 자막에서도 안전하다(실측: 폴백 렌더가 앞 문장 꼬리
+            # '겁니다.'로 시작하던 문제).
+            new_start = _snap_clip_start_to_sentence(clip, snap_src)
+            if new_start != clip.start:
+                _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
+                clip.start = new_start
             new_end = _snap_clip_end_to_sentence(clip, snap_src)
             if new_end != clip.end:
                 _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")

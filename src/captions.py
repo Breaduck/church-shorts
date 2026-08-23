@@ -128,26 +128,100 @@ def _ends_phrase(text: str) -> bool:
     return bool(t) and t[-1] in ".?!…"
 
 
+def _display_text(text: str) -> str:
+    """화면에 실제로 보여줄 단어 텍스트. 정밀 전사가 붙이는 끝 마침표는 자막에서 어색해
+    떼어낸다(사용자 요청). 물음표/느낌표는 뜻을 가지므로 남긴다. 분절(줄바꿈) 판단은
+    마침표를 떼기 전 원본 텍스트로 하므로 여기서 떼도 경계 품질에는 영향이 없다."""
+    t = (text or "").strip()
+    stripped = t.rstrip(".")
+    return stripped if stripped else t
+
+
+# ---- 한국어 의미 단위 줄바꿈 규칙 ----------------------------------------
+# 이 단어 '뒤'에서 끊으면 어색한 것들: 부정 부사(안/못)는 뒤 용언과 한 몸이고,
+# 관형사(그/이/저/한/두…)는 뒤 명사를 꾸민다. 의존명사(수/것/줄…)는 앞뒤 모두와 묶인다.
+_NO_BREAK_AFTER = {"안", "못", "잘", "더", "덜", "꼭", "왜", "그", "이", "저", "한", "두", "세", "네",
+                   "수", "것", "거", "줄", "때", "뿐", "채", "지"}
+# 이 단어 '앞'에서 끊으면 어색한 것들: 의존명사('감당할 수', '가시는 거')와
+# 보조용언('되지 않고', '하지 못하고')은 앞 말에 붙어야 뜻이 산다.
+_NO_BREAK_BEFORE_EXACT = {"수", "것", "거", "줄", "때", "뿐", "채", "만큼", "중", "등",
+                          "수가", "수는", "수도", "수를", "수밖에", "줄로", "줄은", "줄을",
+                          "것입니다", "것이다", "것이죠", "것이에요", "겁니다", "거예요", "거죠", "거야"}
+_NO_BREAK_BEFORE_PREFIX = ("않", "못하", "없")
+# 이 어미로 끝나면 절(節)이 일단락된 것 — 여기서 끊으면 자연스럽다.
+_CLAUSE_ENDINGS = ("고", "서", "며", "면", "는데", "지만", "니까", "다가", "라서", "려고",
+                   "다면", "거든요", "는데요", "어요", "아요")
+# 문장 종결 어미 — 최상급 경계.
+_SENTENCE_ENDINGS = ("습니다", "합니다", "됩니다", "입니다", "니다", "십시오", "세요", "에요",
+                     "예요", "겠죠", "네요", "군요", "잖아요", "이죠", "하죠", "거죠")
+
+
+def _break_score(words: list[Word], j: int, max_gap: float) -> float:
+    """words[j-1]과 words[j] 사이에서 줄을 끊는 것의 자연스러움 점수.
+    문장 끝 > 절 끝 > 뚜렷한 쉼 > 무표정 경계 > 조사 뒤 순이며, 부정어/관형사 뒤와
+    의존명사·보조용언 앞은 금지(-100)한다."""
+    prev = words[j - 1].text.strip()
+    prev_bare = prev.strip(".,!?…·")
+    nxt = words[j].text.strip()
+    nxt_bare = nxt.strip(".,!?…·")
+    # 문장이 끝난 지점은 금지 규칙보다 우선한다: '…가시는 거.'처럼 의존명사로 끝나는
+    # 문장 뒤에서 못 끊으면 다음 문장('우리는 무지합니다')이 같은 줄에 섞인다(실측).
+    if _ends_phrase(prev):
+        return 12.0
+    if prev_bare.endswith(_SENTENCE_ENDINGS):
+        return 10.0
+    if prev_bare in _NO_BREAK_AFTER:
+        return -100.0
+    if nxt_bare in _NO_BREAK_BEFORE_EXACT or nxt_bare.startswith(_NO_BREAK_BEFORE_PREFIX):
+        return -100.0
+    score = 0.0
+    if prev_bare.endswith(_CLAUSE_ENDINGS):
+        score += 6.0
+    elif prev_bare.endswith(("을", "를")):
+        score -= 2.0  # 목적어와 서술어 사이 — 되도록 붙여둔다
+    elif prev_bare.endswith("의"):
+        score -= 4.0  # 관형격 조사 뒤는 거의 항상 어색
+    gap = words[j].start - words[j - 1].end
+    if gap >= max_gap:
+        score += 5.0
+    elif gap >= 0.25:
+        score += 2.0
+    return score
+
+
 def chunk_words_into_lines(
     words: list[Word], max_words_per_line: int, max_gap: float = 0.45
 ) -> list[CaptionLine]:
-    """자막을 한 줄씩 자를 때 기계적으로 N단어에서 끊지 않고, 말의 자연스러운 경계에서
-    우선 끊는다: (1) 문장부호로 끝나는 단어 뒤, (2) 다음 단어와 뚜렷한 쉼(gap≥max_gap)이
-    있는 곳. 그래야 '…나타나지 않는 / 겁니다'처럼 한 구가 두 줄로 쪼개지는 어색함이 준다.
-    자연 경계가 없으면 최대 max_words_per_line 단어에서 안전하게 끊는다.
-    (쉼으로 끊을 땐 최소 2단어를 모아 한 단어짜리 줄이 깜빡이는 것을 막는다.)"""
+    """자막 줄바꿈을 기계적 N단어 컷이 아니라 말의 의미 경계에서 한다.
+
+    기존 방식(4단어 강제 컷)은 '안 되지 / 않고', '가시는 / 거'처럼 한 뜻 단위를
+    두 줄로 찢어 읽기 흐름을 깨뜨렸다(실측 불만). 대신 각 후보 지점의 자연스러움을
+    _break_score로 채점해, 창(최대 max_words_per_line, 금지 경계 회피 시 +1단어까지)
+    안에서 가장 좋은 지점을 골라 끊는다. 문장부호로 끝나는 단어 뒤 > 연결어미 뒤 >
+    뚜렷한 쉼 순으로 선호하고, 부정어·관형사 뒤/의존명사·보조용언 앞은 절대 안 끊는다."""
     lines: list[CaptionLine] = []
-    cur: list[Word] = []
-    for i, w in enumerate(words):
-        cur.append(w)
-        gap = (words[i + 1].start - w.end) if i + 1 < len(words) else 1e9
-        at_cap = len(cur) >= max_words_per_line
-        natural = _ends_phrase(w.text) or (gap >= max_gap and len(cur) >= 2)
-        if natural or at_cap:
-            lines.append(CaptionLine(start=cur[0].start, end=cur[-1].end, words=cur))
-            cur = []
-    if cur:
+    i = 0
+    n = len(words)
+    while i < n:
+        # 후보: 현재 줄을 words[i:j]로 확정하는 j들. 기본 창은 max_words_per_line,
+        # 금지 경계를 피해야 할 때를 위해 1단어 초과(오버플로 페널티)까지 본다.
+        best_j, best_score = min(i + max_words_per_line, n), -1e9
+        for j in range(i + 1, min(i + max_words_per_line + 1, n) + 1):
+            if j >= n:
+                score = 100.0  # 마지막 단어까지 담으면 그대로 끝
+            else:
+                score = _break_score(words, j, max_gap)
+                wlen = j - i
+                score += wlen * 0.4          # 같은 값이면 줄을 조금 더 채우는 쪽 선호
+                if wlen == 1:
+                    score -= 6.0             # 한 단어짜리 깜빡이 줄 억제
+                if wlen > max_words_per_line:
+                    score -= 1.0             # 초과는 금지 경계 회피용으로만
+            if score > best_score:
+                best_j, best_score = j, score
+        cur = words[i:best_j]
         lines.append(CaptionLine(start=cur[0].start, end=cur[-1].end, words=cur))
+        i = best_j
     return lines
 
 
@@ -175,7 +249,7 @@ def _karaoke_text(words: list[Word]) -> str:
         if gap_cs > 0:
             parts.append(f"{{\\k{gap_cs}}}")  # 쉼: 아무것도 강조 안 하고 시간만 소비
         dur_cs = max(1, int(round((w.end - w.start) * 100)))
-        parts.append(f"{{\\k{dur_cs}}}{w.text} ")
+        parts.append(f"{{\\k{dur_cs}}}{_display_text(w.text)} ")
         prev_end = w.end
     return "".join(parts).strip()
 
@@ -370,7 +444,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if template == "karaoke":
                 text = _karaoke_text(line.words)
             else:
-                text = " ".join(w.text for w in line.words)
+                text = " ".join(_display_text(w.text) for w in line.words)
             events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
         return header + "\n".join(events) + "\n"
 
@@ -397,7 +471,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if template == "karaoke":
             text = _karaoke_text(line.words)
         else:
-            text = " ".join(w.text for w in line.words)
+            text = " ".join(_display_text(w.text) for w in line.words)
         events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
 
     return header + "\n".join(events) + "\n"
