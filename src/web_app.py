@@ -1187,7 +1187,7 @@ __BASE_STYLE__
     color: var(--text-faint); font-variant-numeric: tabular-nums;
   }
   .cap-input {
-    flex: 1; padding: 10px 12px; font-size: 14px; font-family: inherit;
+    flex: 1; min-width: 0; padding: 10px 12px; font-size: 14px; font-family: inherit;
     border: 1.5px solid var(--border); border-radius: 10px; background: #fafbfc;
     transition: border-color .15s, background .15s;
   }
