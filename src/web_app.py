@@ -1167,7 +1167,13 @@ __BASE_STYLE__
     padding: 4px 10px; border-radius: 8px; border: 1.5px dashed transparent;
   }
   .drag-box:hover, .drag-box.dragging { border-color: var(--accent); background: rgba(49,130,246,0.08); }
-  .drag-box.title { font-weight: 800; color: #191f28; }
+  .drag-box.title {
+    font-weight: 800; color: #191f28;
+    /* 렌더(libass)처럼 긴 제목은 2줄로 자연 줄바꿈(1.4배 부스트와 일치). nowrap이면
+       fitToWidth가 한 줄로 다시 쪼그라뜨려 미리보기가 실제보다 작아 보인다. */
+    white-space: normal; word-break: keep-all;
+    max-width: {{ ((layout.resolution[0] - 80) * layout.scale)|round|int }}px;
+  }
   .drag-box.caption { font-weight: 700; color: #191f28; }
   .hint { color: var(--text-muted); font-size: 13px; text-align: center; margin-top: 4px; }
   .btn-row { display: flex; gap: 10px; margin-top: 20px; }

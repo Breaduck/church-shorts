@@ -327,14 +327,25 @@ def _karaoke_text(words: list[Word]) -> str:
 
 
 def _fit_title_font_size(
-    text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62
+    text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62,
+    boost: float = 1.4, block_height_px: int = 320,
 ) -> int:
-    """제목이 항상 한 줄에 들어가도록, 글자 수에 맞춰 폰트 크기를 줄인다.
-    (짧은 제목은 max_size 그대로, 긴 제목은 min_size까지 줄여서라도 한 줄 유지.)"""
+    """제목 폰트 크기를 정한다: 한 줄 기준으로 폭에 맞춘 뒤 **boost배 키운다(자연 줄바꿈 2줄 허용)**.
+
+    예전엔 무조건 한 줄을 강제해서, 긴 제목(15자+)이 config title_font_size(190)와 무관하게
+    80px대까지 쪼그라들어 "제목이 너무 작다"는 불만이 반복됐다(2026-08-24 사용자 요청: 1.4배).
+    한 줄 폭 기준 크기 × boost 는 정확히 2줄 이내로만 줄바꿈되므로(줄당 수용 글자수가 1/boost로
+    줄어드는 것뿐), 3줄 폭발은 없다. 2줄 블록(줄높이 1.25×2 = 2.5×크기)이 제목 영역을 넘지 않게
+    block_height_px(기본: title_area 360 - 상단여백 - 여유)로 상한을 건다.
+    짧은 제목은 이미 max_size라 boost 없이 그대로 한 줄."""
     if not text:
         return max_size
-    needed = available_width_px / (len(text) * char_width_ratio)
-    return max(min_size, min(max_size, int(needed)))
+    one_line = available_width_px / (len(text) * char_width_ratio)
+    if one_line >= max_size:
+        return max_size  # 짧은 제목: 최대 크기 그대로(한 줄)
+    boosted = int(one_line * boost)
+    two_line_cap = int(block_height_px / 2.5)  # 2줄 × 줄높이 1.25
+    return max(min_size, min(max_size, boosted, two_line_cap))
 
 
 def _snap_word_starts_to_voice(
@@ -395,13 +406,11 @@ def compute_card_margins(card_layout: dict, resolution: tuple[int, int], title_s
     build_ass()와 위치 편집 웹 UI(web_app.py)가 반드시 같은 값을 써야 미리보기가
     실제 렌더링과 일치하므로, 계산 로직을 이 함수 하나로 모은다."""
     video_box_y = card_layout["video_box_y"]
-    line_height_estimate = int(title_size * 1.25)
-    # 제목 위치는 영상 박스 y좌표가 아니라 제목 영역(title_area_height) 자체를 기준으로 잡는다.
-    # 기존엔 video_box_y 기준(영상 박스 바로 위 90px)이라, 원본 비율상 영상 박스가 세로로
-    # 중앙 정렬되어 아래로 내려가면 제목도 함께 아래로 밀려 화면 위쪽에 여백만 남았다(실측 불만).
-    # 제목 영역 안에서 살짝 위쪽으로 치우치게 배치해 항상 화면 최상단 가까이 고정한다.
-    title_h = card_layout.get("title_area_height", 360)
-    title_margin_v = max(20, (title_h - line_height_estimate) // 2 - 20)
+    # 제목은 제목 영역(title_area_height) 최상단에 고정한다(2026-08-24 사용자 요청: "더 위쪽으로").
+    # 예전 '영역 내 중앙 정렬'은 제목이 커질수록 계산상 내려와 보였고, 이제 1.4배 부스트로
+    # 2줄이 될 수 있어(위 _fit_title_font_size) 상단 고정이어야 2줄 블록이 영역(360px) 안에
+    # 안전하게 들어간다(24 + 2.5×크기 ≤ 360 은 _fit의 block_height_px 상한이 보장).
+    title_margin_v = 24
     video_box_bottom = video_box_y + card_layout["video_box_height"]
     caption_margin_v = video_box_bottom + 60
     return title_margin_v, caption_margin_v
