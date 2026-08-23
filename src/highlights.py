@@ -401,6 +401,10 @@ def select_highlights_auto(
         # (실측: 동일 미니 호출이 37k → 21.6k 토큰).
         "--system-prompt", "너는 교회 쇼츠 편집 전문가다. 지시받은 형식대로만 출력한다.",
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        # 이 작업은 단발 텍스트 분석이라 도구가 전혀 필요 없다. 도구 정의를 아예 빼면
+        # (1) 프롬프트가 더 가벼워지고 (2) 모델이 중간에 검색/파일읽기 같은 도구를 쓰며
+        # 여러 턴을 도는 경로가 원천 차단된다(선정이 수 분씩 걸린 원인 후보).
+        "--tools", "",
     ]
     if model:
         cmd += ["--model", model]  # 비우면 CLI 기본 모델(비쌀 수 있음). config에서 4.5로 고정.
@@ -462,6 +466,7 @@ def select_highlights_auto(
     print(
         f"[highlights] claude -p 완료: model={model or '(cli기본)'} "
         f"duration_ms={outer.get('duration_ms')} api_ms={outer.get('duration_api_ms')} "
+        f"turns={outer.get('num_turns')} "
         f"in={usage.get('input_tokens')} out={usage.get('output_tokens')} "
         f"cache_read={usage.get('cache_read_input_tokens')}",
         flush=True,
