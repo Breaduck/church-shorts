@@ -121,26 +121,52 @@ def parse_pasted_transcript(text: str, video_duration_sec: float) -> Transcript 
     return Transcript(language="ko", duration_sec=dur, segments=segments)
 
 
-def align_plain_text_to_reference(
+def _split_sentences(text: str) -> list[str]:
+    """붙여넣은 텍스트를 매칭 단위(문장)로 나눈다. 한국어 종결부호/줄바꿈이 1차 기준이고,
+    노트북LM처럼 부호·줄바꿈 없는 통짜 문단은 단어 20개 단위로 잘라 매칭 앵커를 확보한다.
+    (옛 방식은 통짜 텍스트를 세그먼트 1개로 만들어 시간정보가 무너졌다 — 그 원인 제거.)"""
+    parts = re.split(r"(?<=[.!?。…?!])\s+|\n+", (text or "").strip())
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        words = p.split()
+        if len(words) <= 30:
+            out.append(p)
+        else:
+            for i in range(0, len(words), 20):
+                chunk = " ".join(words[i : i + 20]).strip()
+                if chunk:
+                    out.append(chunk)
+    return out
+
+
+def _fill_gap(spans: list, lo: int, hi: int, t0: float, t1: float) -> None:
+    """매칭 실패한 문장들(spans[lo:hi])의 시각을, 앞뒤 성공 문장 사이 [t0,t1]에 글자수 비례로 채운다."""
+    total = sum(len(_normalize(spans[i][0])) for i in range(lo, hi)) or 1
+    span = max(0.1, t1 - t0)
+    acc = 0
+    for i in range(lo, hi):
+        clen = len(_normalize(spans[i][0]))
+        s = t0 + span * acc / total
+        acc += clen
+        e = t0 + span * acc / total
+        spans[i][1] = s
+        spans[i][2] = max(e, s + 0.3)
+
+
+def _align_proportional(
     plain_text: str, reference: Transcript, video_duration_sec: float
 ) -> Transcript:
-    """타임스탬프 없는 순수 텍스트를, 시간축이 있는 참조 자막(유튜브 자동자막)에 정렬해
-    시간을 복원한다. 정확한 단어정렬이 아니라 '순차 비례 매핑'의 실용적 근사다:
-
-      참조 자막의 전체 단어 수 대비, 붙여넣은 텍스트를 문장 단위로 나눠 누적 글자수
-      비율로 참조 타임라인 상의 위치를 추정한다. 붙여넣은(정확한) 텍스트를 화면/선정
-      본문으로 쓰되, 시간만 참조에서 빌려온다.
-    """
+    """폴백: 문자열 매칭이 전부 실패했을 때만 쓰는 '순차 비례 매핑'(옛 방식)."""
     ref_words = [w for seg in reference.segments for w in seg.words]
     if not ref_words:
-        # 참조가 비면 균등 분배로라도.
         ref_start, ref_end = 0.0, video_duration_sec or 1.0
     else:
         ref_start, ref_end = ref_words[0].start, ref_words[-1].end
 
-    # 문장 단위 분할(한국어 종결부호 기준, 없으면 줄 단위).
-    sentences = re.split(r"(?<=[.!?。…])\s+|\n+", plain_text.strip())
-    sentences = [s.strip() for s in sentences if s.strip()]
+    sentences = _split_sentences(plain_text)
     if not sentences:
         return reference
 
@@ -158,9 +184,69 @@ def align_plain_text_to_reference(
         segments.append(_mk_segment(start, max(end, start + 0.5), s))
 
     return Transcript(
-        language="ko",
-        duration_sec=video_duration_sec or ref_end,
-        segments=segments,
+        language="ko", duration_sec=video_duration_sec or ref_end, segments=segments
+    )
+
+
+def align_plain_text_to_reference(
+    plain_text: str, reference: Transcript, video_duration_sec: float
+) -> Transcript:
+    """타임스탬프 없는 '정확한' 붙여넣기 텍스트(노트북LM 등)에, 시간축이 있는 참조 자막
+    (유튜브 자동자막)의 실제 시각을 '문자열 매칭'으로 부여한다.
+
+    두 자막은 같은 오디오의 전사라 표기가 거의 일치하므로, 정규화(공백·부호 제거) 후
+    부분열 검색이 잘 맞는다. 참조 전체를 이어붙인 정규화 문자열에서 각 문장의 앞부분
+    앵커를 '커서 이후'로만 찾아(단조 증가) 반복 어구 오매칭과 뒤로 점프를 막는다.
+    비례배분(옛 방식)과 달리 시간이 추정이 아니라 실제 매칭 위치라 오차가 작다.
+    화면 본문은 붙여넣은 정확본을 그대로 쓰고, 매칭 실패한 문장만 앞뒤 사이를 비례로 채운다.
+    """
+    norm, char_time = _build_ref_index(reference)
+    sentences = _split_sentences(plain_text)
+    if not norm or not sentences:
+        return _align_proportional(plain_text, reference, video_duration_sec)
+
+    n = len(norm)
+    ref_start, ref_end = char_time[0][0], char_time[-1][1]
+
+    cursor = 0
+    matched: list[int] = []
+    spans: list[list] = []  # [display, start_t|None, end_t|None]
+    for disp in sentences:
+        q = _normalize(disp)
+        pos = -1
+        for L in (24, 16, 10, 6):
+            if len(q) >= L:
+                p = norm.find(q[:L], cursor)
+                if p != -1:
+                    pos = p
+                    break
+        if pos == -1:
+            spans.append([disp, None, None])
+            continue
+        end_pos = min(pos + max(1, len(q)), n)
+        st = char_time[pos][0]
+        en = char_time[min(end_pos, n) - 1][1]
+        spans.append([disp, st, max(en, st + 0.3)])
+        matched.append(len(spans) - 1)
+        cursor = end_pos
+
+    if not matched:
+        return _align_proportional(plain_text, reference, video_duration_sec)
+
+    # 실패한 문장 시각을 앞뒤 성공 문장 사이에 채운다(선두/중간/말미).
+    first = matched[0]
+    if first > 0:
+        _fill_gap(spans, 0, first, ref_start, spans[first][1])
+    for a, b in zip(matched, matched[1:]):
+        if b - a > 1:
+            _fill_gap(spans, a + 1, b, spans[a][2], spans[b][1])
+    last = matched[-1]
+    if last < len(spans) - 1:
+        _fill_gap(spans, last + 1, len(spans), spans[last][2], max(ref_end, spans[last][2] + 0.5))
+
+    segments = [_mk_segment(st, max(en, st + 0.3), disp) for disp, st, en in spans if st is not None]
+    return Transcript(
+        language="ko", duration_sec=video_duration_sec or ref_end, segments=segments
     )
 
 
