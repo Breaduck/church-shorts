@@ -189,8 +189,28 @@ def _break_score(words: list[Word], j: int, max_gap: float) -> float:
     return score
 
 
+def _char_units(ch: str) -> float:
+    """글자 하나의 대략적 폭(폰트 크기 1.0 = 전각 1자 기준). 한글/한자는 전각(1.0),
+    공백·라틴·숫자·문장부호는 반각 이하. libass 실제 렌더 폭의 근사치로, 자막이
+    화면 폭을 넘어 2줄로 자동 랩핑되는지 판단하는 데 쓴다."""
+    o = ord(ch)
+    if 0xAC00 <= o <= 0xD7A3 or 0x4E00 <= o <= 0x9FFF or ch in "…—":
+        return 1.0
+    if ch == " ":
+        return 0.34
+    if ch.isdigit() or "a" <= ch <= "z" or "A" <= ch <= "Z":
+        return 0.56
+    return 0.45
+
+
+def _line_units(words: list[Word]) -> float:
+    text = " ".join(_display_text(w.text) for w in words)
+    return sum(_char_units(c) for c in text)
+
+
 def chunk_words_into_lines(
-    words: list[Word], max_words_per_line: int, max_gap: float = 0.45
+    words: list[Word], max_words_per_line: int, max_gap: float = 0.45,
+    max_units: float | None = None,
 ) -> list[CaptionLine]:
     """자막 줄바꿈을 기계적 N단어 컷이 아니라 말의 의미 경계에서 한다.
 
@@ -198,15 +218,22 @@ def chunk_words_into_lines(
     두 줄로 찢어 읽기 흐름을 깨뜨렸다(실측 불만). 대신 각 후보 지점의 자연스러움을
     _break_score로 채점해, 창(최대 max_words_per_line, 금지 경계 회피 시 +1단어까지)
     안에서 가장 좋은 지점을 골라 끊는다. 문장부호로 끝나는 단어 뒤 > 연결어미 뒤 >
-    뚜렷한 쉼 순으로 선호하고, 부정어·관형사 뒤/의존명사·보조용언 앞은 절대 안 끊는다."""
+    뚜렷한 쉼 순으로 선호하고, 부정어·관형사 뒤/의존명사·보조용언 앞은 절대 안 끊는다.
+
+    max_units가 주어지면(화면 폭 ÷ 폰트 크기) 그 폭을 넘는 줄은 금지한다: 자막은
+    무조건 화면에 1줄이어야 하고(사용자 요구), 넘치면 libass가 멋대로 2줄로 랩핑하므로
+    아예 후보에서 제외해 각 조각이 따로따로 순차 표시되게 한다."""
     lines: list[CaptionLine] = []
     i = 0
     n = len(words)
     while i < n:
         # 후보: 현재 줄을 words[i:j]로 확정하는 j들. 기본 창은 max_words_per_line,
         # 금지 경계를 피해야 할 때를 위해 1단어 초과(오버플로 페널티)까지 본다.
-        best_j, best_score = min(i + max_words_per_line, n), -1e9
+        best_j, best_score = i + 1, -1e9
         for j in range(i + 1, min(i + max_words_per_line + 1, n) + 1):
+            # 화면 폭 초과 줄은 후보 자체가 아니다 (단, 한 단어는 쪼갤 수 없어 허용).
+            if max_units is not None and j - i > 1 and _line_units(words[i:j]) > max_units:
+                break  # 단어를 더 붙일수록 더 넘치므로 이후 j도 전부 불가
             if j >= n:
                 score = 100.0  # 마지막 단어까지 담으면 그대로 끝
             else:
@@ -263,6 +290,31 @@ def _fit_title_font_size(
         return max_size
     needed = available_width_px / (len(text) * char_width_ratio)
     return max(min_size, min(max_size, int(needed)))
+
+
+def _snap_word_starts_to_voice(
+    words: list[Word], silences: list[tuple[float, float]]
+) -> list[Word]:
+    """Whisper가 단어 앞의 침묵을 단어 발화 시간에 흡수하는 문제를 실제 오디오 기준으로 교정한다.
+
+    실측: 쉼(pause) 다음 첫 단어의 start가 실제 발화보다 1~1.8초 이르게 찍혀
+    ('아우르' \\k182 = 1.82초처럼 단어 하나가 침묵 전체를 차지), 자막 줄이 목사님이
+    말을 시작하기 한참 전에 미리 떠서 "자막이 말보다 빠르다"고 체감된다.
+    ffmpeg silencedetect로 잰 무음 구간(silences, 클립 상대시간)을 받아, 단어 구간을
+    무음이 덮고 있으면 start를 무음이 끝나는 지점(= 실제 발화 시작) 직전으로 민다.
+
+    조건: 무음이 단어 시작 부근(start+0.35 이내)에서 시작하고, 단어가 끝나기 전에
+    무음이 끝나는 경우만. (단어 중간·끝의 무음은 말끝 여운이므로 건드리지 않는다.)"""
+    if not silences:
+        return words
+    out: list[Word] = []
+    for w in words:
+        new_start = w.start
+        for s, e in silences:
+            if s <= w.start + 0.35 and w.start + 0.15 < e <= w.end + 0.1:
+                new_start = max(new_start, e - 0.08)
+        out.append(Word(start=new_start, end=max(w.end, new_start + 0.05), text=w.text))
+    return out
 
 
 def _remap_after_silence_removal(t: float, keep_segments: list[tuple[float, float]]) -> float:
@@ -342,6 +394,7 @@ def build_ass(
     caption_size_override: int = 0,
     caption_align: str = "",
     caption_spacing: float = 0.0,
+    voice_silences: list[tuple[float, float]] | None = None,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -449,6 +502,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
+    # 실제 오디오의 무음 구간 기준으로 단어 start를 교정해 "자막이 말보다 앞서 뜨는" 문제를
+    # 잡는다. (voice_silences는 원본 타임라인 기준이라 무음 제거 리매핑 전에 적용해야 한다.)
+    if voice_silences and not keep_segments:
+        rel_words = _snap_word_starts_to_voice(rel_words, voice_silences)
     if keep_segments:
         rel_words = [
             Word(
@@ -463,7 +520,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         rel_words = [
             Word(start=w.start, end=max(w.end, w.start + 0.05), text=w.text) for w in rel_words
         ]
-    lines = _clamp_lines_non_overlap(chunk_words_into_lines(rel_words, max_words_per_line))
+    # 자막은 화면에 무조건 1줄: 사용 가능한 폭(픽셀)을 폰트 크기로 나눈 전각 단위 폭을
+    # 상한으로 넘겨, 넘치는 줄은 아예 만들어지지 않게 한다(각 조각은 따로 순차 표시).
+    usable_px = width - caption_margin_l - caption_margin_r - 24
+    max_units = max(4.0, usable_px / max(1, caption_size))
+    lines = _clamp_lines_non_overlap(
+        chunk_words_into_lines(rel_words, max_words_per_line, max_units=max_units)
+    )
 
     for line in lines:
         start_t = _ass_time(line.start)
@@ -493,6 +556,7 @@ def build_ass_for_clip(
     caption_offset_y: float = 0.0,
     caption_overrides: list | None = None,
     font_style: dict | None = None,
+    voice_silences: list[tuple[float, float]] | None = None,
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -537,4 +601,5 @@ def build_ass_for_clip(
         caption_size_override=int(fs.get("caption_size", 0) or 0),
         caption_align=fs.get("caption_align", ""),
         caption_spacing=float(fs.get("caption_spacing", 0) or 0),
+        voice_silences=voice_silences,
     )

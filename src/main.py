@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import threading
@@ -356,6 +357,7 @@ def analyze(
                     dl.video_path, transcript_path,
                     model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
                     language=w["language"], vad_filter=w.get("vad_filter", True),
+                    cpu_threads=int(w.get("cpu_threads", 0)),
                     on_segment=lambda seg_end, duration: sp.set_fraction(
                         min(1.0, seg_end / duration) if duration else 0.0,
                         f"직접 전사 중... {min(100, seg_end / duration * 100):.0f}%" if duration else "직접 전사 중...",
@@ -565,20 +567,69 @@ def _advance_clip_start(min_start: float, segs: list[Segment]) -> float:
     return min_start
 
 
+def _build_clip_hotwords(
+    keywords: list[str], bible_dict: str, transcript_text: str, budget_chars: int = 260
+) -> str | None:
+    """클립별 hotwords를 '중요한 것부터, 예산 안에서' 구성한다.
+
+    faster-whisper는 hotwords를 앞 223토큰까지만 쓰고 뒤는 조용히 버린다(실측 사고:
+    500토큰짜리 성경 사전 전체 + 맨 뒤에 keywords를 이어 붙이던 기존 방식은 성경책
+    이름들과 keywords가 통째로 잘려 무효 → 출애굽기가 '출애국기'로 나오는데도 사전이
+    막지 못했다). 게다가 클립과 무관한 희귀 고유명사 수백 개는 디코딩을 이상한 단어
+    쪽으로 편향시키는 부작용도 있다('아무리 존귀한'→'아우르 전기한' 류).
+    그래서: (1) Claude가 클립 문맥을 읽고 뽑은 keywords를 맨 앞에, (2) 성경 사전 중
+    이 설교 전사본에 실제로 등장하는 단어만 뒤에 더한다. 한글 1자≈1토큰꼴이라
+    budget_chars(공백 포함 260자)면 223토큰 한도 안에 넉넉히 들어간다."""
+    dict_words = list(dict.fromkeys(bible_dict.split()))
+    if transcript_text.strip():
+        # 1글자 항목(장/절/상/하 등)은 아무 데나 부분 매칭되므로 2글자 이상만 본다.
+        matched = [d for d in dict_words if len(d) >= 2 and d in transcript_text]
+    else:
+        matched = dict_words  # 전사본이 없으면 사전 앞쪽(핵심 이름들)부터 예산만큼
+    terms = list(dict.fromkeys([k.strip() for k in keywords if k and k.strip()] + matched))
+    parts: list[str] = []
+    used = 0
+    for t in terms:
+        if used + len(t) + 1 > budget_chars:
+            break
+        parts.append(t)
+        used += len(t) + 1
+    return " ".join(parts) or None
+
+
+def _apply_corrections(segs: list[Segment], corrections: dict) -> None:
+    """전사 오인식 확정 교정(config captions.corrections). 성경 용어처럼 절대 틀리면
+    안 되는 단어의 최종 안전망 — hotwords 편향으로도 새는 반복 오탈자만 치환한다."""
+    if not corrections or not segs:
+        return
+    for s in segs:
+        for wrong, right in corrections.items():
+            if wrong in (s.text or ""):
+                s.text = s.text.replace(wrong, right)
+        for wd in s.words:
+            for wrong, right in corrections.items():
+                if wrong in wd.text:
+                    wd.text = wd.text.replace(wrong, right)
+
+
 def _precise_cache_find(
-    cache_dir: Path, model: str, start: float, end: float
+    cache_dir: Path, model: str, sig: str, start: float, end: float
 ) -> list[Segment] | None:
     """이전 렌더에서 저장한 정밀 재전사 결과 중 [start, end]를 덮는 것을 찾는다.
 
     large-v3 CPU 재전사는 클립당 1~3분 걸리는데, 편집기에서 제목/폰트/위치만 바꿔
     재렌더할 때마다 같은 구간을 매번 다시 전사하는 게 렌더가 느린 주범이었다.
     세그먼트 타임스탬프는 원본 절대시간이라, 캐시 창이 현재 클립 구간을 포함하기만 하면
-    구간이 다소 달라져도(스냅/살짝 트림) 그대로 재사용할 수 있다."""
+    구간이 다소 달라져도(스냅/살짝 트림) 그대로 재사용할 수 있다.
+
+    sig(초기 프롬프트+hotwords 해시)가 파일명에 들어간다: hotwords 사전을 고치면 예전
+    (틀린 어휘로 뽑힌) 캐시가 자동 무효화되어 다시 전사한다 — 이게 없으면 사전을 아무리
+    고쳐도 캐시된 오탈자가 계속 나온다(실측)."""
     if not cache_dir.exists():
         return None
-    for f in cache_dir.glob(f"*_{model}.json"):
+    for f in cache_dir.glob(f"*_{model}_{sig}.json"):
         try:
-            a_str, b_str = f.stem.rsplit(f"_{model}", 1)[0].split("_")[:2]
+            a_str, b_str = f.stem.split("_")[:2]
             a, b = float(a_str), float(b_str)
         except ValueError:
             continue
@@ -598,10 +649,10 @@ def _precise_cache_find(
 
 
 def _precise_cache_save(
-    cache_dir: Path, model: str, start: float, end: float, segs: list[Segment]
+    cache_dir: Path, model: str, sig: str, start: float, end: float, segs: list[Segment]
 ) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"{start:.2f}_{end:.2f}_{model}.json"
+    path = cache_dir / f"{start:.2f}_{end:.2f}_{model}_{sig}.json"
     path.write_text(
         json.dumps(
             {"segments": [
@@ -652,7 +703,9 @@ def render_selected(
             )
     w = cfg["whisper"]
     outputs = []
-    END_BUFFER_SEC = 8.0    # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
+    END_BUFFER_SEC = 16.0   # clip.end 뒤로 이만큼 더 전사해서 문장이 끝나는 지점을 찾는다
+                            # (8초였을 때 문장 끝이 창 밖이라 끝 스냅이 실패해 '이름을 그래서'처럼
+                            #  말 중간에 뚝 끊긴 실측 사고 — 끝 스냅 허용폭 12초 + 여유)
     START_BUFFER_SEC = 4.0  # clip.start 앞도 전사해, 시작이 문장 중간이면 문장 시작으로 당긴다
 
     # 정밀 재전사가 이따금 한두 단어만 뱉고 사실상 실패할 때가 있다(자막이 통째로 비는
@@ -681,6 +734,12 @@ def render_selected(
 
     def _count_words(segments: list[Segment], a: float, b: float) -> int:
         return sum(1 for s in segments for wd in s.words if wd.start >= a and wd.end <= b)
+
+    # 성경 사전 매칭용: 이 설교 전체에서 실제로 언급되는 고유명사만 hotwords에 넣는다.
+    base_text_all = " ".join((s.text or "") for s in base_segments)
+    corrections = cfg.get("captions", {}).get("corrections") or {}
+    # base(폴백/스냅 기준) 전사에도 교정을 미리 적용해, 폴백 자막에서도 오탈자가 안 나가게 한다.
+    _apply_corrections(base_segments, corrections)
 
     total = len(clip_indices)
     step = 100 / total if total else 100
@@ -716,17 +775,22 @@ def render_selected(
             outputs.append(out_path)
             continue
 
-        hotwords = " ".join(filter(None, [w.get("bible_hotwords", ""), " ".join(clip.keywords)])).strip() or None
+        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
         clip_len = clip.end - clip.start
         precise_model = w.get("precise_model_size", w["model_size"])
         cache_dir = video_dir / "precise_cache"
+        # 프롬프트/hotwords가 바뀌면 캐시도 무효가 되어야 한다(사전을 고쳐도 옛 오탈자
+        # 캐시가 계속 나오는 문제 방지). 해시를 캐시 파일명에 넣는다.
+        sig = hashlib.md5(
+            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+        ).hexdigest()[:8]
 
         # 같은 구간을 이미 정밀 재전사했다면 재사용한다. 편집기에서 제목/폰트/위치만 바꿔
         # 재렌더할 때도 클립당 1~3분짜리 large-v3 CPU 재전사를 매번 다시 돌리던 것이
         # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
         tr_a = max(0.0, clip.start - START_BUFFER_SEC)
         tr_b = clip.end + END_BUFFER_SEC
-        cached_segs = _precise_cache_find(cache_dir, precise_model, tr_a, clip.end)
+        cached_segs = _precise_cache_find(cache_dir, precise_model, sig, tr_a, clip.end)
         if cached_segs is not None:
             progress(f"[{idx+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
             segs = cached_segs
@@ -745,6 +809,8 @@ def render_selected(
                     language=w["language"], vad_filter=vad,
                     initial_prompt=w.get("initial_prompt"),
                     hotwords=hotwords,
+                    cpu_threads=int(w.get("cpu_threads", 0)),
+                    batch_size=int(w.get("batch_size", 8)),
                 )
 
             vad_default = w.get("vad_filter", True)
@@ -794,7 +860,10 @@ def render_selected(
             elif segs and precise_n > 0:
                 _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
                 # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
-                _precise_cache_save(cache_dir, precise_model, tr_a, tr_b, segs)
+                _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
+        # 확정 오탈자 교정(출애굽기/여호와 등). 캐시는 원본 그대로 저장하고 매번 여기서 교정한다
+        # (교정 사전을 나중에 더 채워도 재전사 없이 다음 렌더부터 바로 반영되게).
+        _apply_corrections(segs, corrections)
         # 경계 스냅 기준: 정밀 전사가 건강하면 그것을 쓴다 — large-v3는 구두점 있는 진짜
         # 문장 단위라 "문장 중간 끊김/앞 문장 꼬리 시작"을 정확히 잡는다. 유튜브 자막 조각
         # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
@@ -809,14 +878,23 @@ def render_selected(
             if new_start != clip.start:
                 _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
                 clip.start = new_start
-            new_end = _snap_clip_end_to_sentence(clip, snap_src)
+            # 끝 스냅 허용폭 12초: 6초였을 때 문장 끝이 조금 멀면 스냅이 포기해
+            # '이름을 그래서'처럼 말 중간에 뚝 끊겼다(실측). 늘어난 길이가 상한을 넘으면
+            # 아래 하드캡이 끝(펀치라인)을 지키고 시작을 당겨 해결한다.
+            new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=12.0)
             if new_end != clip.end:
                 _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
                 clip.end = new_end
-            # 길이 절대 규칙: 쇼츠는 1분 내외. 스냅까지 끝난 최종 길이가 상한(max+5초)을
-            # 넘으면 끝(펀치라인)은 지키고 시작을 당겨 상한 안으로 넣는다. 선정 단계의
-            # 상한(1.5배=90초)만으로는 60~90초 후보가 그대로 렌더돼 "1분 내외"가 깨졌다.
-            hard_len = float(cfg["highlights"]["max_duration_sec"]) + 5.0
+            # 길이 절대 상한(hard_max_duration_sec, 기본 80초): 2026 조사 결과 쇼츠/릴스 모두
+            # 45~60초가 스위트스팟이지만 알고리즘의 실제 기준은 '완결 시청률'이라, 문장/맥락이
+            # 60초 안에 안 끝나면 80초까지는 끊지 않고 완결시키는 게 낫다(말이 중간에 끊긴
+            # 클립은 어떤 길이보다 성과가 나쁘다). 상한을 넘으면 끝(펀치라인)은 지키고
+            # 시작을 당겨 상한 안으로 넣는다.
+            hard_len = float(
+                cfg["highlights"].get(
+                    "hard_max_duration_sec", float(cfg["highlights"]["max_duration_sec"]) + 5.0
+                )
+            )
             if clip.end - clip.start > hard_len:
                 new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
                 progress(

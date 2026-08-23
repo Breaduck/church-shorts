@@ -1081,7 +1081,10 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     segs = json_load_transcript(transcript_path)["segments"]
     words = _collect_words_in_range(segs, clip.start, clip.end)  # 롤링 중복 제거됨
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
-    lines = chunk_words_into_lines(words, max_wpl)
+    # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
+    res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
+    max_units = max(4.0, (res_w - 104) / max(1, cfg["captions"].get("font_size", 72)))
+    lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
     out = [
         {"start": ln.start, "end": ln.end, "text": " ".join(w.text for w in ln.words)}
         for ln in lines

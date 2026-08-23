@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 
 @dataclass
@@ -65,10 +65,14 @@ def _format_ts(sec: float) -> str:
 _model_cache: dict[str, WhisperModel] = {}
 
 
-def _get_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
-    key = f"{model_size}:{device}:{compute_type}"
+def _get_model(model_size: str, device: str, compute_type: str, cpu_threads: int = 0) -> WhisperModel:
+    # cpu_threads=0이면 ctranslate2 기본값(4스레드)이라 8코어 CPU의 절반이 논다.
+    # 물리 코어 수를 넘기면 행렬 연산이 전 코어를 써 정밀 재전사가 눈에 띄게 빨라진다.
+    key = f"{model_size}:{device}:{compute_type}:{cpu_threads}"
     if key not in _model_cache:
-        _model_cache[key] = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _model_cache[key] = WhisperModel(
+            model_size, device=device, compute_type=compute_type, cpu_threads=cpu_threads
+        )
     return _model_cache[key]
 
 
@@ -83,22 +87,36 @@ def transcribe(
     initial_prompt: Optional[str] = None,
     hotwords: Optional[str] = None,
     condition_on_previous_text: bool = True,
+    cpu_threads: int = 0,
+    batched: bool = False,
+    batch_size: int = 8,
 ) -> Transcript:
-    model = _get_model(model_size, device, compute_type)
+    model = _get_model(model_size, device, compute_type, cpu_threads)
 
     # initial_prompt: Whisper 디코딩을 이 어휘 쪽으로 편향시킨다. 설교 도메인 용어(성경 인물/책
     # 이름, 은혜/성령/구원 등)를 미리 알려주면 medium 모델이라도 교회 용어 오탈자가 크게 준다.
-    # hotwords: initial_prompt와 달리 224토큰 한도에 얽매이지 않고 특정 단어(성경 고유명사 사전)의
-    # 인식 확률을 끌어올리는 전용 기능. 정적 성경 사전을 상시 탑재하는 데 쓴다.
-    segments_iter, info = model.transcribe(
-        str(audio_path),
+    # hotwords: 특정 단어(성경 고유명사 사전)의 인식 확률을 끌어올리는 전용 기능.
+    # 주의: faster-whisper는 hotwords를 앞 223토큰까지만 쓰고 뒤는 조용히 버린다 — 호출자가
+    # 예산 안에서 중요한 단어부터 넣어야 한다(main.py의 클립별 hotwords 구성 참고).
+    common = dict(
         language=language,
         initial_prompt=initial_prompt,
         hotwords=hotwords,
         word_timestamps=True,
         vad_filter=vad_filter,
-        condition_on_previous_text=condition_on_previous_text,
     )
+    if batched and vad_filter:
+        # BatchedInferencePipeline: VAD로 잘게 나눈 발화 조각들을 batch_size개씩 병렬 디코딩해
+        # CPU에서도 2~4배 빠르다. condition_on_previous_text는 내부에서 항상 False(정밀 재전사
+        # 경로가 원하는 그 설정). VAD를 끈 재시도 경로에서는 조각을 만들 수 없어 순차 방식 사용.
+        pipeline = BatchedInferencePipeline(model=model)
+        segments_iter, info = pipeline.transcribe(str(audio_path), batch_size=batch_size, **common)
+    else:
+        segments_iter, info = model.transcribe(
+            str(audio_path),
+            condition_on_previous_text=condition_on_previous_text,
+            **common,
+        )
 
     segments: list[Segment] = []
     for seg in segments_iter:
@@ -128,6 +146,7 @@ def transcribe_and_save(
     language: str = "ko",
     vad_filter: bool = True,
     on_segment: Optional[Callable[[float, float], None]] = None,
+    cpu_threads: int = 0,
 ) -> Transcript:
     transcript = transcribe(
         audio_path,
@@ -137,6 +156,7 @@ def transcribe_and_save(
         language=language,
         vad_filter=vad_filter,
         on_segment=on_segment,
+        cpu_threads=cpu_threads,
     )
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     output_json_path.write_text(
@@ -156,6 +176,8 @@ def transcribe_clip_precise(
     vad_filter: bool = True,
     initial_prompt: Optional[str] = None,
     hotwords: Optional[str] = None,
+    cpu_threads: int = 0,
+    batch_size: int = 8,
 ) -> list[Segment]:
     """클립 구간(1~5분 이내의 짧은 분량)만 오려서 정밀 재전사한다.
 
@@ -194,6 +216,9 @@ def transcribe_clip_precise(
                 initial_prompt=initial_prompt,
                 hotwords=hw,
                 condition_on_previous_text=False,
+                cpu_threads=cpu_threads,
+                batched=True,
+                batch_size=batch_size,
             )
 
         try:

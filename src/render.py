@@ -341,6 +341,14 @@ def render_clip(
         vby = _compute_card_video_box_y(card_layout, resolution, vbh)
         card_layout = {**card_layout, "video_box_height": vbh, "video_box_y": vby}
 
+    # 자막 싱크 교정용 무음 지도: Whisper가 쉼(pause)을 다음 단어 발화 시간에 흡수해
+    # 자막이 실제 말보다 1~2초 먼저 뜨는 문제(실측)를, 실제 오디오의 무음 구간으로
+    # 단어 start를 교정해 잡는다. remove_silence(-35dB/1.2s)와 별개로, 짧은 쉼까지
+    # 잡도록 더 민감한 값(-32dB/0.3s)을 쓴다. ffmpeg 한 번이라 클립당 2~3초면 끝난다.
+    voice_silences: list[tuple[float, float]] | None = None
+    if captions_cfg.get("enabled", True) and not (getattr(clip, "caption_overrides", None) or None):
+        voice_silences = _detect_silences(video_path, clip.start, clip.end, -32.0, 0.3)
+
     ass_path = output_path.with_suffix(".ass")
     ass_content = build_ass_for_clip(
         segments=segments,
@@ -367,6 +375,7 @@ def render_clip(
             "caption_align": getattr(clip, "caption_align", "") or "",
             "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
         },
+        voice_silences=voice_silences,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
