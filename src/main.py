@@ -22,6 +22,7 @@ import yaml
 from src.audio_peaks import detect_peak_hints
 from src.download import download_video, find_cached, probe_video
 from src.highlights import (
+    CLIPS_LOCK,
     Clip,
     build_prompt,
     load_clips_json,
@@ -287,9 +288,9 @@ def analyze(
         _Stage("download", "영상 정보 확인 중...", est=8, span=10),
         _Stage("transcript", "자막 준비 중...", est=12, span=15),
         _Stage("hints", "핵심 구간 분석 중...", est=5, span=5),
-        # 하이라이트 선정(claude -p): sonnet + thinking 상한 기준 보통 2~4분. ETA가 자주
-        # 0에 붙어 "예상보다 오래 걸리는 중"으로 새는 것보단 살짝 넉넉히(190s) 잡아 카운트다운.
-        _Stage("highlight", "하이라이트 후보 선정 중...", est=190, span=70),
+        # 하이라이트 선정(claude -p): sonnet + thinking 4096 기준 보통 3~5분. ETA가 자주
+        # 0에 붙어 "예상보다 오래 걸리는 중"으로 새는 것보단 살짝 넉넉히(280s) 잡아 카운트다운.
+        _Stage("highlight", "하이라이트 후보 선정 중...", est=280, span=70),
     ]
     sp = StageProgress(progress, stages)
     try:
@@ -394,7 +395,8 @@ def analyze(
         if clips_path.exists() and regenerate:
             # 기존 후보(사용자 편집이 담겼을 수 있음)를 지우지 않고 버전 백업 후 재생성.
             backup = clips_path.with_name(f"clips.{time.strftime('%Y%m%d_%H%M%S')}.bak.json")
-            clips_path.replace(backup)
+            with CLIPS_LOCK:
+                clips_path.replace(backup)
 
         # 3) 오디오 에너지 힌트 -------------------------------------------------
         sp.advance("핵심 구간 분석 중...")
@@ -436,6 +438,7 @@ def analyze(
             # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
             model=model or h.get("model", ""),
             transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
+            thinking_tokens=int(h.get("thinking_tokens", 4096)),
         )
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
@@ -455,7 +458,8 @@ def analyze(
         # 보이므로(실측: 74,59,64,58), 저장 전에 score 내림차순으로 확정한다.
         # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
         clips.sort(key=lambda c: c.score or 0, reverse=True)
-        save_clips_json(clips, clips_path)
+        with CLIPS_LOCK:
+            save_clips_json(clips, clips_path)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips
     finally:
@@ -754,7 +758,17 @@ def render_selected(
     _raw_progress = progress
     progress = lambda message, pct, eta=None: _safe_progress(_raw_progress, message, pct, eta)  # noqa: E731
     cfg = load_config(config_path)
-    clips = load_clips_json(video_dir / "clips.json")
+    with CLIPS_LOCK:
+        clips = load_clips_json(video_dir / "clips.json")
+    # 렌더는 몇 분씩 걸리고 그 사이 사용자가 편집기에서 clips.json을 고칠 수 있다. 렌더가
+    # 끝날 때 이 낡은 메모리 사본으로 전체를 덮어쓰면 그 편집이 소실되므로, 종료 시점엔
+    # 디스크를 다시 읽어 '렌더가 실제로 바꾼 필드(start/end)'만 병합한다. 어느 클립이
+    # 렌더 중 편집됐는지 판별하기 위해 시작 시점 경계를 기억해 둔다.
+    orig_bounds = {
+        idx: (clips[idx].start, clips[idx].end)
+        for idx in clip_indices
+        if 0 <= idx < len(clips)
+    }
     video_path = video_dir / "source.mp4"
     # 분석 단계에서 시작한 백그라운드 다운로드가 아직 진행 중이면 먼저 완료를 기다린다
     # (아래 자기치유가 같은 파일을 이중으로 받다 꼬이지 않게 하기 위함이기도 하다).
@@ -1039,13 +1053,39 @@ def render_selected(
         )
         outputs.append(out_path)
 
-    # 렌더 과정에서 스냅/편집자막으로 clip.end가 조정됐을 수 있다. 이를 clips.json에 반영해
-    # 검토 UI의 'N초' 라벨(= end-start)이 실제 렌더된 영상 길이와 일치하게 한다.
-    # (기존엔 원본 end를 그대로 표기해 "49초"인데 실제 58초처럼 어긋나던 문제.)
-    save_clips_json(clips, video_dir / "clips.json")
+    # 렌더 과정에서 스냅/편집자막으로 clip.start/end가 조정됐을 수 있다. 이를 clips.json에
+    # 반영해 검토 UI의 'N초' 라벨이 실제 렌더된 영상 길이와 일치하게 한다.
+    _merge_render_bounds(video_dir / "clips.json", clips, clip_indices, orig_bounds)
 
     progress("모든 클립 렌더링 완료", 100)
     return outputs
+
+
+def _merge_render_bounds(
+    clips_path: Path,
+    rendered_clips: list[Clip],
+    clip_indices: list[int],
+    orig_bounds: dict[int, tuple[float, float]],
+) -> None:
+    """렌더가 조정한 클립 경계(start/end)만 디스크 최신본에 병합 저장한다.
+
+    렌더는 몇 분씩 걸리므로 시작 시점의 메모리 사본으로 전체를 덮어쓰면 그 사이 편집기에서
+    저장한 수정(자막·제목·위치 등)이 통째로 소실된다(실제 시나리오). 그래서:
+      - 락 안에서 디스크를 다시 읽어, 렌더가 실제로 바꾼 필드(start/end)만 써넣는다 →
+        렌더 중 '다른' 클립에 한 편집은 그대로 보존된다.
+      - 렌더 중인 '바로 그' 클립을 사용자가 편집했으면(경계가 시작 시점과 달라짐) 렌더의
+        낡은 경계를 쓰지 않고 사용자 편집을 우선한다 — .src 서명이 어긋나 UI에 '미렌더'로
+        표시되고, 다시 만들면 편집이 반영된다(올바른 동작).
+      - 재선정으로 clips.json이 통째로 바뀐 경우도 경계 불일치로 걸러져 새 후보를 오염시키지 않는다."""
+    with CLIPS_LOCK:
+        fresh = load_clips_json(clips_path)
+        for idx in clip_indices:
+            if not (0 <= idx < len(fresh)) or idx not in orig_bounds:
+                continue
+            if (fresh[idx].start, fresh[idx].end) == orig_bounds[idx]:
+                fresh[idx].start = rendered_clips[idx].start
+                fresh[idx].end = rendered_clips[idx].end
+        save_clips_json(fresh, clips_path)
 
 
 def run(url: str, config_path: Path = Path("config.yaml")) -> None:

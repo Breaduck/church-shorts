@@ -18,7 +18,7 @@ import yaml
 from flask import Flask, jsonify, render_template_string, request, send_file
 
 from src.feedback import PerformanceRecord, upsert_feedback
-from src.highlights import load_clips_json, save_clips_json
+from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
 from src.main import analyze, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
@@ -453,6 +453,9 @@ CANDIDATES_TEMPLATE = f"""
       <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
     </div>
     <div class="reason" hidden>
+      {{% if c.appeal or c.hook_line %}}
+      <p class="reason-hashtags">{{% if c.appeal %}}🎯 {{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}</p>
+      {{% endif %}}
       <p class="reason-caption">{{{{ c.caption }}}}</p>
       <p class="reason-hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
       <p class="reason-text">{{{{ c.reason }}}}</p>
@@ -872,6 +875,10 @@ def video_detail(video_id: str):
             and src.read_text(encoding="utf-8").strip() == sig
         )
         up = find_upload(video_id, i - 1)
+        # 재선정 등으로 같은 인덱스가 다른 클립이 됐으면(서명 불일치) 업로드 정보를 붙이지
+        # 않는다. 서명 없는 옛 레코드는 기존처럼 인덱스만으로 매칭(하위호환).
+        if up and up.clip_sig and up.clip_sig != sig:
+            up = None
         c.youtube_id = up.youtube_video_id if up else ""
         c.upload_checks_done = up.checks_done if up else 0
         c.upload_max_checks = up.max_checks if up else 0
@@ -920,10 +927,18 @@ def render_route(video_id: str):
         return jsonify({"error": "선택된 항목이 없습니다"}), 400
 
     video_dir = OUTPUT_ROOT / video_id
-    _update_job(
-        video_id, rendering=True, render_pct=0, render_message="렌더링 시작...",
-        render_error=None, render_started=time.time(),
-    )
+    # 같은 영상 렌더가 이미 도는 중이면 새 스레드를 또 띄우지 않는다(분석과 동일한 가드).
+    # 버튼 비활성화는 클라이언트에만 있어서, 다른 탭/새로고침 후 재클릭이면 서버로 중복
+    # POST가 온다 — 렌더 2개가 같은 short_N.mp4와 clips.json을 동시에 쓰며 꼬인다.
+    # 프론트는 ok 응답을 받고 진행 위젯 폴링을 시작하므로, 기존 렌더에 그냥 합류하게 된다.
+    with _jobs_lock:
+        job = _jobs.get(video_id) or {}
+        if job.get("rendering"):
+            return jsonify({"ok": True, "already": True})
+        _jobs.setdefault(video_id, {}).update(
+            rendering=True, render_pct=0, render_message="렌더링 시작...",
+            render_error=None, render_started=time.time(),
+        )
 
     def _job():
         try:
@@ -1035,7 +1050,10 @@ def upload_clip_route(video_id: str, idx: int):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-    record_upload(video_id, idx, yt_id, title=clip.title)
+    record_upload(
+        video_id, idx, yt_id, title=clip.title,
+        clip_sig=render_signature(clip.start, clip.end),
+    )
     return jsonify({"ok": True, "youtube_id": yt_id, "url": f"https://youtu.be/{yt_id}"})
 
 
@@ -1685,6 +1703,13 @@ def save_clip_position(video_id: str, idx: int):
     clips_path = OUTPUT_ROOT / video_id / "clips.json"
     if not clips_path.exists():
         return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    # 읽기→수정→저장 전 구간을 락으로 보호한다. 렌더 종료(main.render_selected의 병합
+    # 저장)나 다른 편집 저장과 겹치면 마지막 저장이 상대 수정을 덮어쓰기 때문.
+    with CLIPS_LOCK:
+        return _save_clip_position_locked(clips_path, idx)
+
+
+def _save_clip_position_locked(clips_path: Path, idx: int):
     clips = load_clips_json(clips_path)
     if idx < 0 or idx >= len(clips):
         return jsonify({"error": "invalid index"}), 400
@@ -1751,31 +1776,37 @@ def clip_preview_frame(video_id: str, idx: int):
     clip = clips[idx]
 
     video_dir = OUTPUT_ROOT / video_id
-    out_path = (video_dir / "clips" / f"_preview_{idx}.jpg").resolve()
+    # fill_mode별로 캐시를 분리한다: 편집기에서 화면모드를 바꾸면 미리보기 프레임도 다시
+    # 만들어져야 하는데, 파일명이 같으면 옛 모드의 캐시가 계속 나간다.
+    fill_tag = (getattr(clip, "fill_mode", "") or "cfg")
+    out_path = (video_dir / "clips" / f"_preview_{idx}_{fill_tag}.jpg").resolve()
     if not out_path.exists():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         cfg = _load_config()
         card = cfg["render"]["card_layout"]
         source_path = video_dir / "source.mp4"
 
-        from src.render import _compute_card_video_box_height, _probe_resolution
+        from src.render import (
+            _compute_card_video_box_height,
+            _probe_resolution,
+            card_source_video_filter,
+        )
 
+        # 클립별 fill_mode 오버라이드를 렌더(render_clip)와 똑같이 반영한다.
+        clip_fill = getattr(clip, "fill_mode", "") or ""
+        if clip_fill:
+            card = {**card, "fill_mode": clip_fill}
         src_res = _probe_resolution(source_path)
         vbh = _compute_card_video_box_height(card, src_res)
         vbw = card["video_box_width"]
-        crop_pct = card.get("source_crop_bottom_pct", 0.12)
         ts = clip.start + min(1.0, max(0.0, (clip.end - clip.start) / 2))
-        # 실제 렌더(render.py)의 fill_mode와 동일하게 프레임을 만들어야 편집 미리보기가
-        # 결과물과 일치한다. cover는 박스를 채우도록 확대 후 중앙 크롭, fit은 비율 유지.
-        if card.get("fill_mode", "cover") == "cover":
-            scale_vf = f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
-        else:
-            scale_vf = f"scale={vbw}:{vbh}:flags=lanczos"
+        # crop/scale 공식은 실제 렌더와 같은 함수(card_source_video_filter)를 쓴다 —
+        # 문자열을 복제하면 기본값 하나만 어긋나도 미리보기 ≠ 결과물이 된다(실제 잠복 사례).
         cmd = [
             "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
             "-ss", str(ts), "-i", str(source_path),
             "-frames:v", "1",
-            "-vf", f"crop=iw:ih*{1 - crop_pct}:0:0,{scale_vf}",
+            "-vf", card_source_video_filter(card, vbw, vbh),
             str(out_path),
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)

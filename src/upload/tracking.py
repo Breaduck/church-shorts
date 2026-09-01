@@ -34,6 +34,10 @@ class UploadRecord:
     checks_done: int = 0
     max_checks: int = MAX_CHECKS
     done: bool = False
+    # 업로드 당시 클립의 렌더 서명(start_end, main.render_signature와 같은 형식).
+    # clips.json이 재선정 등으로 바뀌어 같은 인덱스가 다른 클립을 가리키게 되면, 검토 UI가
+    # 이 서명을 대조해 엉뚱한 클립에 유튜브 링크를 붙이지 않는다. 옛 레코드는 빈 문자열(대조 생략).
+    clip_sig: str = ""
     # 매 체크 스냅샷 이력: [{"checked_at": ..., "views": ..., "likes": ..., "comments": ...}, ...]
     history: list = field(default_factory=list)
 
@@ -69,6 +73,7 @@ def record_upload(
     clip_index: int,
     youtube_video_id: str,
     title: str = "",
+    clip_sig: str = "",
     path: Path = UPLOADS_PATH,
 ) -> UploadRecord:
     """업로드 직후 호출: 추적 레코드를 새로 만들고 1주일 뒤 첫 체크를 예약한다."""
@@ -78,6 +83,7 @@ def record_upload(
         clip_index=clip_index,
         youtube_video_id=youtube_video_id,
         title=title,
+        clip_sig=clip_sig,
         uploaded_at=now.isoformat(timespec="seconds"),
         next_check_at=(now + timedelta(days=CHECK_INTERVAL_DAYS)).isoformat(timespec="seconds"),
         checks_done=0,

@@ -162,6 +162,34 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
     return mask_path
 
 
+# 소스 하단 크롭 기본값. 렌더(_build_card_filter_complex)와 편집 미리보기(web_app)가
+# 서로 다른 기본값을 쓰면 config에 이 키가 없을 때 미리보기와 결과물이 어긋난다 — 반드시
+# 이 상수 하나만 참조할 것.
+SOURCE_CROP_BOTTOM_PCT_DEFAULT = 0.08
+
+
+def card_source_video_filter(card: dict, vbw: int, vbh: int) -> str:
+    """소스 프레임을 카드 영상 박스 크기로 만드는 crop+scale 필터 체인.
+
+    실제 렌더(_build_card_filter_complex)와 편집 미리보기(web_app.clip_preview_frame)가
+    이 함수 하나를 공유한다 — 각자 문자열을 복제하면 fill_mode/크롭 기본값이 조금만
+    어긋나도 '편집 화면에서 본 프레임 ≠ 결과물'이 된다."""
+    parts = []
+    pct = card.get("source_crop_bottom_pct", SOURCE_CROP_BOTTOM_PCT_DEFAULT)
+    if pct > 0:
+        parts.append(f"crop=iw:ih*{1 - pct}:0:0")
+    if card.get("fill_mode", "cover") == "cover":
+        # 박스를 꽉 채우도록 확대 후 중앙을 박스 크기로 잘라낸다 (좌우 빈 배경만 트리밍,
+        # 설교자는 중앙이라 안 잘림). 이렇게 해야 영상이 커져 화면이 유튜브 쇼츠처럼 꽉 찬다.
+        parts.append(
+            f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
+        )
+    else:
+        # fit: 원본 가로세로 비율 그대로(옆을 안 자름). vbh가 이미 그 비율로 계산됨.
+        parts.append(f"scale={vbw}:{vbh}:flags=lanczos")
+    return ",".join(parts)
+
+
 def _compute_card_video_box_height(card: dict, source_resolution: tuple[int, int]) -> int:
     """영상 박스 높이를 결정한다.
 
@@ -177,7 +205,7 @@ def _compute_card_video_box_height(card: dict, source_resolution: tuple[int, int
     if fill_mode == "cover":
         aspect = card.get("video_box_aspect", [4, 3])
         return round(vbw * aspect[1] / aspect[0])
-    source_crop_bottom_pct = card.get("source_crop_bottom_pct", 0.08)
+    source_crop_bottom_pct = card.get("source_crop_bottom_pct", SOURCE_CROP_BOTTOM_PCT_DEFAULT)
     src_w, src_h = source_resolution
     effective_src_h = src_h * (1 - source_crop_bottom_pct)
     return round(vbw * effective_src_h / src_w)
@@ -224,24 +252,11 @@ def _build_card_filter_complex(
     card = render_cfg["card_layout"]
     vbw = card["video_box_width"]
     vbx = (w - vbw) // 2
-    source_crop_bottom_pct = card.get("source_crop_bottom_pct", 0.08)
-
-    fill_mode = card.get("fill_mode", "cover")
     video_parts = []
     if select_expr:
         video_parts.append(f"select='{select_expr}'")
         video_parts.append("setpts=N/FRAME_RATE/TB")
-    if source_crop_bottom_pct > 0:
-        video_parts.append(f"crop=iw:ih*{1 - source_crop_bottom_pct}:0:0")
-    if fill_mode == "cover":
-        # 박스를 꽉 채우도록 확대 후 중앙을 박스 크기로 잘라낸다 (좌우 빈 배경만 트리밍,
-        # 설교자는 중앙이라 안 잘림). 이렇게 해야 영상이 커져 화면이 유튜브 쇼츠처럼 꽉 찬다.
-        video_parts.append(
-            f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
-        )
-    else:
-        # fit: 원본 가로세로 비율 그대로(옆을 안 자름). vbh가 이미 그 비율로 계산됨.
-        video_parts.append(f"scale={vbw}:{vbh}:flags=lanczos")
+    video_parts.append(card_source_video_filter(card, vbw, vbh))
     video_chain = ",".join(video_parts)
 
     filter_complex = (
