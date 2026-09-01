@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
 import threading
 import time
@@ -431,10 +432,14 @@ def analyze(
             sp.finish(f"완료: 기존 후보 재사용")
             return video_dir, load_clips_json(clips_path)
         if clips_path.exists() and regenerate:
-            # 기존 후보(사용자 편집이 담겼을 수 있음)를 지우지 않고 버전 백업 후 재생성.
+            # 기존 후보를 버전 백업하되 원본은 '복사'로 남긴다(예전엔 이동이었음).
+            # 이동 방식은 재선정이 실패하면(세션 한도 등 — 2026-09-01 실제 발생) clips.json이
+            # 사라진 채 남아 영상 페이지가 404가 되고 이전 후보까지 잃는다. 원본을 남기면
+            # 실패 시 이전 후보가 그대로 살아 있고, 재선정 중 '옛 캐시를 완료로 오인'하는
+            # 문제는 _clips_ready의 mtime(job.started 이후) 검사가 이미 막아준다.
             backup = clips_path.with_name(f"clips.{time.strftime('%Y%m%d_%H%M%S')}.bak.json")
             with CLIPS_LOCK:
-                clips_path.replace(backup)
+                shutil.copy2(clips_path, backup)
 
         # 3) 오디오 에너지 힌트 -------------------------------------------------
         sp.advance("핵심 구간 분석 중...")
@@ -483,6 +488,21 @@ def analyze(
             on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
         )
         _record_stage_time("selection", time.time() - t_selection)
+        # 경계 인용문 앵커링: 모델이 인용한 첫/끝 문장을 전사본에서 문자열로 찾아
+        # start/end를 그 문장의 실제 발화 시각으로 확정한다. (모델이 읽은 것과 같은
+        # transcript 기준이라 인용문이 반드시 이 텍스트 안에 있다.)
+        hard_len_cfg = float(
+            h.get("hard_max_duration_sec", float(h["max_duration_sec"]) + 5.0)
+        )
+        anchored_n = 0
+        for c in clips:
+            try:
+                if anchor_clip_to_quotes(c, transcript.segments, hard_len_cfg):
+                    c.anchored = True
+                    anchored_n += 1
+            except Exception:  # noqa: BLE001 - 앵커 실패 시 기존 숫자 경계로 조용히 폴백
+                traceback.print_exc()
+        print(f"[main] 경계 앵커링: {anchored_n}/{len(clips)}개 클립 인용문 매칭 성공", flush=True)
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
             sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")
@@ -557,6 +577,102 @@ def _word_true_end(words: list[Word], i: int) -> float:
     if i + 1 < len(words) and words[i + 1].start > words[i].start:
         e = min(e, max(words[i + 1].start, words[i].start + 0.05))
     return e
+
+
+_NORM_STRIP_RE = None  # 지연 컴파일 (re import를 함수 안에서)
+
+
+def _normalize_for_match(text: str) -> str:
+    """인용문↔전사본 매칭용 정규화: 공백·문장부호를 걷어내 '글자열'만 남긴다.
+    (전사본과 모델 인용문은 띄어쓰기/문장부호가 어긋나기 쉽지만 글자 자체는 거의 같다.)"""
+    global _NORM_STRIP_RE
+    if _NORM_STRIP_RE is None:
+        import re
+
+        _NORM_STRIP_RE = re.compile(r"[\s\.,!\?…·\"'“”‘’()\[\]『』「」<>:;~\-—]+")
+    return _NORM_STRIP_RE.sub("", text or "").lower()
+
+
+def _find_quote_span(
+    words: list[Word], quote: str, center_sec: float, window_sec: float = 75.0
+) -> tuple[int, int] | None:
+    """인용문(quote)을 발화 단어열에서 찾아 (첫 단어 idx, 끝 단어 idx)를 돌려준다.
+
+    클립 경계를 '숫자 추측+종결어미 휴리스틱'이 아니라 모델이 인용한 실제 문장의 발화
+    시각으로 확정하기 위한 핵심 부품. 같은 문구가 설교에서 반복될 수 있으므로 모델이
+    말한 대략 시각(center_sec) 주변 window만 뒤진다. 정확 부분문자열 매칭을 먼저,
+    실패하면 유사 매칭(연속 일치 75% 이상)으로 폴백한다."""
+    nq = _normalize_for_match(quote)
+    if len(nq) < 4:
+        return None
+    # 창 안의 단어들만 후보로. (idx 원본 보존)
+    cand = [
+        (i, w) for i, w in enumerate(words)
+        if center_sec - window_sec <= w.start <= center_sec + window_sec
+    ]
+    if not cand:
+        return None
+    # 정규화 글자 스트림과 글자→단어 idx 매핑을 만든다.
+    stream_parts: list[str] = []
+    char_word_idx: list[int] = []
+    for i, w in cand:
+        nw = _normalize_for_match(w.text)
+        stream_parts.append(nw)
+        char_word_idx.extend([i] * len(nw))
+    stream = "".join(stream_parts)
+    if not stream:
+        return None
+
+    pos = stream.find(nq)
+    if pos >= 0:
+        return char_word_idx[pos], char_word_idx[pos + len(nq) - 1]
+
+    # 유사 매칭 폴백: 전사 오탈자/조사 차이로 정확 일치가 깨진 경우.
+    import difflib
+
+    m = difflib.SequenceMatcher(None, stream, nq, autojunk=False).find_longest_match(
+        0, len(stream), 0, len(nq)
+    )
+    if m.size >= max(6, int(len(nq) * 0.75)):
+        # 인용문에서 매칭이 시작된 오프셋만큼 스트림 쪽 시작을 당겨 전체 인용 범위를 근사한다.
+        a = max(0, m.a - m.b)
+        b = min(len(stream) - 1, m.a + m.size - 1 + (len(nq) - (m.b + m.size)))
+        return char_word_idx[a], char_word_idx[b]
+    return None
+
+
+def anchor_clip_to_quotes(clip: Clip, segs: list[Segment], hard_max_sec: float) -> bool:
+    """클립 경계를 모델이 인용한 hook_line(첫 문장)/payoff_line(끝 문장)의 실제 발화
+    시각으로 확정한다. 성공 시 True(→ clip.anchored).
+
+    역할 분리가 핵심: "어디서 생각이 시작되고 완결되는가"는 전사본을 읽은 모델이 문장
+    인용으로 답하고(의미 판단 — 모델의 강점), "그 문장이 몇 초인가"는 시스템이 문자열
+    매칭으로 찾는다(정확 탐색 — 코드의 강점). 종결어미 휴리스틱으로 문장 끝을 '추측'하다
+    변종 사고가 반복된 구조(문제 1·2)의 근본 대체물이다."""
+    words = _flatten_words(segs)
+    if not words:
+        return False
+    new_start, new_end = clip.start, clip.end
+    end_anchored = False
+    if clip.hook_line:
+        span = _find_quote_span(words, clip.hook_line, clip.start)
+        if span is not None:
+            new_start = max(0.0, words[span[0]].start - 0.15)
+    if clip.payoff_line:
+        span = _find_quote_span(words, clip.payoff_line, clip.end)
+        if span is not None:
+            j = span[1]
+            e = _word_true_end(words, j)
+            pad = 0.35
+            if j + 1 < len(words) and words[j + 1].start > e:
+                pad = min(pad, max(0.1, words[j + 1].start - e))
+            new_end = e + pad
+            end_anchored = True
+    # 앵커 결과가 말이 되는지 검증: 최소 8초, 상한 이내, 순서 정상. 아니면 원래 숫자 유지.
+    if not end_anchored or not (8.0 <= new_end - new_start <= hard_max_sec):
+        return False
+    clip.start, clip.end = new_start, new_end
+    return True
 
 
 def _snap_clip_start_to_sentence(
@@ -1062,7 +1178,11 @@ def render_selected(
             # 끝 스냅 허용폭 12초: 6초였을 때 문장 끝이 조금 멀면 스냅이 포기해
             # '이름을 그래서'처럼 말 중간에 뚝 끊겼다(실측). 늘어난 길이가 상한을 넘으면
             # 아래 하드캡이 끝(펀치라인)을 지키고 시작을 당겨 해결한다.
-            new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=12.0)
+            # 단, 인용문 앵커링이 성공한 클립(anchored)은 이미 '생각의 완결' 문장 끝에
+            # 정렬돼 있으므로 정밀 전사 기준 미세 조정(4초)만 허용한다 — 휴리스틱이
+            # 앵커를 다음 주제까지 끌고 가는 과확장을 막는다.
+            snap_budget = 4.0 if getattr(clip, "anchored", False) else 12.0
+            new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=snap_budget)
             if new_end != clip.end:
                 _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
                 clip.end = new_end

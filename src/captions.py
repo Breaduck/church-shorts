@@ -406,11 +406,11 @@ def compute_card_margins(card_layout: dict, resolution: tuple[int, int], title_s
     build_ass()와 위치 편집 웹 UI(web_app.py)가 반드시 같은 값을 써야 미리보기가
     실제 렌더링과 일치하므로, 계산 로직을 이 함수 하나로 모은다."""
     video_box_y = card_layout["video_box_y"]
-    # 제목은 제목 영역(title_area_height) 최상단에 고정한다(2026-08-24 사용자 요청: "더 위쪽으로").
-    # 예전 '영역 내 중앙 정렬'은 제목이 커질수록 계산상 내려와 보였고, 이제 1.4배 부스트로
-    # 2줄이 될 수 있어(위 _fit_title_font_size) 상단 고정이어야 2줄 블록이 영역(360px) 안에
-    # 안전하게 들어간다(24 + 2.5×크기 ≤ 360 은 _fit의 block_height_px 상한이 보장).
-    title_margin_v = 24
+    # 제목 위치 변천: 중앙정렬 → "더 위쪽으로"(2026-08-24) 요청에 최상단 24px 고정 →
+    # "너무 위쪽"(2026-09-02) 피드백. 24px는 폰 상단 상태바·쇼츠 UI가 덮는 위험 지역이었다
+    # (과교정). 이제 상단 안전영역(높이의 6% ≈ 115px)에 붙인다 — 위쪽이되 UI에 안 가리고,
+    # 제목 블록(최대 2줄)이 영상 박스 위 여백 안에 들어온다. 세부 취향은 편집기 드래그로.
+    title_margin_v = max(24, int(resolution[1] * 0.06))
     video_box_bottom = video_box_y + card_layout["video_box_height"]
     caption_margin_v = video_box_bottom + 60
     return title_margin_v, caption_margin_v
@@ -454,6 +454,7 @@ def build_ass(
     caption_align: str = "",
     caption_spacing: float = 0.0,
     voice_silences: list[tuple[float, float]] | None = None,
+    sync_offset_sec: float = 0.0,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -547,19 +548,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
         )
 
+    def _emit_line(line: CaptionLine) -> None:
+        # sync_offset_sec: 자막 표시를 오디오 대비 일괄 지연(+)/선행(-)하는 전역 노브.
+        # 유튜브 자동자막 단어 시각이 전반적으로 0.2~0.5초 이른 '상시 리드'는 무음 교정
+        # (긴 쉼만 잡음)으로는 안 잡혀서, 최종 이벤트 시각에서 통째로 민다. 카라오케 \k는
+        # 라인 시작 기준 상대값이라 라인과 함께 자연히 밀린다.
+        start_t = _ass_time(max(0.0, line.start + sync_offset_sec))
+        end_t = _ass_time(max(0.0, line.end + sync_offset_sec))
+        if template == "karaoke":
+            text = _karaoke_text(line.words)
+        else:
+            text = " ".join(_display_text(w.text) for w in line.words)
+        events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
+
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
     if caption_overrides:
+        # 카라오케 기준 단어(clip_words)에도 무음 교정을 적용한다 — 자동 경로만 교정하면
+        # 편집을 거친 클립만 "자막이 말보다 빠른" 문제가 남는다(실측 잔존 싱크 원인).
+        ov_ref_words = clip_words
+        if voice_silences and not keep_segments and clip_words:
+            ov_rel = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
+            ov_rel = _snap_word_starts_to_voice(ov_rel, voice_silences)
+            ov_ref_words = [Word(start=w.start + clip_start, end=w.end + clip_start, text=w.text) for w in ov_rel]
         lines = _clamp_lines_non_overlap(
-            _lines_from_overrides(caption_overrides, clip_start, clip_words)
+            _lines_from_overrides(caption_overrides, clip_start, ov_ref_words)
         )
         for line in lines:
-            start_t = _ass_time(line.start)
-            end_t = _ass_time(line.end)
-            if template == "karaoke":
-                text = _karaoke_text(line.words)
-            else:
-                text = " ".join(_display_text(w.text) for w in line.words)
-            events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
+            _emit_line(line)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
@@ -590,13 +605,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     )
 
     for line in lines:
-        start_t = _ass_time(line.start)
-        end_t = _ass_time(line.end)
-        if template == "karaoke":
-            text = _karaoke_text(line.words)
-        else:
-            text = " ".join(_display_text(w.text) for w in line.words)
-        events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
+        _emit_line(line)
 
     return header + "\n".join(events) + "\n"
 
@@ -663,4 +672,5 @@ def build_ass_for_clip(
         caption_align=fs.get("caption_align", ""),
         caption_spacing=float(fs.get("caption_spacing", 0) or 0),
         voice_silences=voice_silences,
+        sync_offset_sec=float(config_captions.get("sync_offset_sec", 0.0) or 0.0),
     )

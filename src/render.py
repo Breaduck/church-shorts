@@ -361,7 +361,10 @@ def render_clip(
     # 단어 start를 교정해 잡는다. remove_silence(-35dB/1.2s)와 별개로, 짧은 쉼까지
     # 잡도록 더 민감한 값(-32dB/0.3s)을 쓴다. ffmpeg 한 번이라 클립당 2~3초면 끝난다.
     voice_silences: list[tuple[float, float]] | None = None
-    if captions_cfg.get("enabled", True) and not (getattr(clip, "caption_overrides", None) or None):
+    if captions_cfg.get("enabled", True):
+        # 편집 자막(caption_overrides) 경로에도 적용한다: 카라오케 단어 시각은 어느 경로든
+        # 전사 단어를 쓰므로, 여기서 빼면 편집 클립만 "자막이 말보다 빠른" 문제가 남는다
+        # (실제 신고된 잔존 싱크 문제의 원인 중 하나).
         voice_silences = _detect_silences(video_path, clip.start, clip.end, -32.0, 0.3)
 
     ass_path = output_path.with_suffix(".ass")

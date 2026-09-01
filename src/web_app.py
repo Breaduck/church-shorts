@@ -261,6 +261,7 @@ INDEX_TEMPLATE = f"""
         <div class="seg">
           <label><input type="radio" name="model" value="claude-sonnet-4-5" checked>소넷<span class="seg-sub">빠름 · 한도 절약 (기본)</span></label>
           <label><input type="radio" name="model" value="claude-opus-4-8">오푸스<span class="seg-sub">품질 우선 · 한도 더 씀</span></label>
+          <label><input type="radio" name="model" value="claude-fable-5">페이블<span class="seg-sub">최고 품질 · 한도 많이 씀</span></label>
         </div>
       </div>
       <button class="primary" type="submit">분석 시작</button>
@@ -454,7 +455,10 @@ CANDIDATES_TEMPLATE = f"""
     </div>
     <div class="reason" hidden>
       {{% if c.appeal or c.hook_line %}}
-      <p class="reason-hashtags">{{% if c.appeal %}}🎯 {{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}</p>
+      <p class="reason-hashtags">{{% if c.appeal %}}🎯 {{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}{{% if c.payoff_line %}} · 끝 문장: “{{{{ c.payoff_line }}}}”{{% endif %}}</p>
+      {{% endif %}}
+      {{% if c.insight %}}
+      <p class="reason-hashtags">💡 {{{{ c.insight }}}}</p>
       {{% endif %}}
       <p class="reason-caption">{{{{ c.caption }}}}</p>
       <p class="reason-hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
@@ -806,7 +810,7 @@ def analyze_route():
     force = bool(body.get("force"))
     # 선정 모델은 UI 라디오(소넷/오푸스)에서 온다. 임의 문자열을 CLI에 넘기지 않도록
     # 허용 목록으로 제한하고, 벗어나면 빈 값("")으로 둬 analyze()가 config 기본을 쓴다.
-    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8"}
+    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
     model = (body.get("model") or "").strip()
     if model and model not in _ALLOWED_MODELS:
         model = ""
