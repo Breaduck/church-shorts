@@ -251,6 +251,40 @@ def wait_for_download(video_id: str, timeout: float = 1800) -> None:
         t.join(timeout)
 
 
+# 단계별 실측 소요시간 기록. 진행바 ETA가 "고정 예상값"이라 실제와 어긋나던 문제를,
+# 직전 실행들의 실측 중앙값으로 보정한다(같은 채널 설교는 길이·모델이 비슷해 잘 맞는다).
+_STAGE_TIMES_PATH = Path("output") / "_stage_times.json"
+_STAGE_TIMES_LOCK = threading.Lock()
+
+
+def _stage_time_est(key: str, default: float) -> float:
+    """최근 실측(최대 5회)의 중앙값 × 1.15(여유)를 예상시간으로 쓴다. 기록 없으면 default."""
+    try:
+        data = json.loads(_STAGE_TIMES_PATH.read_text(encoding="utf-8"))
+        vals = sorted(float(v) for v in data.get(key, [])[-5:])
+        if vals:
+            return max(20.0, vals[len(vals) // 2] * 1.15)
+    except (OSError, ValueError):
+        pass
+    return default
+
+
+def _record_stage_time(key: str, seconds: float) -> None:
+    try:
+        with _STAGE_TIMES_LOCK:
+            data = {}
+            if _STAGE_TIMES_PATH.exists():
+                data = json.loads(_STAGE_TIMES_PATH.read_text(encoding="utf-8"))
+            data.setdefault(key, []).append(round(float(seconds), 1))
+            data[key] = data[key][-10:]
+            _STAGE_TIMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _STAGE_TIMES_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+    except (OSError, ValueError):
+        pass  # 통계 기록 실패가 파이프라인을 죽이면 안 됨
+
+
 def json_load_transcript(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     segments = [
@@ -288,9 +322,13 @@ def analyze(
         _Stage("download", "영상 정보 확인 중...", est=8, span=10),
         _Stage("transcript", "자막 준비 중...", est=12, span=15),
         _Stage("hints", "핵심 구간 분석 중...", est=5, span=5),
-        # 하이라이트 선정(claude -p): sonnet + thinking 4096 기준 보통 3~5분. ETA가 자주
-        # 0에 붙어 "예상보다 오래 걸리는 중"으로 새는 것보단 살짝 넉넉히(280s) 잡아 카운트다운.
-        _Stage("highlight", "하이라이트 후보 선정 중...", est=280, span=70),
+        # 하이라이트 선정(claude -p): 예상시간은 고정값 대신 직전 실행들의 실측 중앙값으로
+        # 보정한다(_stage_time_est). 기록이 없을 때만 기본 200초(thinking 2048 + 출력
+        # 다이어트 기준 실측 추정)를 쓴다.
+        _Stage(
+            "highlight", "하이라이트 후보 선정 중...",
+            est=_stage_time_est("selection", 200.0), span=70,
+        ),
     ]
     sp = StageProgress(progress, stages)
     try:
@@ -427,8 +465,11 @@ def analyze(
                 f"Claude Code 세션에서 하이라이트를 골라 {clips_path}에 저장한 뒤 다시 시도하세요."
             )
 
-        # 4) 하이라이트 선정 (opaque: 티커가 부드럽게 채움) ---------------------
-        sp.advance("AI가 설교 전체를 읽으며 하이라이트 선정 중 (보통 2~5분 걸려요)...")
+        # 4) 하이라이트 선정 -----------------------------------------------------
+        # 진행률은 이제 깜깜이 티커가 아니라 스트리밍 델타(생각 진행/몇 번째 클립 작성 중)로
+        # 실제 진행을 반영한다. set_fraction은 단조 증가라 티커와 섞여도 뒤로 튀지 않는다.
+        sp.advance("AI가 설교 전사본을 읽는 중...")
+        t_selection = time.time()
         clips = select_highlights_auto(
             transcript=transcript, peak_hints=peak_hints,
             min_clips=h["min_clips"], max_clips=h["max_clips"],
@@ -438,8 +479,10 @@ def analyze(
             # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
             model=model or h.get("model", ""),
             transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
-            thinking_tokens=int(h.get("thinking_tokens", 4096)),
+            thinking_tokens=int(h.get("thinking_tokens", 2048)),
+            on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
         )
+        _record_stage_time("selection", time.time() - t_selection)
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
             sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")

@@ -326,19 +326,39 @@ title은 영상 맨 위에 고정되는 훅이다. 밋밋하면 아무도 안 �
     "quotability": 7,
     "title": "영상 맨 위 한 줄 제목 ('뜨끔·직접 지적' 결, 시청자를 2인칭으로 콕 집어, 15자 내외)",
     "title_candidates": ["후보1(핑계·행동 호명)", "후보2(반전 지적)", "후보3(뜨끔한 질문)"],
-    "caption": "유튜브/인스타/틱톡 게시글 캡션 (2~3문장, 첫 문장이 훅, 설교 맥락 살려서)",
-    "hashtags": ["#설교", "#은혜", "..."],
-    "keywords": ["룻", "보아스", "나오미", "맥추감사절"],
-    "reason": "핵심 메시지 한 줄 + 마지막 펀치라인 짧게 인용 (2문장 이내로 짧게)"
+    "caption": "게시글 캡션 — 훅 한 문장만 (길게 쓰지 마라)",
+    "hashtags": ["#설교", "#은혜", "#힐링"],
+    "keywords": ["룻", "보아스", "나오미"],
+    "reason": "선정 이유 + 펀치라인 인용을 한 문장으로"
   }}
 ]
 ```
+**출력은 짧게 써라 — 출력 글자 수가 곧 사용자의 대기시간이다.** caption 1문장, reason 1문장,
+hashtags 3개, keywords는 이 클립에 실제 등장하는 고유명사만 3~5개. 장황하게 쓰지 마라.
 - **keywords**: 이 클립 구간에 등장하는 고유명사(성경 인물·지명·용어, 설교 주제어)를 정확한 철자로 적어라.
   최종 자막을 정밀 전사할 때 이 이름들의 철자를 고정하는 힌트로 쓴다(유튜브 자막이 룻→'루시', 기드온→'기도원'처럼
   틀리는 걸 막기 위함). 전사본에 틀리게 적혀 있어도 너는 맥락으로 올바른 표기를 알 것이니 바르게 적어라.
 - 세부 축(core_score/hook/retention/emotion/relatability/payoff/quotability)은 모두 1~10 정수. 통합 score는 넣지 마라(시스템이 계산).
 - start/end는 전사본 타임스탬프 기준 **초 단위 숫자**로 변환해서 적을 것. end는 반드시 펀치라인이 끝나는 지점이어야 한다.
 """
+
+
+def _stream_delta(ev: dict) -> tuple[str, str] | None:
+    """claude -p stream-json 한 줄(dict)에서 진행률용 델타를 뽑는다.
+
+    반환: ("thinking"|"text", 텍스트조각) 또는 None(진행률과 무관한 이벤트).
+    --include-partial-messages가 켜지면 raw API 이벤트가 {"type":"stream_event",
+    "event":{...}} 형태로 래핑되어 온다. 형식이 낯설어도 조용히 None을 돌려
+    선정 자체는 계속 굴러가게 한다(진행률은 장식, 파이프라인이 본체)."""
+    e = ev.get("event") or {}
+    if e.get("type") != "content_block_delta":
+        return None
+    d = e.get("delta") or {}
+    if d.get("type") == "thinking_delta":
+        return ("thinking", str(d.get("thinking") or ""))
+    if d.get("type") == "text_delta":
+        return ("text", str(d.get("text") or ""))
+    return None
 
 
 def _extract_json_array(text: str) -> list[dict]:
@@ -437,12 +457,17 @@ def select_highlights_auto(
     feedback_block: str = "",
     model: str = "",
     transcript_is_cleaned: bool = False,
-    thinking_tokens: int = 4096,
+    thinking_tokens: int = 2048,
+    on_progress=None,
 ) -> list[Clip]:
     """`claude -p` 서브프로세스를 호출해 자동으로 하이라이트를 선정한다.
 
     model: claude CLI에 넘길 모델 별칭(예: "sonnet"). 빈 값이면 CLI 기본 모델을 쓴다.
-    이 단계는 전사본 읽고 판단하는 작업이라 Sonnet으로 충분하며, Opus보다 훨씬 저렴하다."""
+    이 단계는 전사본 읽고 판단하는 작업이라 Sonnet으로 충분하며, Opus보다 훨씬 저렴하다.
+
+    on_progress(frac 0.0~0.99, message): 선정 내부의 '진짜' 진행률 콜백. 스트리밍 델타
+    (생각/작성)를 받아 호출한다 — 예전엔 이 단계가 깜깜이라 가짜 시간 티커로만 바를 채워
+    "진행바가 부정확하다"는 불만의 주원인이었다."""
     prompt = build_prompt(
         transcript=transcript,
         peak_hints=peak_hints,
@@ -461,7 +486,12 @@ def select_highlights_auto(
         raise RuntimeError("claude CLI를 PATH에서 찾을 수 없습니다 (claude --version으로 설치 확인)")
 
     cmd = [
-        claude_path, "-p", "--output-format", "json",
+        claude_path, "-p",
+        # 스트리밍 출력: 생각/작성 델타를 실시간으로 받아 진짜 진행률을 UI로 올린다.
+        # (예전 --output-format json은 3~5분 내내 침묵 → 가짜 시간 티커로만 바를 채웠다.)
+        # stream-json은 -p 모드에서 --verbose가 필수이고, 델타를 받으려면
+        # --include-partial-messages도 필요하다.
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         # 기본 claude -p는 Claude Code 시스템 프롬프트+도구 정의(~37k 토큰: 실측 cacheRead
         # 28.5k+write 8.9k)를 통째로 실어 보낸다. 이 작업은 도구가 전혀 필요 없는 단발 텍스트
         # 분석이므로, 시스템 프롬프트를 갈아끼우고 MCP도 끊어 호출당 ~15k 토큰을 아낀다
@@ -475,23 +505,12 @@ def select_highlights_auto(
     ]
     if model:
         cmd += ["--model", model]  # 비우면 CLI 기본 모델(비쌀 수 있음). config에서 4.5로 고정.
-    # 생각(thinking) 상한은 속도↔선정 품질의 트레이드오프다. 1024까지 조였더니 빨라졌지만
-    # "재미없는 구간을 뽑는다"는 품질 불만이 커져(2026-09-01 사용자 피드백), 전사본을 훑으며
-    # '장면'을 제대로 사냥할 여유를 주도록 기본 4096으로 되돌린다(선정이 1~2분 더 걸릴 수
-    # 있음). config highlights.thinking_tokens로 조절 가능.
-    env = {**os.environ, "MAX_THINKING_TOKENS": str(max(1024, int(thinking_tokens)))}
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        timeout=timeout_sec,
-        env=env,
-        # 프로젝트 폴더에서 실행하면 CLAUDE.md/메모리 등 프로젝트 컨텍스트까지 얹힌다 — 중립
-        # 임시 폴더에서 실행해 순수 프롬프트만 보낸다.
-        cwd=tempfile.gettempdir(),
-    )
+    # 생각(thinking) 상한은 속도↔선정 품질의 트레이드오프. 실측(2026-09-01): 선정 199초의
+    # 정체는 출력 생성 9,631토큰(생각 4096 + 후보 JSON ~5.5k)이었다 — 즉 생각 토큰은 초로
+    # 직결된다. 품질 장치(장면 앵커·appeal·hook_line)는 프롬프트에 있으므로, 생각은 1024의
+    # 2배인 2048로 절충한다. config highlights.thinking_tokens로 조절 가능.
+    env = {**os.environ, "MAX_THINKING_TOKENS": str(max(512, int(thinking_tokens)))}
+
     # 한도 안내문 감지는 반드시 "호출이 실패한 경우"에만 쓴다. 성공 응답(JSON 결과)에도
     # 'resets' 같은 단어가 메타데이터로 들어올 수 있어, 성공 전체를 먼저 문자열 검사하면
     # 4~5분 걸려 성공한 분석을 한도 오류로 오판해 통째로 버리는 치명적 버그가 된다
@@ -510,23 +529,138 @@ def select_highlights_auto(
             f"원문: {raw.strip()[:300]}"
         )
 
+    def _notify(frac: float, msg: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(min(0.99, max(0.0, frac)), msg)
+        except Exception:  # noqa: BLE001 - 진행률 표시 실패가 선정을 죽이면 안 됨
+            pass
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+        env=env,
+        # 프로젝트 폴더에서 실행하면 CLAUDE.md/메모리 등 프로젝트 컨텍스트까지 얹힌다 — 중립
+        # 임시 폴더에서 실행해 순수 프롬프트만 보낸다.
+        cwd=tempfile.gettempdir(),
+    )
+    timed_out = threading.Event()
+
+    def _kill_on_timeout() -> None:
+        timed_out.set()
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(timeout_sec, _kill_on_timeout)
+    watchdog.start()
+    # stderr는 별도 스레드로 비운다(파이프가 차면 프로세스가 멈추는 교착 방지).
+    stderr_chunks: list[str] = []
+    t_err = threading.Thread(
+        target=lambda: stderr_chunks.append(proc.stderr.read() or ""), daemon=True
+    )
+    t_err.start()
+
+    # 진행률 추정 기준. 생각: thinking_tokens 예산 대비(한글 섞임 기준 토큰≈2.5자).
+    # 작성: 실측 클립당 JSON ~1000자(다이어트 후) × max_clips. '"start"' 등장 횟수 = 몇 번째
+    # 클립을 쓰는 중인지 — 사용자에게 "후보 3번째 작성 중"처럼 진짜 진행을 보여준다.
+    think_budget_chars = max(1.0, float(thinking_tokens) * 2.5)
+    expect_text_chars = max(1.0, float(max_clips) * 1000.0)
+    thinking_chars = 0
+    text_chars = 0
+    clip_count = 0
+    _CLIP_MARK = '"start"'
+    scan_tail = ""
+    text_parts: list[str] = []
+    raw_stdout: list[str] = []
+    result_event: dict | None = None
+    # stdin 쓰기도 별도 스레드: 긴 프롬프트를 쓰는 동안 자식의 stdout 파이프가 차면
+    # 서로 기다리는 교착이 이론상 가능하다 — 읽기(메인)와 쓰기(스레드)를 분리해 원천 차단.
+    def _feed_stdin() -> None:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError:
+            pass  # 자식이 먼저 죽은 경우: 아래 returncode/stderr 처리에서 원인이 드러난다
+
+    threading.Thread(target=_feed_stdin, daemon=True).start()
+    try:
+        _notify(0.02, "AI가 설교 전사본을 읽는 중...")
+        for line in proc.stdout:
+            raw_stdout.append(line)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                ev = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") == "result":
+                result_event = ev
+                continue
+            # CLI가 생각 토큰 추정치를 직접 알려준다(실측 확인: system/thinking_tokens
+            # 이벤트의 estimated_tokens). 문자 수 환산보다 정확하므로 이걸 우선 쓴다.
+            if ev.get("type") == "system" and ev.get("subtype") == "thinking_tokens":
+                est_tok = float(ev.get("estimated_tokens") or 0)
+                frac = 0.03 + 0.37 * min(1.0, est_tok / max(1.0, float(thinking_tokens)))
+                _notify(frac, "AI가 설교 전체를 읽으며 구간을 고르는 중...")
+                continue
+            delta = _stream_delta(ev)
+            if delta is None:
+                continue
+            kind, chunk = delta
+            if kind == "thinking":
+                thinking_chars += len(chunk)
+                frac = 0.03 + 0.37 * min(1.0, thinking_chars / think_budget_chars)
+                _notify(frac, "AI가 설교 전체를 읽으며 구간을 고르는 중...")
+            else:
+                text_parts.append(chunk)
+                text_chars += len(chunk)
+                # 청크 경계에 걸친 마커도 세도록 직전 꼬리를 붙여 검사하되, 꼬리 안에서
+                # 이미 센 것은 빼서 이중 집계를 막는다.
+                scan = scan_tail + chunk
+                clip_count += scan.count(_CLIP_MARK) - scan_tail.count(_CLIP_MARK)
+                scan_tail = scan[-(len(_CLIP_MARK) - 1):]
+                frac = 0.40 + 0.59 * min(1.0, text_chars / expect_text_chars)
+                msg = (
+                    f"후보 작성 중... ({min(clip_count, max_clips)}번째 클립)"
+                    if clip_count else "후보 작성 중..."
+                )
+                _notify(frac, msg)
+        proc.wait()
+    finally:
+        watchdog.cancel()
+        t_err.join(timeout=2.0)
+
+    stdout_all = "".join(raw_stdout)
+    stderr_all = "".join(stderr_chunks)
+    if timed_out.is_set():
+        raise RuntimeError(
+            f"하이라이트 선정이 {timeout_sec}초를 넘겨 중단됐습니다. 잠시 후 다시 시도해 주세요."
+        )
     if proc.returncode != 0:
-        if _quota_hint(f"{proc.stdout}\n{proc.stderr}"):
-            _raise_quota(proc.stdout or proc.stderr or "")
+        if _quota_hint(f"{stdout_all}\n{stderr_all}"):
+            _raise_quota(stdout_all or stderr_all)
         raise RuntimeError(
             f"claude -p 실행 실패 (exit {proc.returncode}).\n"
-            f"stderr: {(proc.stderr or '').strip()[:300]}\n"
-            f"stdout: {(proc.stdout or '').strip()[:300]}"
+            f"stderr: {stderr_all.strip()[:300]}\n"
+            f"stdout: {stdout_all.strip()[:300]}"
         )
-    try:
-        outer = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        if _quota_hint(f"{proc.stdout}\n{proc.stderr}"):
-            _raise_quota(proc.stdout or proc.stderr or "")
-        raise RuntimeError(
-            "claude -p 응답을 JSON으로 읽지 못했습니다(한도/오류 안내문일 수 있음).\n"
-            f"응답: {(proc.stdout or '').strip()[:300]}"
-        )
+    outer = result_event
+    if outer is None:
+        # 구버전 CLI가 stream-json을 무시하고 통짜 JSON(예전 형식)을 냈을 가능성 폴백.
+        try:
+            outer = json.loads(stdout_all)
+        except json.JSONDecodeError:
+            if _quota_hint(f"{stdout_all}\n{stderr_all}"):
+                _raise_quota(stdout_all or stderr_all)
+            raise RuntimeError(
+                "claude -p 응답에서 결과 이벤트를 찾지 못했습니다(한도/오류 안내문일 수 있음).\n"
+                f"응답: {stdout_all.strip()[:300]}"
+            )
     # 선정이 느릴 때 어디서 시간이 갔는지(모델/토큰/소요) 추적할 수 있게 서버 로그에 남긴다.
     # (실측 4분 20초짜리 호출의 내역을 알 수 없어 튜닝이 어림짐작이 됐던 문제 해결.)
     usage = outer.get("usage") or {}
@@ -538,7 +672,8 @@ def select_highlights_auto(
         f"cache_read={usage.get('cache_read_input_tokens')}",
         flush=True,
     )
-    result_text = outer.get("result", "")
+    # result 이벤트에 텍스트가 비어 있으면 스트리밍으로 모아둔 델타로 폴백한다.
+    result_text = outer.get("result", "") or "".join(text_parts)
     if outer.get("is_error") or outer.get("subtype") not in (None, "success"):
         if _quota_hint(result_text):
             _raise_quota(result_text)
