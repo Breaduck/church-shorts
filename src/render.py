@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import traceback
 from pathlib import Path
 
 from src.captions import build_ass_for_clip
@@ -201,6 +202,75 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
     if proc.returncode != 0:
         raise RuntimeError(f"둥근 모서리 마스크 생성 실패:\n{proc.stderr[-2000:]}")
     return mask_path
+
+
+def _get_or_create_outro_segment(
+    image_path: Path, duration_sec: float, resolution: tuple[int, int], fps: float, encoder: str
+) -> Path:
+    """정지 이미지 + 무음으로 된 아웃트로 영상을 캐시해서 재사용한다.
+
+    본 클립과 concat demuxer(-c copy, 재인코딩 없음)로 이어 붙이려면 코덱/해상도/fps/오디오
+    샘플레이트가 정확히 같아야 한다. fps는 소스 영상마다 달라서(_probe_fps) 전역 상수로
+    캐시할 수 없다 — fps별로 별도 캐시 파일을 둔다."""
+    _MASK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    w, h = resolution
+    codec = "libx264" if encoder != "h264_qsv" else "h264_qsv"
+    fps_key = f"{fps:.3f}".replace(".", "_")
+    seg_path = _MASK_CACHE_DIR / f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{codec}.mp4"
+    if seg_path.exists() and seg_path.stat().st_mtime >= image_path.stat().st_mtime:
+        return seg_path
+
+    video_args = (
+        ["-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]
+        if codec == "h264_qsv"
+        else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    )
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-i", str(image_path),
+        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+        "-t", str(duration_sec),
+        "-vf", f"scale={w}:{h},fps={fps}",
+        "-pix_fmt", "yuv420p",
+        *video_args,
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-shortest",
+        str(seg_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 and codec == "h264_qsv":
+        fallback = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        cmd = cmd[: cmd.index("-c:v")] + fallback + cmd[cmd.index("-c:a") :]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"아웃트로 세그먼트 생성 실패:\n{proc.stderr[-2000:]}")
+    return seg_path
+
+
+def _append_outro(output_path: Path, outro_path: Path) -> None:
+    """concat demuxer로 본 클립 끝에 아웃트로를 이어 붙인다(-c copy: 재인코딩 없이 빠름).
+
+    실패해도 본 렌더는 이미 output_path에 완성돼 있으므로, 아웃트로만 못 붙이고
+    원본 클립 그대로 두는 쪽이 렌더 전체를 실패시키는 것보다 안전하다(호출자가 로그만 남김)."""
+    list_path = output_path.with_suffix(".concat.txt")
+    tmp_path = output_path.with_suffix(".withoutro.mp4")
+    list_path.write_text(
+        f"file '{output_path.resolve().as_posix()}'\nfile '{outro_path.resolve().as_posix()}'\n",
+        encoding="utf-8",
+    )
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(list_path),
+            "-c", "copy", str(tmp_path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not tmp_path.exists():
+            raise RuntimeError(f"아웃트로 이어붙이기 실패:\n{proc.stderr[-2000:]}")
+        tmp_path.replace(output_path)
+    finally:
+        list_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)  # replace 성공 시 이미 없음; 실패 시 잔여물 정리
 
 
 # 소스 하단 크롭 기본값. 렌더(_build_card_filter_complex)와 편집 미리보기(web_app)가
@@ -511,11 +581,28 @@ def render_clip(
     tail = ["-c:a", "aac", "-b:a", "192k", str(output_path)]
 
     proc = subprocess.run(cmd + video_args + tail, capture_output=True, text=True)
+    used_encoder = encoder
     if proc.returncode != 0 and encoder == "h264_qsv":
         fallback_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
         proc = subprocess.run(cmd + fallback_args + tail, capture_output=True, text=True)
+        used_encoder = "libx264"
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 렌더링 실패:\n{proc.stderr[-3000:]}")
+
+    # 끝에 로고 이미지 아웃트로(사용자 요청, 2026-09-03). 본 클립은 이미 output_path에
+    # 완성됐으므로, 아웃트로 붙이기가 실패해도 렌더 전체를 실패시키지 않고 로그만 남긴다.
+    outro_cfg = render_cfg.get("outro") or {}
+    if outro_cfg.get("enabled"):
+        image_path = Path(outro_cfg.get("image_path", ""))
+        outro_dur = float(outro_cfg.get("duration_sec", 3) or 0)
+        if image_path.exists() and outro_dur > 0:
+            try:
+                outro_seg = _get_or_create_outro_segment(
+                    image_path, outro_dur, resolution, source_fps, used_encoder
+                )
+                _append_outro(output_path, outro_seg)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
 
 
 def render_all_clips(

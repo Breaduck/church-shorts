@@ -516,6 +516,9 @@ CANDIDATES_TEMPLATE = f"""
   </div>
   {{% endfor %}}
   <div class="actions">
+    <label style="display:block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none">
+      <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 3초 넣기
+    </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
   </form>
@@ -545,9 +548,11 @@ CANDIDATES_TEMPLATE = f"""
     e.preventDefault();
     const idx = [...document.querySelectorAll('input[name=idx]:checked')].map(el => parseInt(el.value));
     if (idx.length === 0) {{ alert('클립을 하나 이상 선택하세요'); return; }}
+    const outroChk = document.getElementById('outroChk');
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{indices: idx}})
+        method: 'POST', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -935,9 +940,11 @@ def video_status(video_id: str):
 
 @app.route("/video/<video_id>/render", methods=["POST"])
 def render_route(video_id: str):
-    indices = request.get_json().get("indices", [])
+    body = request.get_json() or {}
+    indices = body.get("indices", [])
     if not indices:
         return jsonify({"error": "선택된 항목이 없습니다"}), 400
+    outro_enabled = bool(body.get("outro", True))
 
     video_dir = OUTPUT_ROOT / video_id
     # 같은 영상 렌더가 이미 도는 중이면 새 스레드를 또 띄우지 않는다(분석과 동일한 가드).
@@ -960,6 +967,7 @@ def render_route(video_id: str):
                 progress=lambda msg, pct, eta=None: _update_job(
                     video_id, render_message=msg, render_pct=pct, render_eta_seconds=eta
                 ),
+                outro_enabled=outro_enabled,
             )
         except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
             _update_job(video_id, render_error=str(e))
@@ -1103,10 +1111,16 @@ def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict
     vbx = (resolution[0] - vbw) // 2
     card_layout = {**card, "video_box_height": vbh, "video_box_y": vby}
 
-    max_title_size = captions_cfg.get("title_font_size") or int(captions_cfg["font_size"] * 1.3)
+    # build_ass()와 정확히 같은 공식(같은 폰트·같은 상한)을 써야 편집 화면 크기가 실제
+    # 렌더 크기와 일치한다. clip.title_size/title_font 오버라이드를 여기서도 반영한다
+    # (예전엔 config 기본값만 써서, 사용자가 크기를 바꾸면 미리보기가 그걸 무시했다).
+    title_font_name = getattr(clip, "title_font", "") or captions_cfg.get("title_font_family") or captions_cfg["font_family"]
+    max_title_size = (
+        getattr(clip, "title_size", 0) or captions_cfg.get("title_font_size") or int(captions_cfg["font_size"] * 1.3)
+    )
     title_size = _fit_title_font_size(
         clip.title or "", max_title_size, min_size=captions_cfg["font_size"],
-        available_width_px=resolution[0] - 80,
+        available_width_px=resolution[0] - 80, font_family=title_font_name,
     )
     base_title_margin_v, base_caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
 
@@ -1128,12 +1142,21 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
+    from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
+
+    def _strip_trailing_dots(text: str) -> str:
+        # 실제 렌더(_karaoke_text)는 단어별로 끝 마침표를 뗀다. 편집기 미리보기도 같은
+        # 규칙을 적용해야 "화면엔 있는데 실제 영상엔 없는" 불일치가 안 생긴다.
+        return " ".join(_display_text(w) for w in text.split())
+
     if getattr(clip, "caption_overrides", None):
         return [
-            {"start": float(o["start"]), "end": float(o["end"]), "text": str(o.get("text", ""))}
+            {
+                "start": float(o["start"]), "end": float(o["end"]),
+                "text": _strip_trailing_dots(str(o.get("text", ""))),
+            }
             for o in clip.caption_overrides
         ]
-    from src.captions import _collect_words_in_range, chunk_words_into_lines
 
     transcript_path = OUTPUT_ROOT / video_id / "transcript.json"
     if not transcript_path.exists():
@@ -1148,7 +1171,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     max_units = max(4.0, (res_w - 104) / max(1, cfg["captions"].get("font_size", 72)))
     lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
     out = [
-        {"start": ln.start, "end": ln.end, "text": " ".join(w.text for w in ln.words)}
+        {"start": ln.start, "end": ln.end, "text": " ".join(_display_text(w.text) for w in ln.words)}
         for ln in lines
     ]
     # 각 줄 끝이 다음 줄 시작을 넘지 않게 잘라 자막이 겹쳐 뜨는 걸 막는다(싱크 안정).
@@ -1223,10 +1246,12 @@ __BASE_STYLE__
     flex-shrink: 0; width: 52px; text-align: right; font-size: 12px; font-weight: 600;
     color: var(--text-faint); font-variant-numeric: tabular-nums;
   }
-  .cap-input {
+  /* input[type=text]의 전역 width:100%/margin-top(BASE_STYLE)보다 상위 명시도가 필요해
+     .cap-row input.cap-input로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
+  .cap-row input.cap-input {
     flex: 1; min-width: 0; padding: 10px 12px; font-size: 14px; font-family: inherit;
     border: 1.5px solid var(--border); border-radius: 10px; background: #fafbfc;
-    transition: border-color .15s, background .15s;
+    transition: border-color .15s, background .15s; width: auto; margin-top: 0;
   }
   .cap-input:focus { outline: none; border-color: var(--accent); background: #fff; }
   .cap-empty { color: var(--text-faint); font-size: 13px; }
@@ -1237,7 +1262,9 @@ __BASE_STYLE__
     border: 1.5px solid var(--border); border-radius: 12px; background: #fafbfc;
   }
   .title-edit input:focus { outline: none; border-color: var(--accent); background: #fff; }
-  .cap-num {
+  /* input[type=number]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가 필요해
+     .cap-row input.cap-num로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
+  .cap-row input.cap-num {
     width: 54px; flex-shrink: 0; padding: 8px 4px; font-size: 12px; text-align: center; font-family: inherit;
     border: 1.5px solid var(--border); border-radius: 8px; background: #fafbfc;
     font-variant-numeric: tabular-nums;
@@ -2023,10 +2050,13 @@ PREVIEW_MODAL_JS = r"""
   .pv-capsec.hidden { display: none; }
   .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
   .pv-caprow { display: flex; gap: 6px; align-items: center; }
-  .pv-cap-start, .pv-cap-end { width: 50px; flex: 0 0 auto; padding: 6px 5px; font-size: 12px;
-    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; }
-  .pv-cap-text { flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px;
-    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; }
+  /* input[type=number]/[type=text]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가
+     필요해 .pv-caprow input.pv-cap-*로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
+  .pv-caprow input.pv-cap-start, .pv-caprow input.pv-cap-end {
+    width: 50px; flex: 0 0 auto; padding: 6px 5px; font-size: 12px;
+    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; margin-top: 0; }
+  .pv-caprow input.pv-cap-text { flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px;
+    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; margin-top: 0; }
   .pv-cap-del { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: none;
     background: #f0f1f3; color: #6b7684; font-size: 13px; cursor: pointer; }
   .pv-cap-del:hover { background: #ffe2e2; color: #e02424; }
@@ -2406,7 +2436,12 @@ PREVIEW_MODAL_JS = r"""
         titleEl.classList.remove('dragging');
         resizeHandle.removeEventListener('pointermove', move);
         resizeHandle.removeEventListener('pointerup', up);
-        fitToWidth(titleEl, titleTxt);  // 실제 렌더처럼 한 줄에 맞춰 미리보기(저장은 드래그한 크기 그대로)
+        fitToWidth(titleEl, titleTxt);  // 한 줄 안에 들어가게 강제(브라우저 실측 폭 기준)
+        // 화면에 보이는 크기 그대로 저장해야 실제 렌더도 똑같이 나온다. 드래그한 원값을
+        // 그대로 저장하면 한 줄에 안 맞아 화면상 줄어든 걸 무시한 채 큰 값이 저장되고,
+        // 그 값이 렌더의 상한(max_title_size)이 되어 미리보기보다 커 보이는 원인이 된다.
+        const shownPx = parseFloat(getComputedStyle(titleEl).fontSize);
+        state.title.size = Math.max(20, Math.round(shownPx / SC));
       };
       resizeHandle.addEventListener('pointermove', move);
       resizeHandle.addEventListener('pointerup', up);

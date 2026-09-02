@@ -354,7 +354,10 @@ def reanalyze_clip_region(
         categories=h["categories"],
         feedback_block=focus,
         model=model or h.get("model", ""),
-        thinking_tokens=int(h.get("thinking_tokens", 2048)),
+        # 전체 선정용 thinking_tokens(8192, 2026-09-02 품질 상향)를 그대로 물려받으면 "구간 하나만
+        # 다시 보는" 가벼운 작업도 몇 분씩 걸린다(thinking 1k ≈ 20~30초). 이 작업은 ~150초 창
+        # 하나·클립 1개·경계 재탐색뿐이라 훨씬 적은 사고 예산으로 충분하다("재분석이 느리다" 원인).
+        thinking_tokens=int(h.get("reanalyze_thinking_tokens", 2048)),
         on_progress=on_progress,
     )
     if not clips:
@@ -363,7 +366,7 @@ def reanalyze_clip_region(
     hard_len = float(h.get("hard_max_duration_sec", float(h["max_duration_sec"]) + 5.0))
     new = clips[0]
     try:
-        if anchor_clip_to_quotes(new, full_segs, hard_len):
+        if anchor_clip_to_quotes(new, full_segs, hard_len, min_duration_sec=float(h["min_duration_sec"])):
             new.anchored = True
     except Exception:  # noqa: BLE001 - 앵커 실패 시 모델이 준 숫자 경계로 폴백
         traceback.print_exc()
@@ -582,7 +585,9 @@ def analyze(
         anchored_n = 0
         for c in clips:
             try:
-                if anchor_clip_to_quotes(c, transcript.segments, hard_len_cfg):
+                if anchor_clip_to_quotes(
+                    c, transcript.segments, hard_len_cfg, min_duration_sec=float(h["min_duration_sec"])
+                ):
                     c.anchored = True
                     anchored_n += 1
             except Exception:  # noqa: BLE001 - 앵커 실패 시 기존 숫자 경계로 조용히 폴백
@@ -726,7 +731,9 @@ def _find_quote_span(
     return None
 
 
-def anchor_clip_to_quotes(clip: Clip, segs: list[Segment], hard_max_sec: float) -> bool:
+def anchor_clip_to_quotes(
+    clip: Clip, segs: list[Segment], hard_max_sec: float, min_duration_sec: float = 8.0
+) -> bool:
     """클립 경계를 모델이 인용한 hook_line(첫 문장)/payoff_line(끝 문장)의 실제 발화
     시각으로 확정한다. 성공 시 True(→ clip.anchored).
 
@@ -753,8 +760,10 @@ def anchor_clip_to_quotes(clip: Clip, segs: list[Segment], hard_max_sec: float) 
                 pad = min(pad, max(0.1, words[j + 1].start - e))
             new_end = e + pad
             end_anchored = True
-    # 앵커 결과가 말이 되는지 검증: 최소 8초, 상한 이내, 순서 정상. 아니면 원래 숫자 유지.
-    if not end_anchored or not (8.0 <= new_end - new_start <= hard_max_sec):
+    # 앵커 결과가 말이 되는지 검증: config min_duration_sec 이상, 상한 이내. 아니면 원래 숫자 유지.
+    # (예전엔 하드코딩 8초 바닥이라 인용문이 우연히 짧은 구간에서 매치되면 min_duration_sec
+    # 20초 정책을 무시하고 16초짜리 클립이 그대로 통과했다 — "시간이 너무 짧다" 불만의 원인.)
+    if not end_anchored or not (min_duration_sec <= new_end - new_start <= hard_max_sec):
         return False
     clip.start, clip.end = new_start, new_end
     return True
@@ -992,16 +1001,24 @@ def render_selected(
     clip_indices: list[int],
     config_path: Path = Path("config.yaml"),
     progress=_default_progress,
+    outro_enabled: bool | None = None,
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
 
     progress(message, pct)로 호출되며, 클립 개수만큼 균등 분할한 뒤 각 클립을
-    재전사(전반 30%)/렌더링(후반 70%) 두 단계로 나눠 진행률을 채운다."""
+    재전사(전반 30%)/렌더링(후반 70%) 두 단계로 나눠 진행률을 채운다.
+
+    outro_enabled: "끝에 로고 넣기" UI 체크박스 값(None이면 config 기본값 그대로 따름)."""
     # 진행률 콜백을 방어적으로 감싼다: UI 표시 오류가 전사/렌더를 죽이거나 폴백을 유발하지 않게.
     _raw_progress = progress
     progress = lambda message, pct, eta=None: _safe_progress(_raw_progress, message, pct, eta)  # noqa: E731
     cfg = load_config(config_path)
+    if outro_enabled is not None:
+        cfg["render"] = {
+            **cfg["render"],
+            "outro": {**cfg["render"].get("outro", {}), "enabled": outro_enabled},
+        }
     with CLIPS_LOCK:
         clips = load_clips_json(video_dir / "clips.json")
     # 렌더는 몇 분씩 걸리고 그 사이 사용자가 편집기에서 clips.json을 고칠 수 있다. 렌더가

@@ -103,3 +103,45 @@ def default_font_dir_for_ass() -> str:
     """subtitles 필터 fontsdir에 넘길, 이스케이프된 통합 폴더 경로."""
     get_font_registry()  # 통합 폴더 보장
     return str(CONSOLIDATED_DIR.resolve()).replace("\\", "/").replace(":", "\\:")
+
+
+_metrics_cache: dict[str, tuple | None] = {}
+
+
+def _get_font_metrics(family: str):
+    """family의 (unitsPerEm, cmap, hmtx)를 캐싱해서 반환. 없으면 None."""
+    if family in _metrics_cache:
+        return _metrics_cache[family]
+    entry = next((f for f in get_font_registry() if f["family"] == family), None)
+    metrics = None
+    if entry is not None:
+        try:
+            tt = TTFont(entry["path"], fontNumber=0, lazy=True)
+            metrics = (tt["head"].unitsPerEm, tt.getBestCmap(), tt["hmtx"])
+        except Exception:  # noqa: BLE001 - 측정 실패 시 호출자가 근사치로 폴백
+            metrics = None
+    _metrics_cache[family] = metrics
+    return metrics
+
+
+def measure_text_width_px(text: str, family: str, font_size_px: float) -> float | None:
+    """실제 폰트 파일의 글리프 advance width로 텍스트 픽셀 폭을 정확히 잰다.
+
+    브라우저 미리보기(@font-face로 같은 폰트 파일을 쓴다)와 렌더(libass)가 같은 파일
+    기준으로 폭을 재게 되어, 글자당 평균폭을 추정하던 예전 방식(폰트마다 실제 폭이
+    달라 추정이 어긋남 — 예: Pretendard용으로 맞춘 비율을 Gmarket Sans에 그대로 쓰면
+    미리보기와 실제 렌더 결과 크기가 달라 보이는 문제)보다 훨씬 정확하다.
+    측정 불가(폰트 못 찾음 등)면 None — 호출자가 근사치 공식으로 폴백해야 한다."""
+    m = _get_font_metrics(family)
+    if m is None or not text:
+        return None
+    upm, cmap, hmtx = m
+    total = 0.0
+    for ch in text:
+        gname = cmap.get(ord(ch))
+        try:
+            aw = hmtx[gname][0] if gname else upm * 0.55
+        except KeyError:
+            aw = upm * 0.55
+        total += aw
+    return total * (font_size_px / upm)

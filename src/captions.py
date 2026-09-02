@@ -328,14 +328,30 @@ def _karaoke_text(words: list[Word]) -> str:
 
 def _fit_title_font_size(
     text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62,
+    font_family: str = "",
 ) -> int:
     """제목 폰트 크기를 정한다: 항상 한 줄에 들어가도록 폭 기준으로 상한을 잡는다.
 
     2026-08-24엔 boost(1.4배)로 자연 줄바꿈 2줄을 허용했지만, 2026-09-02 사용자 피드백
     ("제목이 너무 크다 — 1줄 안에 들어가게")으로 되돌린다. 짧은 제목은 max_size 그대로,
-    긴 제목만 폭에 맞춰 줄인다(아래 build_ass() 호출부의 "무조건 한 줄" 주석이 원래 의도였다)."""
+    긴 제목만 폭에 맞춰 줄인다(아래 build_ass() 호출부의 "무조건 한 줄" 주석이 원래 의도였다).
+
+    font_family가 주어지고 그 폰트 파일을 찾을 수 있으면 실제 글리프 폭(fonts.py
+    measure_text_width_px)으로 정확히 계산한다 — 미리보기(브라우저, 같은 폰트 파일)와
+    렌더(libass) 크기가 어긋나던 문제(글자당 평균폭 0.62는 폰트마다 실제 폭이 달라
+    Gmarket Sans처럼 다른 폰트로 바꾸면 곧장 안 맞았다)의 근본 원인 수정.
+    측정 불가하면 예전처럼 char_width_ratio 근사식으로 폴백한다."""
     if not text:
         return max_size
+    if font_family:
+        from src.fonts import measure_text_width_px
+
+        width_at_max = measure_text_width_px(text, font_family, max_size)
+        if width_at_max is not None and width_at_max > 0:
+            if width_at_max <= available_width_px:
+                return max_size
+            scaled = int(available_width_px / width_at_max * max_size)
+            return max(min_size, min(max_size, scaled))
     one_line = int(available_width_px / (len(text) * char_width_ratio))
     return max(min_size, min(max_size, one_line))
 
@@ -468,7 +484,7 @@ def build_ass(
     # 사용자가 지정한 크기(max_title_size)를 상한으로 삼되, 폭을 넘으면 줄여 한 줄 유지.
     title_size = _fit_title_font_size(
         hook_text or "", max_title_size, min_size=min(font_size, max_title_size),
-        available_width_px=width - 80,
+        available_width_px=width - 80, font_family=title_font_name,
     )
 
     def _align_num(a: str, default: int) -> int:
@@ -536,8 +552,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     if hook_text:
         hook_end = final_duration if (hook_always_on and final_duration > 0) else hook_duration_sec
+        # 캡션은 _display_text/_karaoke_text가 끝 마침표를 떼지만, 제목(Hook)은 그 경로를
+        # 안 타서 모델이 붙인 마침표가 그대로 나갈 수 있었다("자막 끝마다 점" 원인 중 하나).
         events.append(
-            f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
+            f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{_display_text(hook_text)}"
         )
 
     def _emit_line(line: CaptionLine) -> None:
