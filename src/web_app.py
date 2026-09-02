@@ -1929,6 +1929,7 @@ def clip_preview_info(video_id: str, idx: int):
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
+        "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
         "source_duration": duration,
         "title_font": font_entry(clip.title_font or cfg["captions"].get("title_font_family", "")),
         "caption_font": font_entry(clip.caption_font or cfg["captions"].get("font_family", "")),
@@ -2015,6 +2016,23 @@ PREVIEW_MODAL_JS = r"""
   .pv-tool { padding: 7px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit;
     border: 1.5px solid #f0f1f3; background: #fafbfc; color: #191f28; border-radius: 9px; cursor: pointer; }
   .pv-tool:hover { border-color: #3182f6; color: #3182f6; }
+  .pv-capedit-btn { cursor: pointer; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #191f28;
+    font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px; padding: 6px 10px; white-space: nowrap; }
+  .pv-capedit-btn:hover { border-color: #3182f6; color: #3182f6; }
+  .pv-capsec { margin-top: 12px; }
+  .pv-capsec.hidden { display: none; }
+  .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
+  .pv-caprow { display: flex; gap: 6px; align-items: center; }
+  .pv-cap-start, .pv-cap-end { width: 50px; flex: 0 0 auto; padding: 6px 5px; font-size: 12px;
+    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; }
+  .pv-cap-text { flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px;
+    border: 1.5px solid #f0f1f3; border-radius: 7px; font-family: inherit; }
+  .pv-cap-del { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: none;
+    background: #f0f1f3; color: #6b7684; font-size: 13px; cursor: pointer; }
+  .pv-cap-del:hover { background: #ffe2e2; color: #e02424; }
+  .pv-capadd { margin-top: 8px; padding: 7px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit;
+    border: 1.5px dashed #d3d8de; background: none; color: #6b7684; border-radius: 9px; cursor: pointer; width: 100%; }
+  .pv-capadd:hover { border-color: #3182f6; color: #3182f6; }
   .pv-cands { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
   .pv-cand { text-align: left; padding: 10px 12px; font-size: 13.5px; font-weight: 600; font-family: inherit;
     color: #191f28; background: #fafbfc; border: 1.5px solid #f0f1f3; border-radius: 11px;
@@ -2066,6 +2084,7 @@ PREVIEW_MODAL_JS = r"""
       '<div class="pv-card">' +
       '  <div class="pv-head"><b>만들기 전 확인' + (total > 1 ? ' (' + seq + '/' + total + ')' : '') + '</b>' +
       '    <div class="pv-head-r">' +
+      '      <button type="button" class="pv-capedit-btn">✎ 자막 수정</button>' +
       '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">↻ 구간 재분석</button>' +
       '      <button class="pv-x" title="취소">&times;</button>' +
       '    </div></div>' +
@@ -2087,6 +2106,10 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
       '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
       '    </div>' +
+      '  </div>' +
+      '  <div class="pv-capsec hidden">' +
+      '    <div class="pv-caprows"></div>' +
+      '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
       '  <div class="pv-cands"></div>' +
       '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
@@ -2407,6 +2430,43 @@ PREVIEW_MODAL_JS = r"""
       candsBox.appendChild(b);
     });
 
+    // ── 자막 수정(접었다 폈다, 시작·끝·내용 편집) ──
+    const capSec = $('.pv-capsec'), capRowsBox = $('.pv-caprows');
+    function addCapRow(startRel, endRel, text) {
+      const row = document.createElement('div');
+      row.className = 'pv-caprow';
+      row.innerHTML =
+        '<input type="number" class="pv-cap-start" step="0.1">' +
+        '<input type="number" class="pv-cap-end" step="0.1">' +
+        '<input type="text" class="pv-cap-text">' +
+        '<button type="button" class="pv-cap-del" title="삭제">&times;</button>';
+      row.querySelector('.pv-cap-start').value = startRel.toFixed(1);
+      row.querySelector('.pv-cap-end').value = endRel.toFixed(1);
+      row.querySelector('.pv-cap-text').value = text || '';
+      capRowsBox.appendChild(row);
+    }
+    (info.caption_lines || []).forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
+    $('.pv-capedit-btn').addEventListener('click', () => capSec.classList.toggle('hidden'));
+    $('.pv-capadd').addEventListener('click', () => {
+      const rows = capRowsBox.querySelectorAll('.pv-caprow');
+      const s = rows.length ? (parseFloat(rows[rows.length - 1].querySelector('.pv-cap-end').value) || 0) : 0;
+      addCapRow(s, s + 2, '');
+      capSec.classList.remove('hidden');
+    });
+    capRowsBox.addEventListener('click', (e) => {
+      if (e.target.classList.contains('pv-cap-del')) e.target.closest('.pv-caprow').remove();
+    });
+    function collectCaptions() {
+      return [...capRowsBox.querySelectorAll('.pv-caprow')].map((r) => {
+        const s = parseFloat(r.querySelector('.pv-cap-start').value);
+        const en = parseFloat(r.querySelector('.pv-cap-end').value);
+        return {
+          start: C.start + (isNaN(s) ? 0 : s), end: C.start + (isNaN(en) ? 0 : en),
+          text: r.querySelector('.pv-cap-text').value,
+        };
+      });
+    }
+
     // ── 구간 재분석: 주제는 그대로, 이 장면 시작·끝만 다시 잡아 새 후보로 추가(원본 유지) ──
     const reBtn = $('.pv-reanalyze');
     reBtn.addEventListener('click', async () => {
@@ -2440,6 +2500,7 @@ PREVIEW_MODAL_JS = r"""
         title_offset_x: state.title.x, title_offset_y: state.title.y,
         title_size: state.title.size,
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
+        captions: collectCaptions(),
       };
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
