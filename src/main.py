@@ -300,6 +300,91 @@ def json_load_transcript(path: Path) -> dict:
     return {"language": data["language"], "duration_sec": data["duration_sec"], "segments": segments}
 
 
+def reanalyze_clip_region(
+    video_dir: Path,
+    orig: Clip,
+    cfg: dict,
+    model: str = "",
+    on_progress=None,
+) -> Clip:
+    """한 클립의 '구간만' 다시 분석해 경계(시작/끝)를 새로 잡은 새 Clip을 만든다.
+
+    쓰임새: 주제·제목은 좋은데 AI가 시작/끝 지점을 어설프게 잡았을 때, 그 장면 주변
+    전사만 모델에 다시 줘서 같은 메시지의 정확한 경계를 재선정한다. 원본은 호출자가
+    그대로 두고, 반환된 새 Clip을 후보 목록에 '추가'한다.
+
+    원본의 title/title_candidates/insight(=좋은 주제)는 보존하고, start/end/hook_line/
+    payoff_line/appeal/점수만 재선정 결과로 교체한다."""
+    h = cfg["highlights"]
+    tdata = json_load_transcript(video_dir / "transcript.json")
+    full_segs: list[Segment] = tdata["segments"]
+    total_dur = float(tdata["duration_sec"])
+
+    # 이 장면 주변만 창(window)으로 잘라 모델의 탐색을 그 섹터로 좁힌다.
+    pad = 75.0
+    w_start = max(0.0, orig.start - pad)
+    w_end = min(total_dur, orig.end + pad)
+    window_segs = [s for s in full_segs if s.end > w_start and s.start < w_end]
+    if not window_segs:
+        window_segs = full_segs
+
+    window = Transcript(language=tdata["language"], duration_sec=w_end - w_start, segments=window_segs)
+
+    # 재선정 지시(주제 고정 + 경계 재탐색)를 feedback_block 통로로 프롬프트에 주입한다.
+    focus = (
+        "## ★★ 이번 작업은 '구간 재분석'이다 (일반 선정과 다름 — 반드시 읽어라)\n"
+        "아래 전사는 전체 설교가 아니라, 이미 고른 한 장면의 **주변만 잘라낸 토막**이다.\n"
+        f"이 장면의 주제/제목은 이미 좋다고 확정됐다: 제목 「{orig.title}」"
+        + (f", 인사이트 「{orig.insight}」" if orig.insight else "")
+        + ".\n"
+        f"문제는 경계다 — 기존 시작/끝({orig.start:.0f}~{orig.end:.0f}초)이 어설프게 잘렸다.\n"
+        "**같은 메시지·같은 장면**을 담되, 시작은 앞 맥락 없이도 이해되는 완결된 문장에서,\n"
+        "끝은 '생각이 완결되는' 펀치라인 직후에서 끊기도록 **경계를 다시 정확히 잡아라.**\n"
+        "새 주제를 찾지 말고, 이 장면의 가장 좋은 컷 하나(1개)만 내라. hook_line/payoff_line은\n"
+        "이 토막 전사에서 글자 그대로 인용해 경계를 확정한다.\n"
+    )
+
+    clips = select_highlights_auto(
+        transcript=window,
+        peak_hints=[],
+        min_clips=1,
+        max_clips=1,
+        min_duration_sec=h["min_duration_sec"],
+        max_duration_sec=h["max_duration_sec"],
+        categories=h["categories"],
+        feedback_block=focus,
+        model=model or h.get("model", ""),
+        thinking_tokens=int(h.get("thinking_tokens", 2048)),
+        on_progress=on_progress,
+    )
+    if not clips:
+        raise RuntimeError("재분석에서 후보를 얻지 못했습니다 (모델 응답 비어있음/한도 가능성)")
+
+    hard_len = float(h.get("hard_max_duration_sec", float(h["max_duration_sec"]) + 5.0))
+    new = clips[0]
+    try:
+        if anchor_clip_to_quotes(new, full_segs, hard_len):
+            new.anchored = True
+    except Exception:  # noqa: BLE001 - 앵커 실패 시 모델이 준 숫자 경계로 폴백
+        traceback.print_exc()
+
+    # 좋은 주제(제목·후보·인사이트)는 원본 것을 보존하고, 경계·훅/페이오프·점수만 새것으로.
+    new.title = orig.title
+    new.title_candidates = list(orig.title_candidates or [])
+    new.insight = orig.insight or new.insight
+    # 사용자 스타일/위치 편집도 새 후보에 물려준다(같은 장면이니 그대로 쓰는 게 자연스럽다).
+    for attr in (
+        "fill_mode", "title_font", "title_size", "title_align", "title_spacing",
+        "caption_font", "caption_size", "caption_align", "caption_spacing",
+    ):
+        setattr(new, attr, getattr(orig, attr, getattr(new, attr)))
+    # 구간이 새로 잡혔으니 이전 자막·분할은 물려주지 않는다(렌더 때 재전사).
+    new.caption_overrides = []
+    new.keep_ranges = []
+    new.trimmed = False
+    return new
+
+
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
     transcript_text: str = "", force: bool = False, model: str = "",

@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, render_template_string, request, sen
 
 from src.feedback import PerformanceRecord, upsert_feedback
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
-from src.main import analyze, render_selected, render_signature
+from src.main import analyze, reanalyze_clip_region, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
 app = Flask(__name__)
@@ -28,6 +28,9 @@ OUTPUT_ROOT = Path("output")
 # 단일 사용자 로컬 도구이므로 메모리 내 딕셔너리로 작업 상태를 추적한다 (DB 불필요).
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+
+# 클립 '구간 재분석' 작업 상태(영상별). 팝업이 폴링해서 완료되면 새 후보를 보여준다.
+_reanalyze_jobs: dict[str, dict] = {}
 
 
 def _update_job(video_id: str, **fields) -> None:
@@ -1962,6 +1965,11 @@ PREVIEW_MODAL_JS = r"""
   .pv-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .pv-head b { font-size: 16px; letter-spacing: -0.01em; }
   .pv-x { cursor: pointer; border: none; background: none; font-size: 22px; color: #8b95a1; line-height: 1; padding: 2px 6px; }
+  .pv-head-r { display: flex; align-items: center; gap: 6px; }
+  .pv-reanalyze { cursor: pointer; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #3182f6;
+    font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px; padding: 6px 10px; white-space: nowrap; }
+  .pv-reanalyze:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-reanalyze:disabled { opacity: .6; cursor: default; }
   .pv-sub { font-size: 12.5px; color: #8b95a1; margin: 0 0 10px; }
   .pv-canvas-wrap { display: flex; justify-content: center; }
   .pv-canvas { position: relative; background: #f1f3f5; border-radius: 14px; overflow: hidden; flex-shrink: 0; }
@@ -2002,7 +2010,6 @@ PREVIEW_MODAL_JS = r"""
   .pv-tool { padding: 7px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit;
     border: 1.5px solid #f0f1f3; background: #fafbfc; color: #191f28; border-radius: 9px; cursor: pointer; }
   .pv-tool:hover { border-color: #3182f6; color: #3182f6; }
-  .pv-tiphint { font-size: 11.5px; color: #b0b8c1; margin-left: auto; }
   .pv-cands { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
   .pv-cand { text-align: left; padding: 10px 12px; font-size: 13.5px; font-weight: 600; font-family: inherit;
     color: #191f28; background: #fafbfc; border: 1.5px solid #f0f1f3; border-radius: 11px;
@@ -2053,7 +2060,10 @@ PREVIEW_MODAL_JS = r"""
     back.innerHTML =
       '<div class="pv-card">' +
       '  <div class="pv-head"><b>만들기 전 확인' + (total > 1 ? ' (' + seq + '/' + total + ')' : '') + '</b>' +
-      '    <button class="pv-x" title="취소">&times;</button></div>' +
+      '    <div class="pv-head-r">' +
+      '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">↻ 구간 재분석</button>' +
+      '      <button class="pv-x" title="취소">&times;</button>' +
+      '    </div></div>' +
       '  <p class="pv-sub">첫 화면 미리보기예요. 제목·자막을 드래그해 옮기고, 노란 핸들로 구간을 다듬으세요.</p>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
       '    <div class="pv-vbox"><video playsinline preload="metadata"></video></div>' +
@@ -2072,7 +2082,6 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-tool pv-split">✂ 재생 위치서 분할</button>' +
       '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
       '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
-      '      <span class="pv-tiphint">타임라인 휠로 확대 · 조각 ×로 삭제</span>' +
       '    </div>' +
       '  </div>' +
       '  <div class="pv-cands"></div>' +
@@ -2197,8 +2206,16 @@ PREVIEW_MODAL_JS = r"""
       view.b = pivot + (view.b - pivot) * f;
       clampView(); redraw();
     }, { passive: false });
-    $('.pv-zoomin').addEventListener('click', () => { const c = (view.a + view.b) / 2, h = (view.b - view.a) * 0.4; view.a = c - h; view.b = c + h; clampView(); redraw(); });
-    $('.pv-zoomout').addEventListener('click', () => { const c = (view.a + view.b) / 2, h = (view.b - view.a) * 0.625; view.a = c - h; view.b = c + h; clampView(); redraw(); });
+    // 확대/축소는 '지금 보는 조각'을 중심으로 한다(영상 한가운데로 확대돼 클립이 화면 밖으로
+    // 사라지던 문제 수정). 재생 위치가 보이면 그 위치를, 아니면 활성 조각 중앙을 기준으로.
+    const focusT = () => {
+      const t = video.currentTime;
+      if (t >= view.a && t <= view.b) return t;
+      const s = segs[activeSeg] || segs[0];
+      return (s.s + s.e) / 2;
+    };
+    $('.pv-zoomin').addEventListener('click', () => { const c = focusT(), h = (view.b - view.a) * 0.4; view.a = c - h; view.b = c + h; clampView(); redraw(); });
+    $('.pv-zoomout').addEventListener('click', () => { const c = focusT(), h = (view.b - view.a) * 0.625; view.a = c - h; view.b = c + h; clampView(); redraw(); });
 
     // 분할: 재생 위치(playhead)가 든 조각을 그 지점에서 둘로 나눔
     $('.pv-split').addEventListener('click', () => {
@@ -2311,6 +2328,29 @@ PREVIEW_MODAL_JS = r"""
       candsBox.appendChild(b);
     });
 
+    // ── 구간 재분석: 주제는 그대로, 이 장면 시작·끝만 다시 잡아 새 후보로 추가(원본 유지) ──
+    const reBtn = $('.pv-reanalyze');
+    reBtn.addEventListener('click', async () => {
+      reBtn.disabled = true; reBtn.textContent = '재분석 중…';
+      let started = null;
+      try { started = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/reanalyze', { method: 'POST' }); }
+      catch (e) { started = null; }
+      if (!started || !started.ok) {
+        const d = started ? await started.json().catch(() => ({})) : {};
+        alert('재분석 시작 실패: ' + (d.error || '네트워크 오류'));
+        reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return;
+      }
+      const poll = () => {
+        fetch('/video/' + VIDEO_ID + '/reanalyze_status').then((r) => r.json()).then((j) => {
+          if (j.running) { reBtn.textContent = '재분석 중… ' + Math.round((j.pct || 0) * 100) + '%'; setTimeout(poll, 1000); return; }
+          if (j.error) { alert('재분석 실패: ' + j.error); reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return; }
+          alert('구간 재분석 완료 — 새 후보를 원본 바로 아래에 추가했어요(원본은 그대로).');
+          location.reload();
+        }).catch(() => setTimeout(poll, 1500));
+      };
+      poll();
+    });
+
     // ── 닫기/확정 ──
     function close() { video.pause(); back.remove(); }
     $('.pv-x').addEventListener('click', close);
@@ -2347,6 +2387,58 @@ PREVIEW_MODAL_JS = r"""
 @app.route("/js/preview-modal.js")
 def preview_modal_js():
     return Response(PREVIEW_MODAL_JS, mimetype="application/javascript")
+
+
+def _run_reanalyze_job(video_id: str, idx: int) -> None:
+    """백그라운드: 한 클립의 구간만 재분석해 새 후보를 목록에 '추가'한다(원본 유지)."""
+    video_dir = OUTPUT_ROOT / video_id
+    clips_path = video_dir / "clips.json"
+    try:
+        cfg = _load_config()
+        clips = load_clips_json(clips_path)
+        if idx < 0 or idx >= len(clips):
+            _reanalyze_jobs[video_id] = {"running": False, "error": "잘못된 클립 번호"}
+            return
+        orig = clips[idx]
+        _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
+
+        def _prog(frac, msg):
+            j = _reanalyze_jobs.get(video_id)
+            if j is not None:
+                j["pct"] = min(0.99, max(0.0, float(frac)))
+
+        new_clip = reanalyze_clip_region(
+            video_dir, orig, cfg, model=cfg["highlights"].get("model", ""), on_progress=_prog
+        )
+        # 원본 바로 뒤에 삽입해 '이전 버전 유지 + 새 버전 추가'가 목록에서 나란히 보이게 한다.
+        with CLIPS_LOCK:
+            clips = load_clips_json(clips_path)  # 그 사이 바뀌었을 수 있어 다시 읽는다
+            insert_at = min(idx + 1, len(clips))
+            clips.insert(insert_at, new_clip)
+            save_clips_json(clips, clips_path)
+        _reanalyze_jobs[video_id] = {"running": False, "error": None, "new_idx": insert_at, "pct": 1.0}
+    except Exception as e:  # noqa: BLE001 - 실패해도 서버는 살아야 하고 팝업에 사유를 알린다
+        traceback.print_exc()
+        _reanalyze_jobs[video_id] = {"running": False, "error": str(e)[:300], "new_idx": None}
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/reanalyze", methods=["POST"])
+def reanalyze_clip_route(video_id: str, idx: int):
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    cur = _reanalyze_jobs.get(video_id)
+    if cur and cur.get("running"):
+        return jsonify({"error": "이미 재분석이 진행 중입니다"}), 409
+    _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
+    threading.Thread(target=_run_reanalyze_job, args=(video_id, idx), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/video/<video_id>/reanalyze_status")
+def reanalyze_status(video_id: str):
+    j = _reanalyze_jobs.get(video_id) or {"running": False, "error": None, "new_idx": None, "pct": 0.0}
+    return jsonify(j)
 
 
 def _tracking_scheduler_loop() -> None:
