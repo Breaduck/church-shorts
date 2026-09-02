@@ -1098,6 +1098,7 @@ def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict
     위치가 달라지므로, 반드시 같은 헬퍼 함수(_compute_card_video_box_*, compute_card_margins)
     를 재사용한다."""
     from src.captions import _fit_title_font_size, compute_card_margins
+    from src.fonts import ass_size_coeff
     from src.render import _compute_card_video_box_height, _compute_card_video_box_y
 
     render_cfg = cfg["render"]
@@ -1124,6 +1125,7 @@ def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict
     )
     base_title_margin_v, base_caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
 
+    caption_font_name = getattr(clip, "caption_font", "") or captions_cfg.get("font_family", "")
     scale = PREVIEW_CANVAS_WIDTH / resolution[0]
     return {
         "resolution": resolution,
@@ -1135,6 +1137,10 @@ def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict
         "caption_base_margin_v": base_caption_margin_v,
         "title_size": title_size,
         "caption_font_size": captions_cfg["font_size"],
+        # libass는 Fontsize를 셀 높이로 해석해 같은 숫자라도 브라우저보다 작게 그린다
+        # (fonts.ass_size_coeff 주석 참고). 미리보기 CSS px = ASS 크기 × 이 계수 × scale.
+        "title_ass_coeff": ass_size_coeff(title_font_name),
+        "caption_ass_coeff": ass_size_coeff(caption_font_name),
     }
 
 
@@ -1150,13 +1156,16 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
         return " ".join(_display_text(w) for w in text.split())
 
     if getattr(clip, "caption_overrides", None):
-        return [
+        # 시간순 정렬해서 보여준다 — 저장 순서가 어긋나 있으면(과거 자동자막 초안 오염 등)
+        # 편집기에 자막이 뒤죽박죽 순서로 떠 "순서가 뒤바뀐다"는 혼란을 준다.
+        rows = [
             {
                 "start": float(o["start"]), "end": float(o["end"]),
                 "text": _strip_trailing_dots(str(o.get("text", ""))),
             }
             for o in clip.caption_overrides
         ]
+        return sorted(rows, key=lambda r: r["start"])
 
     transcript_path = OUTPUT_ROOT / video_id / "transcript.json"
     if not transcript_path.exists():
@@ -1361,10 +1370,10 @@ __BASE_STYLE__
         border-radius: {{ (layout.video_box.r * layout.scale)|round|int }}px;">
         <img src="/media/{{ video_id }}/preview/{{ idx }}.jpg" alt="미리보기 프레임">
       </div>
-      <div class="drag-box title" id="titleBox" style="font-size: {{ (layout.title_size * layout.scale)|round|int }}px;">
+      <div class="drag-box title" id="titleBox" style="font-size: {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }}px; white-space: nowrap;">
         {{ clip.title }}
       </div>
-      <div class="drag-box caption" id="captionBox" style="font-size: {{ (layout.caption_font_size * layout.scale)|round|int }}px;">
+      <div class="drag-box caption" id="captionBox" style="font-size: {{ (layout.caption_font_size * layout.caption_ass_coeff * layout.scale)|round|int }}px;">
         {{ caption_preview }}
       </div>
     </div>
@@ -1499,7 +1508,7 @@ const captionEl = document.getElementById('captionBox');
 const titleInput = document.getElementById('titleInput');
 const CLIP_START = {{ clip.start }};
 const CLIP_DUR = {{ '%.2f'|format(clip.end - clip.start) }};
-const TITLE_BASE_FS = {{ (layout.title_size * layout.scale)|round|int }};
+const TITLE_BASE_FS = {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }};
 
 // 실제 렌더(libass)는 제목/자막을 프레임 폭(좌우 여백 40px 제외) 안에 맞춘다. 하지만
 // 브라우저는 한글 글리프를 libass보다 넓게 그려서, 같은 폰트 크기라도 미리보기에서만
@@ -1786,11 +1795,16 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     # 자막 편집기에서 확정한 라인들(텍스트가 남아있는 것만). 저장되면 다음 렌더는 재전사 없이
     # 이 자막을 그대로 쓴다. 넘어오지 않으면(위치만 저장) 기존 caption_overrides를 유지한다.
     if "captions" in body:
-        clip.caption_overrides = [
-            {"start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip()}
-            for c in body["captions"]
-            if str(c.get("text", "")).strip()
-        ]
+        # 시간순으로 정렬해 저장한다. 편집기에서 시간을 고치거나 줄을 끼워 넣어 행 순서가
+        # 시간순과 어긋나도, 렌더/편집기 어디서든 항상 시간순으로 일관되게 다뤄지도록.
+        clip.caption_overrides = sorted(
+            (
+                {"start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip()}
+                for c in body["captions"]
+                if str(c.get("text", "")).strip()
+            ),
+            key=lambda o: o["start"],
+        )
     # 화면모드 + 제목/자막 글꼴 스타일(편집기에서 선택). 빈 값이면 config 기본값 사용.
     if "fill_mode" in body:
         clip.fill_mode = str(body.get("fill_mode", "") or "")
@@ -2376,11 +2390,15 @@ PREVIEW_MODAL_JS = r"""
     const titleTxt = titleEl.querySelector('.pv-txt');
     titleTxt.textContent = C.title;
     capEl.textContent = info.caption_preview;
+    // libass는 ASS Fontsize를 셀 높이로 해석해 같은 숫자라도 브라우저보다 작게 그린다
+    // (Gmarket Sans ≈ 0.87배, 서버가 폰트별 계수를 계산해 내려줌). 미리보기 px에 이
+    // 계수를 곱해야 팝업에서 본 크기 = 실제 영상 크기가 된다.
+    const KT = L.title_ass_coeff || 1, KC = L.caption_ass_coeff || 1;
     function applyTitleSize() {
-      titleEl.style.fontSize = Math.round((state.title.size || L.title_size) * SC) + 'px';
+      titleEl.style.fontSize = Math.round((state.title.size || L.title_size) * KT * SC) + 'px';
     }
     applyTitleSize();
-    capEl.style.fontSize = Math.round(L.caption_font_size * SC) + 'px';
+    capEl.style.fontSize = Math.round(L.caption_font_size * KC * SC) + 'px';
     // 실제 렌더는 제목이 항상 1줄 — 팝업도 무조건 1줄로. 스타일시트 순서/캐시에 좌우되지
     // 않게 인라인으로 박는다(인라인이 어떤 시트 규칙보다 우선).
     titleEl.style.whiteSpace = 'nowrap';
@@ -2439,7 +2457,7 @@ PREVIEW_MODAL_JS = r"""
       const move = (ev) => {
         const dx = ev.clientX - sx;
         state.title.size = Math.max(30, Math.min(280, Math.round(startSize + dx / SC)));
-        titleEl.style.fontSize = Math.round(state.title.size * SC) + 'px';
+        titleEl.style.fontSize = Math.round(state.title.size * KT * SC) + 'px';
       };
       const up = () => {
         titleEl.classList.remove('dragging');
@@ -2449,8 +2467,9 @@ PREVIEW_MODAL_JS = r"""
         // 화면에 보이는 크기 그대로 저장해야 실제 렌더도 똑같이 나온다. 드래그한 원값을
         // 그대로 저장하면 한 줄에 안 맞아 화면상 줄어든 걸 무시한 채 큰 값이 저장되고,
         // 그 값이 렌더의 상한(max_title_size)이 되어 미리보기보다 커 보이는 원인이 된다.
+        // (표시 px → ASS 크기 역변환에도 KT를 반영해야 한다.)
         const shownPx = parseFloat(getComputedStyle(titleEl).fontSize);
-        state.title.size = Math.max(20, Math.round(shownPx / SC));
+        state.title.size = Math.max(20, Math.round(shownPx / (KT * SC)));
       };
       resizeHandle.addEventListener('pointermove', move);
       resizeHandle.addEventListener('pointerup', up);

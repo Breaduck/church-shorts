@@ -124,6 +124,35 @@ def _get_font_metrics(family: str):
     return metrics
 
 
+_coeff_cache: dict[str, float] = {}
+
+
+def ass_size_coeff(family: str) -> float:
+    """libass(ASS Fontsize)가 브라우저(CSS px) 대비 글자를 얼마나 작게 그리는지의 비율.
+
+    libass는 VSFilter/GDI 호환을 위해 Fontsize를 em이 아니라 '셀 높이'(OS/2
+    usWinAscent+usWinDescent)로 해석한다 — 같은 숫자라도 실제 영상 글자가 브라우저보다
+    upm/cell 배(예: Gmarket Sans Bold 1000/1150 ≈ 0.87)로 작게 그려진다(2026-09-03 실측:
+    Fontsize 200 '가' 잉크 높이 148px = 셀 방식 예측과 일치, em 방식이면 171px).
+    미리보기(브라우저)는 CSS px에 이 계수를 곱해야 실제 렌더와 크기가 정확히 일치한다."""
+    if family in _coeff_cache:
+        return _coeff_cache[family]
+    coeff = 1.0
+    entry = next((f for f in get_font_registry() if f["family"] == family), None)
+    if entry is not None:
+        try:
+            tt = TTFont(entry["path"], fontNumber=0, lazy=True)
+            upm = tt["head"].unitsPerEm
+            os2 = tt["OS/2"]
+            cell = os2.usWinAscent + os2.usWinDescent
+            if cell > 0:
+                coeff = upm / cell
+        except Exception:  # noqa: BLE001 - 메트릭 없는 폰트는 보정 없이 1.0
+            coeff = 1.0
+    _coeff_cache[family] = coeff
+    return coeff
+
+
 def measure_text_width_px(text: str, family: str, font_size_px: float) -> float | None:
     """실제 폰트 파일의 글리프 advance width로 텍스트 픽셀 폭을 정확히 잰다.
 
