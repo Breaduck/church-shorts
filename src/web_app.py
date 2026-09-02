@@ -15,7 +15,7 @@ import traceback
 from pathlib import Path
 
 import yaml
-from flask import Flask, jsonify, render_template_string, request, send_file
+from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 from src.feedback import PerformanceRecord, upsert_feedback
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
@@ -542,13 +542,18 @@ CANDIDATES_TEMPLATE = f"""
     e.preventDefault();
     const idx = [...document.querySelectorAll('input[name=idx]:checked')].map(el => parseInt(el.value));
     if (idx.length === 0) {{ alert('클립을 하나 이상 선택하세요'); return; }}
-    const res = await fetch('/video/{{{{ video_id }}}}/render', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{indices: idx}})
-    }});
-    const data = await res.json().catch(function() {{ return {{}}; }});
-    if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
-    // 리로드하지 않는다. 고정 미니위젯이 진행률을 보여주고, 완료되면 그 자리에 영상을 꽂는다.
-    window.__startRenderWatch(idx);
+    const doRender = async () => {{
+      const res = await fetch('/video/{{{{ video_id }}}}/render', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{indices: idx}})
+      }});
+      const data = await res.json().catch(function() {{ return {{}}; }});
+      if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
+      // 리로드하지 않는다. 고정 미니위젯이 진행률을 보여주고, 완료되면 그 자리에 영상을 꽂는다.
+      window.__startRenderWatch(idx);
+    }};
+    // 만들기 전 확인 팝업(첫 화면 미리보기 + 제목 후보 + 아이폰식 구간 다듬기).
+    // 스크립트가 없으면(로드 실패 등) 예전처럼 바로 렌더로 폴백.
+    if (window.__previewFlow) {{ window.__previewFlow(idx, doRender); }} else {{ await doRender(); }}
   }});
 
   // 선택한 카드에 파란 테두리(picked) 표시 — 무엇을 만들지 한눈에 보이게.
@@ -769,6 +774,7 @@ CANDIDATES_TEMPLATE = f"""
     poll(); polling = true;
   }})();
   </script>
+  <script src="/js/preview-modal.js"></script>
 </div>
 </body>
 </html>
@@ -1818,6 +1824,416 @@ def clip_preview_frame(video_id: str, idx: int):
             return jsonify({"error": "미리보기 프레임 생성 실패"}), 500
 
     return send_file(out_path)
+
+
+@app.route("/media/<video_id>/source.mp4")
+def serve_source_video(video_id: str):
+    """'만들기 전 확인' 팝업의 <video>용 원본 서빙. conditional=True로 HTTP Range를 지원해
+    아이폰식 트림 핸들을 끌 때 브라우저가 필요한 구간만 받아 즉시 탐색된다."""
+    p = (OUTPUT_ROOT / video_id / "source.mp4").resolve()
+    if not p.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(p, conditional=True)
+
+
+@app.route("/media/<video_id>/thumb/<int:sec>.jpg")
+def clip_trim_thumb(video_id: str, sec: int):
+    """트림 필름스트립용 소형 프레임(가로 160px, 초 단위). 한 번 만들면 캐시로 재사용."""
+    video_dir = OUTPUT_ROOT / video_id
+    source = video_dir / "source.mp4"
+    if not source.exists():
+        return jsonify({"error": "not found"}), 404
+    # send_file은 상대경로를 앱 루트(src/) 기준으로 해석하므로 반드시 절대경로로 만든다.
+    out = (video_dir / "clips" / "_thumbs" / f"{sec}.jpg").resolve()
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-ss", str(sec), "-i", str(source),
+            "-frames:v", "1", "-vf", "scale=160:-2", str(out),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not out.exists():
+            return jsonify({"error": "thumb 실패"}), 500
+    return send_file(out)
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/preview_info")
+def clip_preview_info(video_id: str, idx: int):
+    """'만들기 전 확인' 팝업이 쓰는 클립·레이아웃 정보 JSON (편집 페이지와 같은 계산을 재사용)."""
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "not found"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "invalid index"}), 400
+    clip = clips[idx]
+
+    from src.fonts import get_font_registry
+    from src.render import _probe_resolution
+
+    cfg = _load_config()
+    layout = _compute_layout(cfg, clip, _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4"))
+
+    # 소스 전체 길이(트림 확장 한계). transcript.json의 duration_sec가 가장 싸게 정확하다.
+    duration = 0.0
+    tp = OUTPUT_ROOT / video_id / "transcript.json"
+    if tp.exists():
+        try:
+            duration = float(json.loads(tp.read_text(encoding="utf-8")).get("duration_sec") or 0)
+        except (OSError, ValueError):
+            pass
+    if duration <= 0:
+        duration = clip.end + 10.0
+
+    fonts = get_font_registry()
+
+    def font_entry(family: str):
+        for f in fonts:
+            if f["family"] == family:
+                return {"family": f["family"], "file": f["file"]}
+        return None
+
+    # 제목 후보: 현재 제목을 맨 앞에 두고 중복 제거해 최대 5개(팝업에서 한눈에 고르게).
+    cands = [clip.title] + [t for t in (clip.title_candidates or []) if t and t != clip.title]
+    return jsonify({
+        "layout": layout,
+        "clip": {
+            "title": clip.title,
+            "title_candidates": cands[:5],
+            "start": clip.start,
+            "end": clip.end,
+            "title_offset_x": clip.title_offset_x,
+            "title_offset_y": clip.title_offset_y,
+            "caption_offset_x": clip.caption_offset_x,
+            "caption_offset_y": clip.caption_offset_y,
+            "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
+        },
+        "caption_preview": _preview_caption_text(video_id, clip),
+        "source_duration": duration,
+        "title_font": font_entry(clip.title_font or cfg["captions"].get("title_font_family", "")),
+        "caption_font": font_entry(clip.caption_font or cfg["captions"].get("font_family", "")),
+    })
+
+
+# '만들기 전 확인' 팝업 스크립트. CANDIDATES_TEMPLATE는 f-string이라 중괄호를 전부 이스케이프
+# 해야 해서, JS는 별도 상수로 두고 라우트로 서빙한다(브레이스 지옥 방지 + 캐시 가능).
+PREVIEW_MODAL_JS = r"""
+(function () {
+  'use strict';
+  const VIDEO_ID = location.pathname.split('/')[2];
+
+  // 만들기 흐름: 선택한 클립들을 순서대로 팝업 확인 → 모두 확인되면 onAllConfirmed() 실행.
+  window.__previewFlow = function (indices, onAllConfirmed) {
+    let i = 0;
+    const next = () => {
+      if (i >= indices.length) { onAllConfirmed(); return; }
+      const idx = indices[i];
+      i += 1;
+      openModal(idx, i, indices.length, next);
+    };
+    next();
+  };
+
+  const CSS = `
+  .pv-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.55); z-index: 1000;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+    animation: pvFade .18s ease; }
+  @keyframes pvFade { from { opacity: 0; } to { opacity: 1; } }
+  .pv-card { background: var(--card, #fff); border-radius: 22px; box-shadow: 0 24px 80px rgba(15,23,42,.35);
+    width: min(420px, 96vw); max-height: 94vh; overflow-y: auto; padding: 18px 18px 16px;
+    animation: pvUp .22s cubic-bezier(.22,.61,.36,1); }
+  @keyframes pvUp { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+  .pv-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .pv-head b { font-size: 16px; letter-spacing: -0.01em; }
+  .pv-x { cursor: pointer; border: none; background: none; font-size: 22px; color: #8b95a1; line-height: 1; padding: 2px 6px; }
+  .pv-sub { font-size: 12.5px; color: #8b95a1; margin: 0 0 10px; }
+  .pv-canvas-wrap { display: flex; justify-content: center; }
+  .pv-canvas { position: relative; background: #f1f3f5; border-radius: 14px; overflow: hidden; flex-shrink: 0; }
+  .pv-vbox { position: absolute; background: #000; overflow: hidden; }
+  .pv-vbox video { width: 100%; height: 100%; display: block; }
+  .pv-drag { position: absolute; cursor: grab; touch-action: none; user-select: none;
+    transform: translate(-50%, 0); text-align: center; padding: 3px 8px; border-radius: 7px;
+    border: 1.5px dashed transparent; color: #191f28; text-shadow: 0 0 6px rgba(255,255,255,.85);
+    font-weight: 800; white-space: normal; word-break: keep-all; width: max-content; }
+  .pv-drag:hover, .pv-drag.dragging { border-color: #3182f6; background: rgba(49,130,246,.18); }
+  .pv-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 54px; height: 54px; border-radius: 50%; border: none; cursor: pointer;
+    background: rgba(15,23,42,.55); color: #fff; font-size: 22px; display: flex;
+    align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+  .pv-play.hidden { display: none; }
+  /* 아이폰 사진 앱식 트림 바 */
+  .pv-trim { position: relative; margin: 14px 2px 2px; height: 56px; }
+  .pv-strip { position: absolute; inset: 0; display: flex; border-radius: 10px; overflow: hidden; background: #dee2e6; }
+  .pv-strip img { flex: 1; min-width: 0; object-fit: cover; height: 100%; display: block; }
+  .pv-sel { position: absolute; top: 0; bottom: 0; border: 3px solid #f7c325; border-left-width: 16px;
+    border-right-width: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+  .pv-hL, .pv-hR { position: absolute; top: -6px; bottom: -6px; width: 30px; cursor: ew-resize; touch-action: none; }
+  .pv-hL { left: -23px; } .pv-hR { right: -23px; }
+  .pv-hL::after, .pv-hR::after { content: ''; position: absolute; top: 50%; transform: translateY(-50%);
+    width: 4px; height: 18px; border-radius: 2px; background: #4a4a4a; }
+  .pv-hL::after { left: 13px; } .pv-hR::after { right: 13px; }
+  .pv-mask-l, .pv-mask-r { position: absolute; top: 0; bottom: 0; background: rgba(247,248,250,.72); pointer-events: none; }
+  .pv-mask-l { left: 0; border-radius: 10px 0 0 10px; } .pv-mask-r { right: 0; border-radius: 0 10px 10px 0; }
+  .pv-times { display: flex; justify-content: space-between; font-size: 12px; color: #6b7684;
+    font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .pv-times b { color: #191f28; }
+  .pv-cands { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+  .pv-cand { text-align: left; padding: 10px 12px; font-size: 13.5px; font-weight: 600; font-family: inherit;
+    color: #191f28; background: #fafbfc; border: 1.5px solid #f0f1f3; border-radius: 11px;
+    cursor: pointer; line-height: 1.35; }
+  .pv-cand:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-cand.sel { border-color: #3182f6; background: #eef4ff; color: #1b64da; }
+  .pv-foot { display: flex; gap: 9px; margin-top: 14px; align-items: center; }
+  .pv-cancel { flex: 0 0 auto; padding: 13px 16px; border: none; border-radius: 12px; background: #f0f1f3;
+    color: #191f28; font-weight: 600; font-size: 14px; font-family: inherit; cursor: pointer; }
+  .pv-ok { flex: 1; padding: 13px; border: none; border-radius: 12px; background: #3182f6; color: #fff;
+    font-weight: 700; font-size: 14.5px; font-family: inherit; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(49,130,246,.28); }
+  .pv-ok:hover { background: #1b64da; }
+  .pv-edit-link { display: block; text-align: center; margin-top: 10px; font-size: 12.5px; color: #8b95a1; text-decoration: none; }
+  .pv-edit-link:hover { color: #3182f6; }
+  `;
+
+  function injectOnce(id, cssText) {
+    if (document.getElementById(id)) return;
+    const s = document.createElement('style');
+    s.id = id; s.textContent = cssText;
+    document.head.appendChild(s);
+  }
+  async function openModal(idx, seq, total, onConfirm) {
+    let info;
+    try {
+      const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/preview_info');
+      if (!r.ok) throw new Error('bad');
+      info = await r.json();
+    } catch (e) { alert('미리보기 정보를 불러오지 못했어요'); return; }
+
+    injectOnce('pv-style', CSS);
+    // 실제 렌더 글꼴을 팝업에서도 그대로 보여준다.
+    let faceCss = '';
+    for (const f of [info.title_font, info.caption_font]) {
+      if (f) faceCss += "@font-face{font-family:'" + f.family + "';src:url('/font/" + f.file + "');font-display:swap}\n";
+    }
+    if (faceCss) injectOnce('pv-fonts-' + idx, faceCss);
+
+    const L = info.layout, C = info.clip;
+    // 팝업엔 트림바·후보·버튼까지 들어가므로 편집 캔버스(360px)를 화면 높이에 맞춰 줄인다.
+    const MS = Math.max(0.5, Math.min(0.72, (window.innerHeight - 430) / L.canvas_h));
+    const SC = L.scale * MS;               // 렌더 px -> 팝업 px
+    const W = Math.round(L.canvas_w * MS), H = Math.round(L.canvas_h * MS);
+
+    const back = document.createElement('div');
+    back.className = 'pv-backdrop';
+    back.innerHTML =
+      '<div class="pv-card">' +
+      '  <div class="pv-head"><b>만들기 전 확인' + (total > 1 ? ' (' + seq + '/' + total + ')' : '') + '</b>' +
+      '    <button class="pv-x" title="취소">&times;</button></div>' +
+      '  <p class="pv-sub">첫 화면 미리보기예요. 제목·자막을 드래그해 옮기고, 노란 핸들로 구간을 다듬으세요.</p>' +
+      '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
+      '    <div class="pv-vbox"><video playsinline preload="metadata"></video></div>' +
+      '    <div class="pv-drag pv-title"></div>' +
+      '    <div class="pv-drag pv-caption"></div>' +
+      '    <button class="pv-play">▶</button>' +
+      '  </div></div>' +
+      '  <div class="pv-trim">' +
+      '    <div class="pv-strip"></div>' +
+      '    <div class="pv-mask-l"></div><div class="pv-mask-r"></div>' +
+      '    <div class="pv-sel"><div class="pv-hL"></div><div class="pv-hR"></div></div>' +
+      '  </div>' +
+      '  <div class="pv-times"><span>시작 <b class="pv-t0"></b></span><span class="pv-dur"></span><span>끝 <b class="pv-t1"></b></span></div>' +
+      '  <div class="pv-cands"></div>' +
+      '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
+      '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
+      '</div>';
+    document.body.appendChild(back);
+    const $ = (sel) => back.querySelector(sel);
+
+    // ── 비디오 박스(레이아웃 좌표 그대로 축소) ──
+    const vbox = $('.pv-vbox');
+    // video_box는 렌더 해상도(px) 좌표 → 팝업 px로는 SC(=layout.scale × 팝업 축소율)를 곱한다.
+    vbox.style.left = Math.round(L.video_box.x * SC) + 'px';
+    vbox.style.top = Math.round(L.video_box.y * SC) + 'px';
+    vbox.style.width = Math.round(L.video_box.w * SC) + 'px';
+    vbox.style.height = Math.round(L.video_box.h * SC) + 'px';
+    vbox.style.borderRadius = Math.round(L.video_box.r * SC) + 'px';
+    const video = $('video');
+    video.src = '/media/' + VIDEO_ID + '/source.mp4';
+    video.style.objectFit = (C.fill_mode === 'cover') ? 'cover' : 'contain';
+
+    // ── 트림 상태 ──
+    const dur = info.source_duration;
+    const EXPAND = 10; // 편집 페이지와 동일: 원래 경계에서 앞뒤 10초까지 확장 가능
+    const t0 = Math.max(0, C.start - EXPAND);
+    const t1 = Math.min(dur, C.end + EXPAND);
+    let selS = C.start, selE = C.end;
+    video.addEventListener('loadedmetadata', () => { video.currentTime = selS; });
+
+    // 필름스트립 썸네일 8장
+    const strip = $('.pv-strip');
+    for (let k = 0; k < 8; k++) {
+      const t = t0 + (t1 - t0) * (k + 0.5) / 8;
+      const img = document.createElement('img');
+      img.src = '/media/' + VIDEO_ID + '/thumb/' + Math.round(t) + '.jpg';
+      img.draggable = false;
+      strip.appendChild(img);
+    }
+
+    const selBox = $('.pv-sel'), maskL = $('.pv-mask-l'), maskR = $('.pv-mask-r');
+    function paintTrim() {
+      const w = $('.pv-trim').clientWidth;
+      const x0 = (selS - t0) / (t1 - t0) * w, x1 = (selE - t0) / (t1 - t0) * w;
+      selBox.style.left = Math.max(0, x0 - 0) + 'px';
+      selBox.style.width = Math.max(34, x1 - x0) + 'px';
+      maskL.style.width = Math.max(0, x0) + 'px';
+      maskR.style.width = Math.max(0, w - x1) + 'px';
+      $('.pv-t0').textContent = (selS - C.start).toFixed(1) + 's';
+      $('.pv-t1').textContent = (selE - C.start).toFixed(1) + 's';
+      $('.pv-dur').textContent = '길이 ' + (selE - selS).toFixed(1) + '초';
+    }
+    function dragHandle(handleEl, isLeft) {
+      handleEl.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handleEl.setPointerCapture(e.pointerId);
+        const w = $('.pv-trim').clientWidth;
+        const move = (ev) => {
+          const rect = $('.pv-trim').getBoundingClientRect();
+          const t = t0 + Math.min(1, Math.max(0, (ev.clientX - rect.left) / w)) * (t1 - t0);
+          if (isLeft) selS = Math.min(t, selE - 1);
+          else selE = Math.max(t, selS + 1);
+          video.pause(); playBtn.classList.remove('hidden');
+          video.currentTime = isLeft ? selS : selE;  // 아이폰처럼 핸들 위치의 프레임을 실시간 표시
+          paintTrim();
+        };
+        const up = () => {
+          handleEl.removeEventListener('pointermove', move);
+          handleEl.removeEventListener('pointerup', up);
+          video.currentTime = selS;
+        };
+        handleEl.addEventListener('pointermove', move);
+        handleEl.addEventListener('pointerup', up);
+      });
+    }
+    dragHandle($('.pv-hL'), true);
+    dragHandle($('.pv-hR'), false);
+    paintTrim();
+
+    // ── 재생/일시정지 (다듬은 구간만 미리 듣기) ──
+    const playBtn = $('.pv-play');
+    playBtn.addEventListener('click', () => {
+      if (video.paused) {
+        if (video.currentTime < selS || video.currentTime >= selE - 0.05) video.currentTime = selS;
+        video.play(); playBtn.classList.add('hidden');
+      }
+    });
+    video.addEventListener('click', () => { if (!video.paused) { video.pause(); playBtn.classList.remove('hidden'); } });
+    video.addEventListener('timeupdate', () => {
+      if (video.currentTime >= selE) { video.pause(); video.currentTime = selS; playBtn.classList.remove('hidden'); }
+    });
+
+    // ── 제목/자막 드래그 (편집 페이지와 같은 좌표계: 렌더 px 오프셋 저장) ──
+    const bases = {
+      title: { left: L.resolution[0] / 2 * SC, top: L.title_base_margin_v * SC },
+      caption: { left: L.resolution[0] / 2 * SC, top: L.caption_base_margin_v * SC },
+    };
+    const state = {
+      title: { x: C.title_offset_x, y: C.title_offset_y },
+      caption: { x: C.caption_offset_x, y: C.caption_offset_y },
+    };
+    const titleEl = $('.pv-title'), capEl = $('.pv-caption');
+    titleEl.textContent = C.title;
+    capEl.textContent = info.caption_preview;
+    titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
+    capEl.style.fontSize = Math.round(L.caption_font_size * SC) + 'px';
+    titleEl.style.maxWidth = Math.round((L.resolution[0] - 80) * SC) + 'px';
+    if (info.title_font) titleEl.style.fontFamily = "'" + info.title_font.family + "', sans-serif";
+    if (info.caption_font) capEl.style.fontFamily = "'" + info.caption_font.family + "', sans-serif";
+    const USABLE_W = (L.resolution[0] - 80) * SC;
+    function fitToWidth(el) {
+      let fs = parseFloat(getComputedStyle(el).fontSize), guard = 0;
+      while (el.scrollWidth > USABLE_W && fs > 5 && guard < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; guard++; }
+    }
+    function paintBox(el, key) {
+      el.style.left = (bases[key].left + state[key].x * SC) + 'px';
+      el.style.top = (bases[key].top + state[key].y * SC) + 'px';
+    }
+    function makeDraggable(el, key) {
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        el.classList.add('dragging');
+        el.setPointerCapture(e.pointerId);
+        const sx = e.clientX, sy = e.clientY, ox = state[key].x, oy = state[key].y;
+        const move = (ev) => {
+          state[key].x = ox + (ev.clientX - sx) / SC;
+          state[key].y = oy + (ev.clientY - sy) / SC;
+          paintBox(el, key);
+        };
+        const up = () => {
+          el.classList.remove('dragging');
+          el.removeEventListener('pointermove', move);
+          el.removeEventListener('pointerup', up);
+        };
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerup', up);
+      });
+    }
+    fitToWidth(titleEl); fitToWidth(capEl);
+    paintBox(titleEl, 'title'); paintBox(capEl, 'caption');
+    makeDraggable(titleEl, 'title'); makeDraggable(capEl, 'caption');
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
+      titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
+      fitToWidth(titleEl);
+    });
+
+    // ── 제목 후보 5개 ──
+    const candsBox = $('.pv-cands');
+    let chosenTitle = C.title;
+    (C.title_candidates || []).forEach((t, i) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'pv-cand' + (t === chosenTitle ? ' sel' : '');
+      b.textContent = t;
+      b.addEventListener('click', () => {
+        chosenTitle = t;
+        candsBox.querySelectorAll('.pv-cand').forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+        titleEl.textContent = t;
+        titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
+        fitToWidth(titleEl);
+      });
+      candsBox.appendChild(b);
+    });
+
+    // ── 닫기/확정 ──
+    function close() { video.pause(); back.remove(); }
+    $('.pv-x').addEventListener('click', close);
+    $('.pv-cancel').addEventListener('click', close);
+    $('.pv-ok').addEventListener('click', async () => {
+      const payload = {
+        title: chosenTitle,
+        title_offset_x: state.title.x, title_offset_y: state.title.y,
+        caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
+      };
+      if (Math.abs(selS - C.start) > 0.05 || Math.abs(selE - C.end) > 0.05) {
+        payload.clip_start = selS; payload.clip_end = selE;
+      }
+      const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/position', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (!r.ok) { alert('저장에 실패했어요'); return; }
+      // 목록 카드의 제목도 갱신해 팝업에서 고른 제목이 바로 보이게.
+      const card = document.getElementById('cand-' + idx);
+      if (card) { const h = card.querySelector('h3.title'); if (h) h.textContent = chosenTitle; }
+      close();
+      onConfirm();
+    });
+  }
+})();
+"""
+
+
+@app.route("/js/preview-modal.js")
+def preview_modal_js():
+    return Response(PREVIEW_MODAL_JS, mimetype="application/javascript")
 
 
 def _tracking_scheduler_loop() -> None:
