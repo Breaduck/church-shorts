@@ -2027,7 +2027,7 @@ PREVIEW_MODAL_JS = r"""
     animation: pvFade .18s ease; }
   @keyframes pvFade { from { opacity: 0; } to { opacity: 1; } }
   .pv-card { background: var(--card, #fff); border-radius: 22px; box-shadow: 0 24px 80px rgba(15,23,42,.35);
-    width: min(420px, 96vw); max-height: 94vh; overflow-y: auto; padding: 18px 18px 16px;
+    width: min(600px, 94vw); max-height: 94vh; overflow-y: auto; padding: 18px 18px 16px;
     animation: pvUp .22s cubic-bezier(.22,.61,.36,1); }
   @keyframes pvUp { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
   .pv-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
