@@ -1967,7 +1967,8 @@ PREVIEW_MODAL_JS = r"""
   .pv-strip { position: absolute; inset: 0; display: flex; border-radius: 10px; overflow: hidden; background: #dee2e6; }
   .pv-strip img { flex: 1; min-width: 0; object-fit: cover; height: 100%; display: block; }
   .pv-sel { position: absolute; top: 0; bottom: 0; border: 3px solid #f7c325; border-left-width: 16px;
-    border-right-width: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+    border-right-width: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.18);
+    cursor: grab; touch-action: none; }
   .pv-hL, .pv-hR { position: absolute; top: -6px; bottom: -6px; width: 30px; cursor: ew-resize; touch-action: none; }
   .pv-hL { left: -23px; } .pv-hR { right: -23px; }
   .pv-hL::after, .pv-hR::after { content: ''; position: absolute; top: 50%; transform: translateY(-50%);
@@ -2061,18 +2062,20 @@ PREVIEW_MODAL_JS = r"""
     video.src = '/media/' + VIDEO_ID + '/source.mp4';
     video.style.objectFit = (C.fill_mode === 'cover') ? 'cover' : 'contain';
 
-    // ── 트림 상태 ──
+    // ── 트림 상태: 필름스트립은 설교 '전체'를 보여준다 (아이폰 사진 앱과 동일) ──
+    // 원하는 데로 아무 구간이나 잡을 수 있게 풀 영역을 준다. 긴 설교에선 핸들이 초 단위로
+    // 거칠 수 있는데, 정밀 조정은 '상세 편집'의 숫자 입력이 담당한다.
     const dur = info.source_duration;
-    const EXPAND = 10; // 편집 페이지와 동일: 원래 경계에서 앞뒤 10초까지 확장 가능
-    const t0 = Math.max(0, C.start - EXPAND);
-    const t1 = Math.min(dur, C.end + EXPAND);
+    const t0 = 0;
+    const t1 = dur;
     let selS = C.start, selE = C.end;
     video.addEventListener('loadedmetadata', () => { video.currentTime = selS; });
 
-    // 필름스트립 썸네일 8장
+    // 필름스트립 썸네일 12장 (전체 구간 균등)
     const strip = $('.pv-strip');
-    for (let k = 0; k < 8; k++) {
-      const t = t0 + (t1 - t0) * (k + 0.5) / 8;
+    const N_THUMB = 12;
+    for (let k = 0; k < N_THUMB; k++) {
+      const t = t0 + (t1 - t0) * (k + 0.5) / N_THUMB;
       const img = document.createElement('img');
       img.src = '/media/' + VIDEO_ID + '/thumb/' + Math.round(t) + '.jpg';
       img.draggable = false;
@@ -2083,12 +2086,13 @@ PREVIEW_MODAL_JS = r"""
     function paintTrim() {
       const w = $('.pv-trim').clientWidth;
       const x0 = (selS - t0) / (t1 - t0) * w, x1 = (selE - t0) / (t1 - t0) * w;
-      selBox.style.left = Math.max(0, x0 - 0) + 'px';
-      selBox.style.width = Math.max(34, x1 - x0) + 'px';
+      selBox.style.left = Math.max(0, x0) + 'px';
+      selBox.style.width = Math.max(8, x1 - x0) + 'px';
       maskL.style.width = Math.max(0, x0) + 'px';
       maskR.style.width = Math.max(0, w - x1) + 'px';
-      $('.pv-t0').textContent = (selS - C.start).toFixed(1) + 's';
-      $('.pv-t1').textContent = (selE - C.start).toFixed(1) + 's';
+      const fmt = (t) => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
+      $('.pv-t0').textContent = fmt(selS);
+      $('.pv-t1').textContent = fmt(selE);
       $('.pv-dur').textContent = '길이 ' + (selE - selS).toFixed(1) + '초';
     }
     function dragHandle(handleEl, isLeft) {
@@ -2116,6 +2120,31 @@ PREVIEW_MODAL_JS = r"""
     }
     dragHandle($('.pv-hL'), true);
     dragHandle($('.pv-hR'), false);
+    // 노란 박스 가운데를 잡으면 선택 구간을 길이 유지한 채 통째로 이동(아이폰과 동일).
+    selBox.addEventListener('pointerdown', (e) => {
+      if (e.target !== selBox) return; // 핸들 드래그와 충돌 방지
+      e.preventDefault();
+      selBox.setPointerCapture(e.pointerId);
+      const w = $('.pv-trim').clientWidth;
+      const len = selE - selS;
+      const grabT = t0 + ((e.clientX - $('.pv-trim').getBoundingClientRect().left) / w) * (t1 - t0);
+      const grabOffset = grabT - selS;
+      const move = (ev) => {
+        const rect = $('.pv-trim').getBoundingClientRect();
+        const t = t0 + Math.min(1, Math.max(0, (ev.clientX - rect.left) / w)) * (t1 - t0);
+        selS = Math.min(Math.max(t0, t - grabOffset), t1 - len);
+        selE = selS + len;
+        video.pause(); playBtn.classList.remove('hidden');
+        video.currentTime = selS;
+        paintTrim();
+      };
+      const up = () => {
+        selBox.removeEventListener('pointermove', move);
+        selBox.removeEventListener('pointerup', up);
+      };
+      selBox.addEventListener('pointermove', move);
+      selBox.addEventListener('pointerup', up);
+    });
     paintTrim();
 
     // ── 재생/일시정지 (다듬은 구간만 미리 듣기) ──
@@ -2215,6 +2244,8 @@ PREVIEW_MODAL_JS = r"""
       };
       if (Math.abs(selS - C.start) > 0.05 || Math.abs(selE - C.end) > 0.05) {
         payload.clip_start = selS; payload.clip_end = selE;
+        // 원래 구간과 아예 안 겹치는 곳으로 옮겼으면 저장된 자막은 무효 → 비워서 재전사 유도.
+        if (selE <= C.start || selS >= C.end) payload.captions = [];
       }
       const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/position', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
