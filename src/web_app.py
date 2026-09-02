@@ -2138,11 +2138,11 @@ PREVIEW_MODAL_JS = r"""
         img.draggable = false; strip.appendChild(img);
       }
     }
-    function renderHead() {
-      const t = video.currentTime;
+    function renderHeadAt(t) {  // 지정 시각으로 파란 재생선을 즉시 그린다(currentTime 비동기 문제 회피)
       if (t >= view.a && t <= view.b) { headEl.style.display = 'block'; headEl.style.left = t2x(t) + 'px'; }
       else headEl.style.display = 'none';
     }
+    function renderHead() { renderHeadAt(video.currentTime); }
     function positionSeg(el, sg) {   // DOM 재생성 없이 한 조각의 좌우 위치만 갱신(드래그 중 사용)
       const W = trimEl.clientWidth;
       const x0 = Math.max(0, t2x(sg.s)), x1 = Math.min(W, t2x(sg.e));
@@ -2257,22 +2257,28 @@ PREVIEW_MODAL_JS = r"""
       }
     });
 
-    // 타임라인 클릭 = 그 지점이 클립 '시작'이 되게 한다(파란 재생선도 거기로 슉 이동).
+    const clickT = (e) => Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
+    // 단일 클릭: 파란 재생선만 그 지점으로 이동(미리보기 스크럽). 경계는 안 건드림.
     trimEl.addEventListener('click', (e) => {
-      if (e.target.closest('.pv-seg')) return;  // 조각/핸들 드래그는 제외
-      const t = Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
+      if (e.target.closest('.pv-seg')) return;  // 조각/핸들 조작은 제외
+      const t = clickT(e);
+      video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHeadAt(t);
+    });
+    // 더블 클릭: 어느 지점이든 그 지점이 클립 '시작'이 되게(파란 바도 거기로 이동).
+    trimEl.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      const t = clickT(e);
       let i = segs.findIndex((sg) => t < sg.e - 0.5);  // 이 지점이 시작이 될 조각
-      if (i === -1) {  // 모든 조각보다 뒤를 클릭 → 경계는 안 건드리고 재생선만 이동
-        video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHead(); return;
-      }
+      if (i === -1) i = segs.length - 1;
       const prev = segs[i - 1];
       segs[i].s = Math.max(prev ? prev.e + 0.1 : 0, Math.min(t, segs[i].e - 0.5));  // 시작을 클릭 지점으로
       activeSeg = i;
       video.currentTime = segs[i].s; video.pause(); playBtn.classList.remove('hidden');
-      renderSegs(); renderHead();
+      renderSegs(); renderHeadAt(segs[i].s);
     });
 
-    video.addEventListener('loadedmetadata', () => { video.currentTime = segs[0].s; });
+    video.addEventListener('loadedmetadata', () => { video.currentTime = segs[0].s; renderHeadAt(segs[0].s); });
+    video.addEventListener('seeked', renderHead);  // 스크럽/시크 후 파란 바 위치 동기화
     redraw();
 
     // ── 재생: 남긴 조각들만 순서대로 미리듣기(잘린 gap은 건너뜀) ──
