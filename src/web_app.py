@@ -714,6 +714,10 @@ CANDIDATES_TEMPLATE = f"""
     var renderIndices = null;   // 이번 세션에서 렌더 요청한 클립들(버튼 클릭 시 채워짐)
     var wasRendering = false;   // 렌더 진행 중이었는지(완료 전이 감지용)
     var polling = false;
+    var reanalyzeUrl = "/video/" + VID + "/reanalyze_status";
+    var wasReanalyzing = false;  // 팝업을 닫아도(만들기 전 확인 창) 재분석은 서버에서 계속 돌고,
+    // 이 위젯이 이어서 진행률을 보여준다("팝업 나가면 취소되는 것처럼 보인다"는 신고 수정.
+    // 실제로는 서버 스레드가 계속 도는데, 진행 상황을 보여줄 UI가 팝업 안에만 있었을 뿐).
     closeBtn.addEventListener('click', function() {{ box.classList.add('hidden'); }});
 
     function fmtEta(s) {{
@@ -764,12 +768,29 @@ CANDIDATES_TEMPLATE = f"""
         location.reload();  // 렌더 중 새로고침한 경우 등: 서버 렌더 상태로 복원
       }}
     }}
+    function showReanalyzeDone(ok, errMsg) {{
+      box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display = 'none';
+      msg.innerHTML = ok ? '✅ 구간 재분석 완료 — 후보 목록 맨 아래 추가됨' : ('⚠️ 재분석 실패: ' + errMsg);
+      eta.textContent = '';
+      actions.hidden = false; actions.innerHTML = '';
+      var b = document.createElement('button');
+      b.className = 'mini-go'; b.textContent = '새로고침해서 보기';
+      b.addEventListener('click', function() {{ location.reload(); }});
+      actions.appendChild(b);
+    }}
+    function pollReanalyze() {{
+      fetch(reanalyzeUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
+        if (j.running) {{ wasReanalyzing = true; showProg((j.pct || 0) * 100, '구간 재분석 중…', null); }}
+        else if (wasReanalyzing) {{ wasReanalyzing = false; showReanalyzeDone(!j.error, j.error); }}
+      }}).catch(function() {{}});
+    }}
     function poll() {{
       fetch(statusUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
         if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '⚠️ 오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
         if (j.rendering) {{ wasRendering = true; showProg(j.render_pct, j.render_message || '쇼츠 렌더링 중…', j.render_eta_seconds); }}
         else if (wasRendering) {{ wasRendering = false; onRenderDone(); }}
         else if (!j.ready && j.status !== 'error') {{ showProg(j.pct, j.message || '분석 중…', j.eta_seconds); }}
+        else {{ pollReanalyze(); }}   // 렌더/분석이 안 도는 동안만 재분석 상태를 확인(위젯 하나 공유)
         setTimeout(poll, 800);
       }}).catch(function() {{ setTimeout(poll, 1500); }});
     }}
@@ -1977,6 +1998,7 @@ def clip_preview_info(video_id: str, idx: int):
         "source_duration": duration,
         "title_font": font_entry(clip.title_font or cfg["captions"].get("title_font_family", "")),
         "caption_font": font_entry(clip.caption_font or cfg["captions"].get("font_family", "")),
+        "fonts": [{"name": f["name"], "family": f["family"], "file": f["file"]} for f in fonts],
     })
 
 
@@ -2026,6 +2048,10 @@ PREVIEW_MODAL_JS = r"""
     border: 1.5px dashed transparent; color: #191f28; text-shadow: 0 0 6px rgba(255,255,255,.85);
     font-weight: 800; white-space: normal; word-break: keep-all; width: max-content; }
   .pv-drag:hover, .pv-drag.dragging { border-color: #3182f6; background: rgba(49,130,246,.18); }
+  /* 가로 정중앙 스냅 가이드선(파워포인트/피그마 스타일) — 드래그로 중앙에 가까워지면 표시. */
+  .pv-guide-v { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; border-left: 1.5px dashed #ff3b8d;
+    transform: translateX(-50%); pointer-events: none; z-index: 5; display: none; }
+  .pv-guide-v.show { display: block; }
   .pv-resize { position: absolute; right: -8px; bottom: -8px; width: 15px; height: 15px;
     border-radius: 4px; background: #3182f6; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35);
     cursor: nwse-resize; display: none; touch-action: none; }
@@ -2072,6 +2098,10 @@ PREVIEW_MODAL_JS = r"""
   .pv-capedit-btn:hover { border-color: #3182f6; color: #3182f6; }
   .pv-capsec { margin-top: 12px; }
   .pv-capsec.hidden { display: none; }
+  .pv-capfont-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+    color: #6b7684; font-weight: 600; margin-bottom: 8px; }
+  .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
+    border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
   .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
   .pv-caprow { display: flex; gap: 6px; align-items: center; }
   /* input[type=number]/[type=text]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가
@@ -2119,10 +2149,11 @@ PREVIEW_MODAL_JS = r"""
     } catch (e) { alert('미리보기 정보를 불러오지 못했어요'); return; }
 
     injectOnce('pv-style', CSS);
-    // 실제 렌더 글꼴을 팝업에서도 그대로 보여준다.
+    // 실제 렌더 글꼴을 팝업에서도 그대로 보여준다. 자막 글꼴 드롭다운에서 바로 미리보기가
+    // 되도록 현재 선택된 폰트뿐 아니라 등록된 폰트 전체의 @font-face를 넣는다.
     let faceCss = '';
-    for (const f of [info.title_font, info.caption_font]) {
-      if (f) faceCss += "@font-face{font-family:'" + f.family + "';src:url('/font/" + f.file + "');font-display:swap}\n";
+    for (const f of (info.fonts || [])) {
+      faceCss += "@font-face{font-family:'" + f.family + "';src:url('/font/" + f.file + "');font-display:swap}\n";
     }
     if (faceCss) injectOnce('pv-fonts-' + idx, faceCss);
 
@@ -2144,6 +2175,7 @@ PREVIEW_MODAL_JS = r"""
       '    </div></div>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
       '    <div class="pv-vbox"><video playsinline preload="metadata"></video></div>' +
+      '    <div class="pv-guide-v"></div>' +
       '    <div class="pv-drag pv-title"><span class="pv-txt"></span><i class="pv-resize" title="드래그해서 제목 크기 조절"></i></div>' +
       '    <div class="pv-drag pv-caption"></div>' +
       '    <button class="pv-play">▶</button>' +
@@ -2162,6 +2194,7 @@ PREVIEW_MODAL_JS = r"""
       '    </div>' +
       '  </div>' +
       '  <div class="pv-capsec hidden">' +
+      '    <label class="pv-capfont-row">자막 글꼴 <select class="pv-capfont"></select></label>' +
       '    <div class="pv-caprows"></div>' +
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
@@ -2434,6 +2467,9 @@ PREVIEW_MODAL_JS = r"""
       el.style.left = (bases[key].left + state[key].x * SC) + 'px';
       el.style.top = (bases[key].top + state[key].y * SC) + 'px';
     }
+    // 가로 정중앙 스냅: x(가운데 기준 오프셋)가 거의 0이면 0으로 딱 붙이고 가이드선을 보여준다.
+    const guideV = $('.pv-guide-v');
+    const SNAP_PX = 6;  // 팝업 화면 px 기준 스냅 반경
     function makeDraggable(el, key, onDbl) {
       let lastDown = 0;
       el.addEventListener('pointerdown', (e) => {
@@ -2447,12 +2483,16 @@ PREVIEW_MODAL_JS = r"""
         el.setPointerCapture(e.pointerId);
         const sx = e.clientX, sy = e.clientY, ox = state[key].x, oy = state[key].y;
         const move = (ev) => {
-          state[key].x = ox + (ev.clientX - sx) / SC;
-          state[key].y = oy + (ev.clientY - sy) / SC;
+          let nx = ox + (ev.clientX - sx) / SC;
+          const ny = oy + (ev.clientY - sy) / SC;
+          if (Math.abs(nx * SC) < SNAP_PX) { nx = 0; guideV.classList.add('show'); }
+          else { guideV.classList.remove('show'); }
+          state[key].x = nx; state[key].y = ny;
           paintBox(el, key);
         };
         const up = () => {
           el.classList.remove('dragging');
+          guideV.classList.remove('show');
           el.removeEventListener('pointermove', move);
           el.removeEventListener('pointerup', up);
         };
@@ -2560,6 +2600,22 @@ PREVIEW_MODAL_JS = r"""
 
     // ── 자막 수정(접었다 폈다, 시작·끝·내용 편집) ──
     const capSec = $('.pv-capsec'), capRowsBox = $('.pv-caprows');
+    // ── 자막 글꼴 선택 ──
+    const capFontSel = $('.pv-capfont');
+    let chosenCaptionFont = (info.caption_font && info.caption_font.family) || '';
+    (info.fonts || []).forEach((f) => {
+      const o = document.createElement('option');
+      o.value = f.family; o.textContent = f.name;
+      if (f.family === chosenCaptionFont) o.selected = true;
+      capFontSel.appendChild(o);
+    });
+    capFontSel.addEventListener('change', () => {
+      chosenCaptionFont = capFontSel.value;
+      capEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
+      capRowsBox.querySelectorAll('.pv-cap-text').forEach((el) => {
+        el.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
+      });
+    });
     function addCapRow(startRel, endRel, text) {
       const row = document.createElement('div');
       row.className = 'pv-caprow';
@@ -2570,7 +2626,9 @@ PREVIEW_MODAL_JS = r"""
         '<button type="button" class="pv-cap-del" title="삭제">&times;</button>';
       row.querySelector('.pv-cap-start').value = startRel.toFixed(1);
       row.querySelector('.pv-cap-end').value = endRel.toFixed(1);
-      row.querySelector('.pv-cap-text').value = text || '';
+      const textEl = row.querySelector('.pv-cap-text');
+      textEl.value = text || '';
+      if (chosenCaptionFont) textEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
       capRowsBox.appendChild(row);
     }
     (info.caption_lines || []).forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
@@ -2602,6 +2660,9 @@ PREVIEW_MODAL_JS = r"""
     }
 
     // ── 구간 재분석: 주제는 그대로, 이 장면 시작·끝만 다시 잡아 새 후보로 추가(원본 유지) ──
+    // 실제 작업은 서버 스레드에서 도니 팝업을 닫아도 계속 진행된다. 화면 아래 고정
+    // 위젯(mini-prog, __startRenderWatch 옆의 pollReanalyze)이 팝업이 닫힌 뒤에도 진행률·완료를
+    // 이어서 보여준다 — 이 팝업 안 코드는 "열려 있는 동안"의 버튼 표시만 담당한다.
     const reBtn = $('.pv-reanalyze');
     reBtn.addEventListener('click', async () => {
       reBtn.disabled = true; reBtn.textContent = '재분석 중…';
@@ -2614,11 +2675,12 @@ PREVIEW_MODAL_JS = r"""
         reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return;
       }
       const poll = () => {
+        if (!back.isConnected) return;  // 팝업이 닫혔으면 여기선 멈추고 화면 아래 위젯에 맡긴다
         fetch('/video/' + VIDEO_ID + '/reanalyze_status').then((r) => r.json()).then((j) => {
+          if (!back.isConnected) return;
           if (j.running) { reBtn.textContent = '재분석 중… ' + Math.round((j.pct || 0) * 100) + '%'; setTimeout(poll, 1000); return; }
-          if (j.error) { alert('재분석 실패: ' + j.error); reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return; }
-          alert('구간 재분석 완료 — 하이라이트 후보 맨 아래에 새 후보로 추가했어요(원본은 그대로).');
-          location.reload();
+          if (j.error) { reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; alert('재분석 실패: ' + j.error); return; }
+          reBtn.textContent = '✓ 완료 (새로고침하면 후보에 추가됨)';
         }).catch(() => setTimeout(poll, 1500));
       };
       poll();
@@ -2634,6 +2696,7 @@ PREVIEW_MODAL_JS = r"""
         title_offset_x: state.title.x, title_offset_y: state.title.y,
         title_size: state.title.size,
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
+        caption_font: chosenCaptionFont,
       };
       // 자막은 사용자가 실제로 고쳤을 때만 확정본으로 저장(위 capsDirty 주석 참고).
       if (capsDirty) payload.captions = collectCaptions();
