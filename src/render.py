@@ -204,19 +204,41 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
     return mask_path
 
 
+def _probe_audio_params(video_path: Path) -> tuple[int, int]:
+    """(sample_rate, channels)를 가져온다. 아웃트로 concat(-c copy)은 오디오 샘플레이트가
+    본 클립과 정확히 같아야 한다 — 다르면 아웃트로 오디오 프레임이 본 클립 타임베이스로
+    잘못 해석되어 오디오 트랙만 몇 초씩 길어지고, 플레이어가 남은 오디오 동안 마지막
+    프레임(로고)을 정지 표시해 '로고가 3초가 아니라 10초씩 뜨는' 실측 사고가 났다
+    (본 클립 44100Hz vs 아웃트로 48000Hz, 2026-09-03)."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate,channels",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        sr, ch = proc.stdout.split()
+        return int(sr), int(ch)
+    except (ValueError, IndexError):
+        return 44100, 2  # 유튜브 오디오의 흔한 기본값
+
+
 def _get_or_create_outro_segment(
-    image_path: Path, duration_sec: float, resolution: tuple[int, int], fps: float, encoder: str
+    image_path: Path, duration_sec: float, resolution: tuple[int, int], fps: float, encoder: str,
+    sample_rate: int, channels: int,
 ) -> Path:
     """정지 이미지 + 무음으로 된 아웃트로 영상을 캐시해서 재사용한다.
 
     본 클립과 concat demuxer(-c copy, 재인코딩 없음)로 이어 붙이려면 코덱/해상도/fps/오디오
-    샘플레이트가 정확히 같아야 한다. fps는 소스 영상마다 달라서(_probe_fps) 전역 상수로
-    캐시할 수 없다 — fps별로 별도 캐시 파일을 둔다."""
+    샘플레이트·채널까지 정확히 같아야 한다. fps·샘플레이트는 소스 영상마다 달라서 전역
+    상수로 캐시할 수 없다 — 파라미터 조합별로 별도 캐시 파일을 둔다."""
     _MASK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     w, h = resolution
     codec = "libx264" if encoder != "h264_qsv" else "h264_qsv"
     fps_key = f"{fps:.3f}".replace(".", "_")
-    seg_path = _MASK_CACHE_DIR / f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{codec}.mp4"
+    seg_path = _MASK_CACHE_DIR / (
+        f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{sample_rate}hz{channels}ch_{codec}.mp4"
+    )
     if seg_path.exists() and seg_path.stat().st_mtime >= image_path.stat().st_mtime:
         return seg_path
 
@@ -225,15 +247,16 @@ def _get_or_create_outro_segment(
         if codec == "h264_qsv"
         else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     )
+    ch_layout = "mono" if channels == 1 else "stereo"
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-loop", "1", "-i", str(image_path),
-        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+        "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl={ch_layout}",
         "-t", str(duration_sec),
         "-vf", f"scale={w}:{h},fps={fps}",
         "-pix_fmt", "yuv420p",
         *video_args,
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-c:a", "aac", "-b:a", "192k", "-ar", str(sample_rate), "-ac", str(channels),
         "-shortest",
         str(seg_path),
     ]
@@ -597,8 +620,11 @@ def render_clip(
         outro_dur = float(outro_cfg.get("duration_sec", 3) or 0)
         if image_path.exists() and outro_dur > 0:
             try:
+                # 방금 렌더된 결과물의 실제 오디오 파라미터에 정확히 맞춘다(-c copy concat 필수 조건).
+                sample_rate, channels = _probe_audio_params(output_path)
                 outro_seg = _get_or_create_outro_segment(
-                    image_path, outro_dur, resolution, source_fps, used_encoder
+                    image_path, outro_dur, resolution, source_fps, used_encoder,
+                    sample_rate, channels,
                 )
                 _append_outro(output_path, outro_seg)
             except Exception:  # noqa: BLE001

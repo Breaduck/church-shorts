@@ -2013,6 +2013,10 @@ PREVIEW_MODAL_JS = r"""
     border-radius: 4px; background: #3182f6; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35);
     cursor: nwse-resize; display: none; touch-action: none; }
   .pv-title:hover .pv-resize, .pv-title.dragging .pv-resize { display: block; }
+  /* 실제 렌더는 제목을 항상 한 줄로 맞춘다(_fit_title_font_size). 팝업이 normal로 줄바꿈하면
+     (1) 2줄로 보여 실제와 배열이 다르고 (2) 줄바꿈 때문에 scrollWidth가 한계를 안 넘어
+     fitToWidth 축소가 아예 작동하지 않아 크기까지 다르게 보였다 — 반드시 nowrap. */
+  .pv-title { white-space: nowrap; }
   .pv-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
     width: 54px; height: 54px; border-radius: 50%; border: none; cursor: pointer;
     background: rgba(15,23,42,.55); color: #fff; font-size: 22px; display: flex;
@@ -2377,7 +2381,8 @@ PREVIEW_MODAL_JS = r"""
     }
     applyTitleSize();
     capEl.style.fontSize = Math.round(L.caption_font_size * SC) + 'px';
-    titleEl.style.maxWidth = Math.round((L.resolution[0] - 80) * SC) + 'px';
+    // maxWidth를 주면 nowrap과 충돌해 글자가 박스 밖으로 잘려 보인다. 폭 제한은
+    // fitToWidth(폰트 축소)가 담당하므로 박스 자체는 제한하지 않는다.
     if (info.title_font) titleEl.style.fontFamily = "'" + info.title_font.family + "', sans-serif";
     if (info.caption_font) capEl.style.fontFamily = "'" + info.caption_font.family + "', sans-serif";
     const USABLE_W = (L.resolution[0] - 80) * SC;
