@@ -516,7 +516,7 @@ CANDIDATES_TEMPLATE = f"""
   </div>
   {{% endfor %}}
   <div class="actions">
-    <label style="display:block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none">
+    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
       <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 3초 넣기
     </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
@@ -2381,6 +2381,10 @@ PREVIEW_MODAL_JS = r"""
     }
     applyTitleSize();
     capEl.style.fontSize = Math.round(L.caption_font_size * SC) + 'px';
+    // 실제 렌더는 제목이 항상 1줄 — 팝업도 무조건 1줄로. 스타일시트 순서/캐시에 좌우되지
+    // 않게 인라인으로 박는다(인라인이 어떤 시트 규칙보다 우선).
+    titleEl.style.whiteSpace = 'nowrap';
+    titleEl.style.maxWidth = 'none';
     // maxWidth를 주면 nowrap과 충돌해 글자가 박스 밖으로 잘려 보인다. 폭 제한은
     // fitToWidth(폰트 축소)가 담당하므로 박스 자체는 제한하지 않는다.
     if (info.title_font) titleEl.style.fontFamily = "'" + info.title_font.family + "', sans-serif";
@@ -2486,15 +2490,21 @@ PREVIEW_MODAL_JS = r"""
       capRowsBox.appendChild(row);
     }
     (info.caption_lines || []).forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
+    // 실제로 자막을 고쳤을 때만 저장한다. 안 고쳤는데 매번 초안을 '사용자 확정본'으로
+    // 저장하면, (아직 정밀 재전사 전인 클립은) 부정확한 자동자막 초안이 그대로 굳어서
+    // 렌더의 정밀 재전사(더 정확한 자막)가 영영 건너뛰어진다.
+    let capsDirty = false;
+    capRowsBox.addEventListener('input', () => { capsDirty = true; });
     $('.pv-capedit-btn').addEventListener('click', () => capSec.classList.toggle('hidden'));
     $('.pv-capadd').addEventListener('click', () => {
       const rows = capRowsBox.querySelectorAll('.pv-caprow');
       const s = rows.length ? (parseFloat(rows[rows.length - 1].querySelector('.pv-cap-end').value) || 0) : 0;
       addCapRow(s, s + 2, '');
+      capsDirty = true;
       capSec.classList.remove('hidden');
     });
     capRowsBox.addEventListener('click', (e) => {
-      if (e.target.classList.contains('pv-cap-del')) e.target.closest('.pv-caprow').remove();
+      if (e.target.classList.contains('pv-cap-del')) { e.target.closest('.pv-caprow').remove(); capsDirty = true; }
     });
     function collectCaptions() {
       return [...capRowsBox.querySelectorAll('.pv-caprow')].map((r) => {
@@ -2540,8 +2550,9 @@ PREVIEW_MODAL_JS = r"""
         title_offset_x: state.title.x, title_offset_y: state.title.y,
         title_size: state.title.size,
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
-        captions: collectCaptions(),
       };
+      // 자막은 사용자가 실제로 고쳤을 때만 확정본으로 저장(위 capsDirty 주석 참고).
+      if (capsDirty) payload.captions = collectCaptions();
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
       if (changed) {
@@ -2567,7 +2578,11 @@ PREVIEW_MODAL_JS = r"""
 
 @app.route("/js/preview-modal.js")
 def preview_modal_js():
-    return Response(PREVIEW_MODAL_JS, mimetype="application/javascript")
+    # no-store: 캐시 헤더가 없으면 브라우저가 알아서(휴리스틱) 캐시해서, 팝업을 고쳐도
+    # 사용자에겐 옛 스크립트가 계속 돌아 "고쳤다는데 그대로"가 된다(실측, 2026-09-03).
+    resp = Response(PREVIEW_MODAL_JS, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def _run_reanalyze_job(video_id: str, idx: int) -> None:
