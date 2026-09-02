@@ -218,22 +218,26 @@ def _clamp_lines_non_overlap(lines: list[CaptionLine]) -> list[CaptionLine]:
             end = min(end, ordered[i + 1].start)
         if end - line.start < 0.05:
             continue
-        # 단어끼리도 겹치지 않게 순서대로 눌러 담는다 — 롤링 자막에서 매칭된 실제 단어들이
-        # 서로 겹치는 타임스탬프를 갖는 경우(개별 중복 제거로는 안 잡히는 부분 겹침)에도
-        # \\k 합계가 라인의 실제 표시 시간을 넘지 않도록 이중으로 보장한다.
+        # 단어끼리도 겹치지 않게 순서대로 눌러 담고, 라인의 최종 표시 구간을 넘치면 단어를
+        # '버리는' 게 아니라 구간 안으로 선형 압축한다. (예전엔 넘친 단어를 드롭했는데,
+        # 인접 라인이 각자 실제 발화 시각을 빌려 쓰면 서로 침범하는 경우가 생겨 마지막
+        # 단어가 통째로 사라졌다 — 실측: '안 되잖아요'에서 '되잖아요' 유실. 압축은 리듬이
+        # 아주 살짝 빨라질 뿐 내용은 절대 잃지 않는다.)
         words = []
         prev_end = line.start
         for w in line.words:
             ws = max(w.start, prev_end)
-            if ws >= end:
-                continue
-            we = min(w.end, end)
-            if we <= ws:
-                we = min(end, ws + 0.03)
+            we = max(w.end, ws + 0.03)
             words.append(Word(start=ws, end=we, text=w.text))
             prev_end = we
-        if not words:
-            continue
+        if words and words[-1].end > end:
+            a = words[0].start
+            src_span = max(1e-6, words[-1].end - a)
+            scale = max(0.05, end - a) / src_span
+            words = [
+                Word(start=a + (w.start - a) * scale, end=a + (w.end - a) * scale, text=w.text)
+                for w in words
+            ]
         result.append(CaptionLine(start=line.start, end=end, words=words))
     return result
 

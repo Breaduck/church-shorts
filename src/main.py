@@ -1131,11 +1131,33 @@ def render_selected(
                 clip.end = _snap_clip_end_to_sentence(clip, base_segments)
             out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다. base_segments(참조
-            # 전사 = 유튜브 json3의 '실제 발화 시각')를 함께 넘겨, 카라오케 강조가 목소리 리듬을
-            # 따라가도록 한다(빈 [] 를 넘기면 균등 분배가 되어 자막이 목소리와 따로 논다).
+            # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다 — 카라오케 강조가
+            # 목소리 리듬을 따라가려면 단어별 '실제 발화 시각' 참조가 필요하다. 기준 우선순위:
+            #   1) 정밀 재전사 캐시(있으면): whisper large-v3의 단어 시각 — 가장 정확.
+            #      유튜브 자동자막은 단어 시작이 0.2~0.5초씩 '들쭉날쭉' 이르러 전역 오프셋
+            #      (+0.25초)으로는 평균만 맞고 단어별 미세 오차가 남는다("파란색이 미세하게
+            #      안 맞는다" 신고의 원인). 캐시는 '읽기만' 하므로(재전사 없음) 빠르고,
+            #      항상 같은 파일이라 결과도 결정적이다.
+            #   2) 캐시가 없으면 base_segments(참조 전사) — 예전 동작 그대로.
+            ov_hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+            ov_sig = hashlib.md5(
+                f"{w.get('initial_prompt', '')}|{ov_hotwords or ''}".encode("utf-8")
+            ).hexdigest()[:8]
+            ov_model = w.get("precise_model_size", w["model_size"])
+            ref_segments = _precise_cache_find(
+                video_dir / "precise_cache", ov_model, ov_sig, clip.start, clip.end + 4.0
+            )
+            if ref_segments is not None and _precise_worst_hole(
+                base_segments, ref_segments, clip.start, clip.end
+            ) >= 5.0:
+                ref_segments = None  # 구멍 난 캐시는 신뢰하지 않는다(자막 씹힘 방지)
+            if ref_segments is not None:
+                _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: 정밀 캐시")
+            else:
+                ref_segments = base_segments
+                _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: base(캐시 없음)")
             _run_with_progress_ticker(
-                lambda: render_clip(video_path, base_segments, clip, out_path, cfg["render"], cfg["captions"]),
+                lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], cfg["captions"]),
                 start_pct=base, end_pct=base + step, progress=progress,
                 message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
                 est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
