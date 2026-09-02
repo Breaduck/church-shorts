@@ -1923,6 +1923,7 @@ def clip_preview_info(video_id: str, idx: int):
             "keep_ranges": (getattr(clip, "keep_ranges", None) or []),
             "title_offset_x": clip.title_offset_x,
             "title_offset_y": clip.title_offset_y,
+            "title_size": getattr(clip, "title_size", 0) or 0,
             "caption_offset_x": clip.caption_offset_x,
             "caption_offset_y": clip.caption_offset_y,
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
@@ -1980,6 +1981,10 @@ PREVIEW_MODAL_JS = r"""
     border: 1.5px dashed transparent; color: #191f28; text-shadow: 0 0 6px rgba(255,255,255,.85);
     font-weight: 800; white-space: normal; word-break: keep-all; width: max-content; }
   .pv-drag:hover, .pv-drag.dragging { border-color: #3182f6; background: rgba(49,130,246,.18); }
+  .pv-resize { position: absolute; right: -8px; bottom: -8px; width: 15px; height: 15px;
+    border-radius: 4px; background: #3182f6; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    cursor: nwse-resize; display: none; touch-action: none; }
+  .pv-title:hover .pv-resize, .pv-title.dragging .pv-resize { display: block; }
   .pv-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
     width: 54px; height: 54px; border-radius: 50%; border: none; cursor: pointer;
     background: rgba(15,23,42,.55); color: #fff; font-size: 22px; display: flex;
@@ -2066,7 +2071,7 @@ PREVIEW_MODAL_JS = r"""
       '    </div></div>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
       '    <div class="pv-vbox"><video playsinline preload="metadata"></video></div>' +
-      '    <div class="pv-drag pv-title"></div>' +
+      '    <div class="pv-drag pv-title"><span class="pv-txt"></span><i class="pv-resize" title="드래그해서 제목 크기 조절"></i></div>' +
       '    <div class="pv-drag pv-caption"></div>' +
       '    <button class="pv-play">▶</button>' +
       '  </div></div>' +
@@ -2307,21 +2312,26 @@ PREVIEW_MODAL_JS = r"""
       caption: { left: L.resolution[0] / 2 * SC, top: L.caption_base_margin_v * SC },
     };
     const state = {
-      title: { x: C.title_offset_x, y: C.title_offset_y },
+      title: { x: C.title_offset_x, y: C.title_offset_y, size: C.title_size || 0 },
       caption: { x: C.caption_offset_x, y: C.caption_offset_y },
     };
     const titleEl = $('.pv-title'), capEl = $('.pv-caption');
-    titleEl.textContent = C.title;
+    const titleTxt = titleEl.querySelector('.pv-txt');
+    titleTxt.textContent = C.title;
     capEl.textContent = info.caption_preview;
-    titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
+    function applyTitleSize() {
+      titleEl.style.fontSize = Math.round((state.title.size || L.title_size) * SC) + 'px';
+    }
+    applyTitleSize();
     capEl.style.fontSize = Math.round(L.caption_font_size * SC) + 'px';
     titleEl.style.maxWidth = Math.round((L.resolution[0] - 80) * SC) + 'px';
     if (info.title_font) titleEl.style.fontFamily = "'" + info.title_font.family + "', sans-serif";
     if (info.caption_font) capEl.style.fontFamily = "'" + info.caption_font.family + "', sans-serif";
     const USABLE_W = (L.resolution[0] - 80) * SC;
-    function fitToWidth(el) {
+    function fitToWidth(el, measureEl) {
+      measureEl = measureEl || el;
       let fs = parseFloat(getComputedStyle(el).fontSize), guard = 0;
-      while (el.scrollWidth > USABLE_W && fs > 5 && guard < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; guard++; }
+      while (measureEl.scrollWidth > USABLE_W && fs > 5 && guard < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; guard++; }
     }
     function paintBox(el, key) {
       el.style.left = (bases[key].left + state[key].x * SC) + 'px';
@@ -2347,12 +2357,36 @@ PREVIEW_MODAL_JS = r"""
         el.addEventListener('pointerup', up);
       });
     }
-    fitToWidth(titleEl); fitToWidth(capEl);
+    fitToWidth(titleEl, titleTxt); fitToWidth(capEl);
     paintBox(titleEl, 'title'); paintBox(capEl, 'caption');
     makeDraggable(titleEl, 'title'); makeDraggable(capEl, 'caption');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
-      titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
-      fitToWidth(titleEl);
+      applyTitleSize();
+      fitToWidth(titleEl, titleTxt);
+    });
+
+    // ── 제목 크기 조절 핸들(파워포인트처럼 모서리를 드래그) ──
+    const resizeHandle = titleEl.querySelector('.pv-resize');
+    resizeHandle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();  // 부모(titleEl)의 이동 드래그가 같이 반응하지 않게
+      titleEl.classList.add('dragging');
+      resizeHandle.setPointerCapture(e.pointerId);
+      const sx = e.clientX;
+      const startSize = state.title.size || L.title_size;
+      const move = (ev) => {
+        const dx = ev.clientX - sx;
+        state.title.size = Math.max(30, Math.min(280, Math.round(startSize + dx / SC)));
+        titleEl.style.fontSize = Math.round(state.title.size * SC) + 'px';
+      };
+      const up = () => {
+        titleEl.classList.remove('dragging');
+        resizeHandle.removeEventListener('pointermove', move);
+        resizeHandle.removeEventListener('pointerup', up);
+        fitToWidth(titleEl, titleTxt);  // 실제 렌더처럼 한 줄에 맞춰 미리보기(저장은 드래그한 크기 그대로)
+      };
+      resizeHandle.addEventListener('pointermove', move);
+      resizeHandle.addEventListener('pointerup', up);
     });
 
     // ── 제목 후보 5개 ──
@@ -2366,9 +2400,9 @@ PREVIEW_MODAL_JS = r"""
         chosenTitle = t;
         candsBox.querySelectorAll('.pv-cand').forEach((x) => x.classList.remove('sel'));
         b.classList.add('sel');
-        titleEl.textContent = t;
-        titleEl.style.fontSize = Math.round(L.title_size * SC) + 'px';
-        fitToWidth(titleEl);
+        titleTxt.textContent = t;
+        applyTitleSize();
+        fitToWidth(titleEl, titleTxt);
       });
       candsBox.appendChild(b);
     });
@@ -2404,6 +2438,7 @@ PREVIEW_MODAL_JS = r"""
       const payload = {
         title: chosenTitle,
         title_offset_x: state.title.x, title_offset_y: state.title.y,
+        title_size: state.title.size,
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
       };
       const outS = segs[0].s, outE = segs[segs.length - 1].e;

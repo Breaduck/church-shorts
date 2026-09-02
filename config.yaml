@@ -180,8 +180,8 @@ captions:
   font_path: "assets/fonts/Pretendard-Bold.ttf"
   font_family: "Pretendard"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
   font_size: 72
-  title_font_size: 190  # 자막(72)의 2배 이상. 더 크고 눈에 띄게(사용자 요청, 2026-08-23)
-  title_font_family: "Pretendard ExtraBold"  # 자막(Pretendard Bold)보다 더 굵게
+  title_font_size: 130  # 190→130: "제목이 너무 크다, 1줄 안에 들어가게"(사용자 요청, 2026-09-02)
+  title_font_family: "Gmarket Sans Bold"  # Pretendard ExtraBold→지마켓 산스 Bold(사용자 요청, 2026-09-02)
   # 흰 배경(card) 기준 색상 — 2026-09-02 세련화: 순검정 대신 차콜(#191F28, 토스 텍스트색)로
   # 부드럽게, 강조 단어는 연한 연두(#4ADE80: 흰 배경에서 대비가 죽어 색감이 밋밋했던 원인)
   # 대신 선명한 블루(#3182F6, 검토 UI와 같은 포인트색)로 통일감 있게. 흰 배경 위 흰 외곽선은

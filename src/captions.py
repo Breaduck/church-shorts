@@ -328,24 +328,16 @@ def _karaoke_text(words: list[Word]) -> str:
 
 def _fit_title_font_size(
     text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62,
-    boost: float = 1.4, block_height_px: int = 320,
 ) -> int:
-    """제목 폰트 크기를 정한다: 한 줄 기준으로 폭에 맞춘 뒤 **boost배 키운다(자연 줄바꿈 2줄 허용)**.
+    """제목 폰트 크기를 정한다: 항상 한 줄에 들어가도록 폭 기준으로 상한을 잡는다.
 
-    예전엔 무조건 한 줄을 강제해서, 긴 제목(15자+)이 config title_font_size(190)와 무관하게
-    80px대까지 쪼그라들어 "제목이 너무 작다"는 불만이 반복됐다(2026-08-24 사용자 요청: 1.4배).
-    한 줄 폭 기준 크기 × boost 는 정확히 2줄 이내로만 줄바꿈되므로(줄당 수용 글자수가 1/boost로
-    줄어드는 것뿐), 3줄 폭발은 없다. 2줄 블록(줄높이 1.25×2 = 2.5×크기)이 제목 영역을 넘지 않게
-    block_height_px(기본: title_area 360 - 상단여백 - 여유)로 상한을 건다.
-    짧은 제목은 이미 max_size라 boost 없이 그대로 한 줄."""
+    2026-08-24엔 boost(1.4배)로 자연 줄바꿈 2줄을 허용했지만, 2026-09-02 사용자 피드백
+    ("제목이 너무 크다 — 1줄 안에 들어가게")으로 되돌린다. 짧은 제목은 max_size 그대로,
+    긴 제목만 폭에 맞춰 줄인다(아래 build_ass() 호출부의 "무조건 한 줄" 주석이 원래 의도였다)."""
     if not text:
         return max_size
-    one_line = available_width_px / (len(text) * char_width_ratio)
-    if one_line >= max_size:
-        return max_size  # 짧은 제목: 최대 크기 그대로(한 줄)
-    boosted = int(one_line * boost)
-    two_line_cap = int(block_height_px / 2.5)  # 2줄 × 줄높이 1.25
-    return max(min_size, min(max_size, boosted, two_line_cap))
+    one_line = int(available_width_px / (len(text) * char_width_ratio))
+    return max(min_size, min(max_size, one_line))
 
 
 def _snap_word_starts_to_voice(
