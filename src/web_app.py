@@ -2182,38 +2182,37 @@ PREVIEW_MODAL_JS = r"""
 
     function bindSeg(el, i) {
       const Wpx = () => trimEl.clientWidth;
-      el.addEventListener('pointerdown', (e) => {
-        if (e.target.classList.contains('del')) return;
-        e.preventDefault();
-        activeSeg = i;
-        const isL = e.target.classList.contains('hL'), isR = e.target.classList.contains('hR');
-        el.setPointerCapture(e.pointerId);
-        const startX = e.clientX, o = { s: segs[i].s, e: segs[i].e };
-        const prev = segs[i - 1], next = segs[i + 1];
-        const move = (ev) => {
-          const dt = (ev.clientX - startX) / Wpx() * (view.b - view.a);
-          if (isL) {
-            segs[i].s = Math.min(Math.max(prev ? prev.e + 0.1 : 0, o.s + dt), segs[i].e - 0.5);
-          } else if (isR) {
-            segs[i].e = Math.max(Math.min(next ? next.s - 0.1 : dur, o.e + dt), segs[i].s + 0.5);
-          } else {
-            const len = o.e - o.s;
-            let ns = Math.max(prev ? prev.e + 0.1 : 0, Math.min(o.s + dt, (next ? next.s - 0.1 : dur) - len));
-            segs[i].s = ns; segs[i].e = ns + len;
-          }
-          video.pause(); playBtn.classList.remove('hidden');
-          video.currentTime = isR ? segs[i].e : segs[i].s;
-          // 드래그 중엔 DOM을 다시 만들지 않는다(재생성하면 잡고 있던 조각이 사라져 드래그가
-          // 즉시 끊긴다 — '늘리기/줄이기 안 됨'의 진짜 원인). 이 조각 위치·시간만 즉시 갱신.
-          positionSeg(el, segs[i]); updateTimes(); renderHead();
-        };
-        const up = () => {
-          el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up);
-          try { el.releasePointerCapture(e.pointerId); } catch (err) {}
-          renderSegs();  // 드래그 끝난 뒤 한 번 정리(이웃/활성 표시 갱신)
-        };
-        el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
-      });
+      const prevEnd = () => (segs[i - 1] ? segs[i - 1].e + 0.1 : 0);
+      const nextStart = () => (segs[i + 1] ? segs[i + 1].s - 0.1 : dur);
+      // 크기 조절은 '핸들'에서만. 조각 본체엔 드래그/포인터캡처를 안 걸어야 본체 위 클릭·더블클릭이
+      // 타임라인으로 전달된다(포인터 캡처가 브라우저 더블클릭 인식을 막던 게 '노란색 위 더블클릭
+      // 안 됨/오류'의 원인). 핸들은 stopPropagation으로 스크럽과 충돌하지 않게 한다.
+      function bindHandle(handleEl, isL) {
+        if (!handleEl) return;
+        handleEl.addEventListener('pointerdown', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          activeSeg = i;
+          handleEl.setPointerCapture(e.pointerId);
+          const startX = e.clientX, o = { s: segs[i].s, e: segs[i].e };
+          const move = (ev) => {
+            const dt = (ev.clientX - startX) / Wpx() * (view.b - view.a);
+            if (isL) segs[i].s = Math.min(Math.max(prevEnd(), o.s + dt), segs[i].e - 0.5);
+            else segs[i].e = Math.max(Math.min(nextStart(), o.e + dt), segs[i].s + 0.5);
+            video.pause(); playBtn.classList.remove('hidden');
+            const t = isL ? segs[i].s : segs[i].e;
+            video.currentTime = t;
+            positionSeg(el, segs[i]); updateTimes(); renderHeadAt(t);
+          };
+          const up = () => {
+            handleEl.removeEventListener('pointermove', move); handleEl.removeEventListener('pointerup', up);
+            try { handleEl.releasePointerCapture(e.pointerId); } catch (err) {}
+            renderSegs();
+          };
+          handleEl.addEventListener('pointermove', move); handleEl.addEventListener('pointerup', up);
+        });
+      }
+      bindHandle(el.querySelector('.hL'), true);
+      bindHandle(el.querySelector('.hR'), false);
       el.querySelector('.del').addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (segs.length <= 1) return;   // 최소 한 조각은 남긴다
@@ -2258,14 +2257,16 @@ PREVIEW_MODAL_JS = r"""
     });
 
     const clickT = (e) => Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
-    // 단일 클릭: 파란 재생선만 그 지점으로 이동(미리보기 스크럽). 경계는 안 건드림.
+    const onHandle = (e) => e.target.closest('.h') || e.target.closest('.del');  // 핸들/삭제는 제외
+    // 단일 클릭(노란 조각 위 포함): 파란 재생선만 그 지점으로 이동(스크럽). 경계는 안 건드림.
     trimEl.addEventListener('click', (e) => {
-      if (e.target.closest('.pv-seg')) return;  // 조각/핸들 조작은 제외
+      if (onHandle(e)) return;
       const t = clickT(e);
       video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHeadAt(t);
     });
-    // 더블 클릭: 어느 지점이든 그 지점이 클립 '시작'이 되게(파란 바도 거기로 이동).
+    // 더블 클릭(어느 지점이든, 노란 조각 위 포함): 그 지점이 클립 '시작'이 되고 파란 바도 이동.
     trimEl.addEventListener('dblclick', (e) => {
+      if (onHandle(e)) return;
       e.preventDefault();
       const t = clickT(e);
       let i = segs.findIndex((sg) => t < sg.e - 0.5);  // 이 지점이 시작이 될 조각
@@ -2280,6 +2281,7 @@ PREVIEW_MODAL_JS = r"""
     video.addEventListener('loadedmetadata', () => { video.currentTime = segs[0].s; renderHeadAt(segs[0].s); });
     video.addEventListener('seeked', renderHead);  // 스크럽/시크 후 파란 바 위치 동기화
     redraw();
+    renderHeadAt(segs[0].s);  // 영상 로드 전에도 파란 바를 클립 시작에 즉시 표시
 
     // ── 재생: 남긴 조각들만 순서대로 미리듣기(잘린 gap은 건너뜀) ──
     playBtn.addEventListener('click', () => {
