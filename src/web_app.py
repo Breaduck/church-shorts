@@ -2143,6 +2143,17 @@ PREVIEW_MODAL_JS = r"""
       if (t >= view.a && t <= view.b) { headEl.style.display = 'block'; headEl.style.left = t2x(t) + 'px'; }
       else headEl.style.display = 'none';
     }
+    function positionSeg(el, sg) {   // DOM 재생성 없이 한 조각의 좌우 위치만 갱신(드래그 중 사용)
+      const W = trimEl.clientWidth;
+      const x0 = Math.max(0, t2x(sg.s)), x1 = Math.min(W, t2x(sg.e));
+      el.style.left = x0 + 'px'; el.style.width = Math.max(6, x1 - x0) + 'px';
+    }
+    function updateTimes() {
+      const total = segs.reduce((a, s) => a + (s.e - s.s), 0);
+      $('.pv-t0').textContent = fmt(segs[0].s);
+      $('.pv-t1').textContent = fmt(segs[segs.length - 1].e);
+      $('.pv-dur').textContent = '남는 길이 ' + total.toFixed(1) + '초' + (segs.length > 1 ? (' · ' + segs.length + '조각') : '');
+    }
     function renderSegs() {
       segsLayer.innerHTML = '';
       const W = trimEl.clientWidth;
@@ -2157,10 +2168,7 @@ PREVIEW_MODAL_JS = r"""
         bindSeg(el, i);
       });
       trimEl.classList.toggle('pv-multi', segs.length > 1);
-      const total = segs.reduce((a, s) => a + (s.e - s.s), 0);
-      $('.pv-t0').textContent = fmt(segs[0].s);
-      $('.pv-t1').textContent = fmt(segs[segs.length - 1].e);
-      $('.pv-dur').textContent = '남는 길이 ' + total.toFixed(1) + '초' + (segs.length > 1 ? (' · ' + segs.length + '조각') : '');
+      updateTimes();
     }
     function redraw() { renderStrip(); renderSegs(); renderHead(); }
     // 확대 중엔 조각·재생선(계산만, 즉시)만 갱신하고 썸네일(네트워크)은 살짝 지연 로딩한다 →
@@ -2195,9 +2203,15 @@ PREVIEW_MODAL_JS = r"""
           }
           video.pause(); playBtn.classList.remove('hidden');
           video.currentTime = isR ? segs[i].e : segs[i].s;
-          renderSegs(); renderHead();
+          // 드래그 중엔 DOM을 다시 만들지 않는다(재생성하면 잡고 있던 조각이 사라져 드래그가
+          // 즉시 끊긴다 — '늘리기/줄이기 안 됨'의 진짜 원인). 이 조각 위치·시간만 즉시 갱신.
+          positionSeg(el, segs[i]); updateTimes(); renderHead();
         };
-        const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); };
+        const up = () => {
+          el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up);
+          try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+          renderSegs();  // 드래그 끝난 뒤 한 번 정리(이웃/활성 표시 갱신)
+        };
         el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
       });
       el.querySelector('.del').addEventListener('click', (ev) => {
@@ -2359,7 +2373,7 @@ PREVIEW_MODAL_JS = r"""
         fetch('/video/' + VIDEO_ID + '/reanalyze_status').then((r) => r.json()).then((j) => {
           if (j.running) { reBtn.textContent = '재분석 중… ' + Math.round((j.pct || 0) * 100) + '%'; setTimeout(poll, 1000); return; }
           if (j.error) { alert('재분석 실패: ' + j.error); reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return; }
-          alert('구간 재분석 완료 — 새 후보를 원본 바로 아래에 추가했어요(원본은 그대로).');
+          alert('구간 재분석 완료 — 하이라이트 후보 맨 아래에 새 후보로 추가했어요(원본은 그대로).');
           location.reload();
         }).catch(() => setTimeout(poll, 1500));
       };
@@ -2425,13 +2439,13 @@ def _run_reanalyze_job(video_id: str, idx: int) -> None:
         new_clip = reanalyze_clip_region(
             video_dir, orig, cfg, model=cfg["highlights"].get("model", ""), on_progress=_prog
         )
-        # 원본 바로 뒤에 삽입해 '이전 버전 유지 + 새 버전 추가'가 목록에서 나란히 보이게 한다.
+        # 하이라이트 후보 목록 '맨 아래'에 새 후보로 추가한다(원본은 그대로 유지).
         with CLIPS_LOCK:
             clips = load_clips_json(clips_path)  # 그 사이 바뀌었을 수 있어 다시 읽는다
-            insert_at = min(idx + 1, len(clips))
-            clips.insert(insert_at, new_clip)
+            clips.append(new_clip)
+            new_idx = len(clips) - 1
             save_clips_json(clips, clips_path)
-        _reanalyze_jobs[video_id] = {"running": False, "error": None, "new_idx": insert_at, "pct": 1.0}
+        _reanalyze_jobs[video_id] = {"running": False, "error": None, "new_idx": new_idx, "pct": 1.0}
     except Exception as e:  # noqa: BLE001 - 실패해도 서버는 살아야 하고 팝업에 사유를 알린다
         traceback.print_exc()
         _reanalyze_jobs[video_id] = {"running": False, "error": str(e)[:300], "new_idx": None}
