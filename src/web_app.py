@@ -2064,7 +2064,6 @@ PREVIEW_MODAL_JS = r"""
       '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">↻ 구간 재분석</button>' +
       '      <button class="pv-x" title="취소">&times;</button>' +
       '    </div></div>' +
-      '  <p class="pv-sub">첫 화면 미리보기예요. 제목·자막을 드래그해 옮기고, 노란 핸들로 구간을 다듬으세요.</p>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
       '    <div class="pv-vbox"><video playsinline preload="metadata"></video></div>' +
       '    <div class="pv-drag pv-title"></div>' +
@@ -2111,7 +2110,12 @@ PREVIEW_MODAL_JS = r"""
     let segs = (C.keep_ranges && C.keep_ranges.length)
       ? C.keep_ranges.map((r) => ({ s: r[0], e: r[1] }))
       : [{ s: C.start, e: C.end }];
-    let view = { a: 0, b: dur };   // 보이는 시간창(확대/축소). 처음엔 설교 전체.
+    // 처음엔 클립 주변을 적당히 확대해서 보여준다: 16초짜리가 21분 전체 위에선 손톱만 해서
+    // 좌우 핸들을 못 잡아 '늘리기/줄이기'가 안 됐다. 이제 조각이 화면의 30~40%를 차지하게 띄운다.
+    // (Ctrl+휠 또는 − 축소로 설교 전체까지 볼 수 있다.)
+    const _cs = segs[0].s, _ce = segs[segs.length - 1].e;
+    const _pad = Math.max((_ce - _cs) * 1.3, 12);
+    let view = { a: Math.max(0, _cs - _pad), b: Math.min(dur, _ce + _pad) };
     let activeSeg = 0;
 
     const fmt = (t) => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
@@ -2159,6 +2163,14 @@ PREVIEW_MODAL_JS = r"""
       $('.pv-dur').textContent = '남는 길이 ' + total.toFixed(1) + '초' + (segs.length > 1 ? (' · ' + segs.length + '조각') : '');
     }
     function redraw() { renderStrip(); renderSegs(); renderHead(); }
+    // 확대 중엔 조각·재생선(계산만, 즉시)만 갱신하고 썸네일(네트워크)은 살짝 지연 로딩한다 →
+    // 휠 확대가 끊김 없이 즉각 반응하게. (매 틱마다 12장을 다시 불러오던 게 '느린' 주범이었다.)
+    let stripTimer = null;
+    function redrawLight() {
+      renderSegs(); renderHead();
+      if (stripTimer) clearTimeout(stripTimer);
+      stripTimer = setTimeout(renderStrip, 110);
+    }
 
     function bindSeg(el, i) {
       const Wpx = () => trimEl.clientWidth;
@@ -2197,14 +2209,17 @@ PREVIEW_MODAL_JS = r"""
       });
     }
 
-    // 휠로 확대/축소 (커서 위치 중심)
+    // Ctrl(맥은 ⌘)+휠로만 확대/축소한다(일반 휠은 페이지 스크롤 유지). 커서 위치를 중심으로,
+    // deltaY 크기에 비례한 지수 배율이라 빠르고 부드럽다.
     trimEl.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;  // 일반 휠은 통과(페이지 스크롤)
       e.preventDefault();
       const pivot = x2t(e.clientX - trimEl.getBoundingClientRect().left);
-      const f = e.deltaY < 0 ? 0.8 : 1.25;  // 위로 굴리면 확대
+      // 위로(음수)=확대(f<1), 아래로=축소. 한 틱이 확 반응하도록 계수 상향, 튐 방지로 범위 제한.
+      const f = Math.min(2.2, Math.max(0.45, Math.exp(e.deltaY * 0.006)));
       view.a = pivot - (pivot - view.a) * f;
       view.b = pivot + (view.b - pivot) * f;
-      clampView(); redraw();
+      clampView(); redrawLight();
     }, { passive: false });
     // 확대/축소는 '지금 보는 조각'을 중심으로 한다(영상 한가운데로 확대돼 클립이 화면 밖으로
     // 사라지던 문제 수정). 재생 위치가 보이면 그 위치를, 아니면 활성 조각 중앙을 기준으로.
