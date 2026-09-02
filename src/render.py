@@ -96,6 +96,47 @@ def _build_keep_segments(
     return keep if keep else [(0.0, clip_duration)]
 
 
+def _intersect_intervals(
+    a: list[tuple[float, float]], b: list[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """두 '남길 구간' 목록의 교집합(둘 다 남기라고 한 구간만 남긴다). 짧은 파편은 버린다."""
+    out: list[tuple[float, float]] = []
+    for s1, e1 in a:
+        for s2, e2 in b:
+            s, e = max(s1, s2), min(e1, e2)
+            if e - s > 0.05:
+                out.append((s, e))
+    out.sort()
+    return out
+
+
+def _combine_keep(
+    duration: float,
+    clip_start: float,
+    user_keep_abs: list | None,
+    silence_keep_rel: list[tuple[float, float]] | None,
+) -> list[tuple[float, float]] | None:
+    """사용자 분할·삭제(keep_ranges, 절대초)와 무음 제거(상대초)를 합쳐 최종 '남길 구간'(상대초)을 만든다.
+    전체(0~duration) 한 조각이면 None을 반환해 select 필터 없는 빠른 경로를 탄다."""
+    if user_keep_abs:
+        user_rel = [
+            (max(0.0, float(s) - clip_start), min(duration, float(e) - clip_start))
+            for s, e in user_keep_abs
+        ]
+        user_rel = sorted((s, e) for s, e in user_rel if e - s > 0.05)
+        if not user_rel:
+            user_rel = [(0.0, duration)]
+    else:
+        user_rel = [(0.0, duration)]
+
+    combined = user_rel if silence_keep_rel is None else _intersect_intervals(user_rel, silence_keep_rel)
+    if not combined:
+        return None
+    if len(combined) == 1 and combined[0][0] <= 0.01 and combined[0][1] >= duration - 0.01:
+        return None  # 통째로 남김 = 자를 것 없음(빠른 경로)
+    return combined
+
+
 def _vertical_transform(background_mode: str, resolution: tuple[int, int], pad_color: str = "white") -> str:
     w, h = resolution
     if background_mode == "crop":
@@ -343,7 +384,11 @@ def render_clip(
         )
     # 자막 생성보다 먼저 계산해야 한다: 무음 제거로 영상 타임라인이 압축되는데,
     # 자막 타임스탬프도 똑같이 압축해서 리매핑하지 않으면 뒤로 갈수록 자막이 밀린다.
-    keep_segments = _build_keep_segments(duration, silences) if silences else None
+    silence_keep = _build_keep_segments(duration, silences) if silences else None
+    # 확인 팝업에서 분할·삭제한 구간(keep_ranges)이 있으면 무음 제거와 합쳐 최종 남길 구간을 만든다.
+    keep_segments = _combine_keep(
+        duration, clip.start, getattr(clip, "keep_ranges", None) or None, silence_keep
+    )
 
     is_card = render_cfg.get("background_mode", "blur") == "card"
     card_layout = render_cfg.get("card_layout") if is_card else None

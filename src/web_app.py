@@ -1735,6 +1735,20 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         if e - s >= 1.0:  # 최소 1초
             clip.start, clip.end = s, e
             clip.trimmed = True
+    # 확인 팝업의 분할·삭제 결과(남길 구간 절대초). 렌더가 이 구간들만 이어붙인다.
+    if "keep_ranges" in body:
+        kr = []
+        for r in (body.get("keep_ranges") or []):
+            try:
+                a, b = float(r[0]), float(r[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if b - a > 0.1:
+                kr.append([a, b])
+        # 한 조각이 start~end 전체와 같으면 굳이 저장하지 않는다(전체 사용 = 기본).
+        if len(kr) == 1 and abs(kr[0][0] - clip.start) < 0.05 and abs(kr[0][1] - clip.end) < 0.05:
+            kr = []
+        clip.keep_ranges = kr
     clip.title_offset_x = float(body.get("title_offset_x", clip.title_offset_x))
     clip.title_offset_y = float(body.get("title_offset_y", clip.title_offset_y))
     clip.caption_offset_x = float(body.get("caption_offset_x", clip.caption_offset_x))
@@ -1903,6 +1917,7 @@ def clip_preview_info(video_id: str, idx: int):
             "title_candidates": cands[:5],
             "start": clip.start,
             "end": clip.end,
+            "keep_ranges": (getattr(clip, "keep_ranges", None) or []),
             "title_offset_x": clip.title_offset_x,
             "title_offset_y": clip.title_offset_y,
             "caption_offset_x": clip.caption_offset_x,
@@ -1962,23 +1977,32 @@ PREVIEW_MODAL_JS = r"""
     background: rgba(15,23,42,.55); color: #fff; font-size: 22px; display: flex;
     align-items: center; justify-content: center; backdrop-filter: blur(2px); }
   .pv-play.hidden { display: none; }
-  /* 아이폰 사진 앱식 트림 바 */
-  .pv-trim { position: relative; margin: 14px 2px 2px; height: 56px; }
+  /* NLE식 타임라인(휠 확대 · 분할 · 구간 삭제) */
+  .pv-trimwrap { margin: 14px 2px 2px; }
+  .pv-trim { position: relative; height: 60px; touch-action: none; user-select: none; }
   .pv-strip { position: absolute; inset: 0; display: flex; border-radius: 10px; overflow: hidden; background: #dee2e6; }
-  .pv-strip img { flex: 1; min-width: 0; object-fit: cover; height: 100%; display: block; }
-  .pv-sel { position: absolute; top: 0; bottom: 0; border: 3px solid #f7c325; border-left-width: 16px;
-    border-right-width: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.18);
-    cursor: grab; touch-action: none; }
-  .pv-hL, .pv-hR { position: absolute; top: -6px; bottom: -6px; width: 30px; cursor: ew-resize; touch-action: none; }
-  .pv-hL { left: -23px; } .pv-hR { right: -23px; }
-  .pv-hL::after, .pv-hR::after { content: ''; position: absolute; top: 50%; transform: translateY(-50%);
-    width: 4px; height: 18px; border-radius: 2px; background: #4a4a4a; }
-  .pv-hL::after { left: 13px; } .pv-hR::after { right: 13px; }
-  .pv-mask-l, .pv-mask-r { position: absolute; top: 0; bottom: 0; background: rgba(247,248,250,.72); pointer-events: none; }
-  .pv-mask-l { left: 0; border-radius: 10px 0 0 10px; } .pv-mask-r { right: 0; border-radius: 0 10px 10px 0; }
+  .pv-strip img { flex: 1; min-width: 0; object-fit: cover; height: 100%; display: block; pointer-events: none; }
+  .pv-segs { position: absolute; inset: 0; pointer-events: none; }
+  .pv-seg { position: absolute; top: 0; bottom: 0; box-sizing: border-box; pointer-events: auto;
+    border: 3px solid #f7c325; border-radius: 8px; background: rgba(247,195,37,.14); cursor: grab; }
+  .pv-seg.active { border-color: #f5a623; box-shadow: 0 0 0 2px rgba(245,166,35,.30); background: rgba(247,195,37,.22); }
+  .pv-seg .h { position: absolute; top: -4px; bottom: -4px; width: 22px; cursor: ew-resize; }
+  .pv-seg .hL { left: -12px; } .pv-seg .hR { right: -12px; }
+  .pv-seg .h::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 4px; height: 22px; border-radius: 2px; background: #b8860b; }
+  .pv-seg .del { position: absolute; top: -10px; right: -10px; width: 21px; height: 21px; border-radius: 50%;
+    border: none; background: #e02424; color: #fff; font-size: 13px; line-height: 1; cursor: pointer;
+    display: none; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  .pv-trim.pv-multi .pv-seg .del { display: flex; }
+  .pv-play-head { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #3182f6; pointer-events: none; }
   .pv-times { display: flex; justify-content: space-between; font-size: 12px; color: #6b7684;
-    font-variant-numeric: tabular-nums; margin-top: 6px; }
+    font-variant-numeric: tabular-nums; margin-top: 8px; }
   .pv-times b { color: #191f28; }
+  .pv-tools { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .pv-tool { padding: 7px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit;
+    border: 1.5px solid #f0f1f3; background: #fafbfc; color: #191f28; border-radius: 9px; cursor: pointer; }
+  .pv-tool:hover { border-color: #3182f6; color: #3182f6; }
+  .pv-tiphint { font-size: 11.5px; color: #b0b8c1; margin-left: auto; }
   .pv-cands { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
   .pv-cand { text-align: left; padding: 10px 12px; font-size: 13.5px; font-weight: 600; font-family: inherit;
     color: #191f28; background: #fafbfc; border: 1.5px solid #f0f1f3; border-radius: 11px;
@@ -2037,12 +2061,20 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-drag pv-caption"></div>' +
       '    <button class="pv-play">▶</button>' +
       '  </div></div>' +
-      '  <div class="pv-trim">' +
-      '    <div class="pv-strip"></div>' +
-      '    <div class="pv-mask-l"></div><div class="pv-mask-r"></div>' +
-      '    <div class="pv-sel"><div class="pv-hL"></div><div class="pv-hR"></div></div>' +
+      '  <div class="pv-trimwrap">' +
+      '    <div class="pv-trim">' +
+      '      <div class="pv-strip"></div>' +
+      '      <div class="pv-segs"></div>' +
+      '      <div class="pv-play-head" style="display:none"></div>' +
+      '    </div>' +
+      '    <div class="pv-times"><span>시작 <b class="pv-t0"></b></span><span class="pv-dur"></span><span>끝 <b class="pv-t1"></b></span></div>' +
+      '    <div class="pv-tools">' +
+      '      <button type="button" class="pv-tool pv-split">✂ 재생 위치서 분할</button>' +
+      '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
+      '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
+      '      <span class="pv-tiphint">타임라인 휠로 확대 · 조각 ×로 삭제</span>' +
+      '    </div>' +
       '  </div>' +
-      '  <div class="pv-times"><span>시작 <b class="pv-t0"></b></span><span class="pv-dur"></span><span>끝 <b class="pv-t1"></b></span></div>' +
       '  <div class="pv-cands"></div>' +
       '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
@@ -2062,102 +2094,149 @@ PREVIEW_MODAL_JS = r"""
     video.src = '/media/' + VIDEO_ID + '/source.mp4';
     video.style.objectFit = (C.fill_mode === 'cover') ? 'cover' : 'contain';
 
-    // ── 트림 상태: 필름스트립은 설교 '전체'를 보여준다 (아이폰 사진 앱과 동일) ──
-    // 원하는 데로 아무 구간이나 잡을 수 있게 풀 영역을 준다. 긴 설교에선 핸들이 초 단위로
-    // 거칠 수 있는데, 정밀 조정은 '상세 편집'의 숫자 입력이 담당한다.
+    // ── NLE식 타임라인: 휠 확대 · 분할 · 조각 삭제 ──
     const dur = info.source_duration;
-    const t0 = 0;
-    const t1 = dur;
-    let selS = C.start, selE = C.end;
-    video.addEventListener('loadedmetadata', () => { video.currentTime = selS; });
+    const trimEl = $('.pv-trim'), strip = $('.pv-strip'), segsLayer = $('.pv-segs'), headEl = $('.pv-play-head');
+    const playBtn = $('.pv-play');
+    // 남길 구간(절대초). 이전에 분할·저장했으면 복원, 아니면 클립 전체 한 조각.
+    let segs = (C.keep_ranges && C.keep_ranges.length)
+      ? C.keep_ranges.map((r) => ({ s: r[0], e: r[1] }))
+      : [{ s: C.start, e: C.end }];
+    let view = { a: 0, b: dur };   // 보이는 시간창(확대/축소). 처음엔 설교 전체.
+    let activeSeg = 0;
 
-    // 필름스트립 썸네일 12장 (전체 구간 균등)
-    const strip = $('.pv-strip');
-    const N_THUMB = 12;
-    for (let k = 0; k < N_THUMB; k++) {
-      const t = t0 + (t1 - t0) * (k + 0.5) / N_THUMB;
-      const img = document.createElement('img');
-      img.src = '/media/' + VIDEO_ID + '/thumb/' + Math.round(t) + '.jpg';
-      img.draggable = false;
-      strip.appendChild(img);
+    const fmt = (t) => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
+    const t2x = (t) => (t - view.a) / (view.b - view.a) * trimEl.clientWidth;
+    const x2t = (px) => view.a + (px / trimEl.clientWidth) * (view.b - view.a);
+    function clampView() {
+      const minSpan = Math.min(dur, 3);  // 최대 확대는 3초 폭까지
+      if (view.b - view.a < minSpan) { const c = (view.a + view.b) / 2; view.a = c - minSpan / 2; view.b = c + minSpan / 2; }
+      if (view.a < 0) { view.b -= view.a; view.a = 0; }
+      if (view.b > dur) { view.a -= (view.b - dur); view.b = dur; if (view.a < 0) view.a = 0; }
     }
 
-    const selBox = $('.pv-sel'), maskL = $('.pv-mask-l'), maskR = $('.pv-mask-r');
-    function paintTrim() {
-      const w = $('.pv-trim').clientWidth;
-      const x0 = (selS - t0) / (t1 - t0) * w, x1 = (selE - t0) / (t1 - t0) * w;
-      selBox.style.left = Math.max(0, x0) + 'px';
-      selBox.style.width = Math.max(8, x1 - x0) + 'px';
-      maskL.style.width = Math.max(0, x0) + 'px';
-      maskR.style.width = Math.max(0, w - x1) + 'px';
-      const fmt = (t) => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
-      $('.pv-t0').textContent = fmt(selS);
-      $('.pv-t1').textContent = fmt(selE);
-      $('.pv-dur').textContent = '길이 ' + (selE - selS).toFixed(1) + '초';
+    function renderStrip() {
+      strip.innerHTML = '';
+      const N = 12;
+      for (let k = 0; k < N; k++) {
+        const t = view.a + (view.b - view.a) * (k + 0.5) / N;
+        const img = document.createElement('img');
+        img.src = '/media/' + VIDEO_ID + '/thumb/' + Math.round(t) + '.jpg';
+        img.draggable = false; strip.appendChild(img);
+      }
     }
-    function dragHandle(handleEl, isLeft) {
-      handleEl.addEventListener('pointerdown', (e) => {
+    function renderHead() {
+      const t = video.currentTime;
+      if (t >= view.a && t <= view.b) { headEl.style.display = 'block'; headEl.style.left = t2x(t) + 'px'; }
+      else headEl.style.display = 'none';
+    }
+    function renderSegs() {
+      segsLayer.innerHTML = '';
+      const W = trimEl.clientWidth;
+      segs.forEach((sg, i) => {
+        const x0 = Math.max(0, t2x(sg.s)), x1 = Math.min(W, t2x(sg.e));
+        if (x1 <= 0 || x0 >= W) return;  // 확대 시 화면 밖 조각은 안 그림
+        const el = document.createElement('div');
+        el.className = 'pv-seg' + (i === activeSeg ? ' active' : '');
+        el.style.left = x0 + 'px'; el.style.width = Math.max(6, x1 - x0) + 'px';
+        el.innerHTML = '<div class="h hL"></div><div class="h hR"></div><button type="button" class="del" title="이 조각 삭제">×</button>';
+        segsLayer.appendChild(el);
+        bindSeg(el, i);
+      });
+      trimEl.classList.toggle('pv-multi', segs.length > 1);
+      const total = segs.reduce((a, s) => a + (s.e - s.s), 0);
+      $('.pv-t0').textContent = fmt(segs[0].s);
+      $('.pv-t1').textContent = fmt(segs[segs.length - 1].e);
+      $('.pv-dur').textContent = '남는 길이 ' + total.toFixed(1) + '초' + (segs.length > 1 ? (' · ' + segs.length + '조각') : '');
+    }
+    function redraw() { renderStrip(); renderSegs(); renderHead(); }
+
+    function bindSeg(el, i) {
+      const Wpx = () => trimEl.clientWidth;
+      el.addEventListener('pointerdown', (e) => {
+        if (e.target.classList.contains('del')) return;
         e.preventDefault();
-        handleEl.setPointerCapture(e.pointerId);
-        const w = $('.pv-trim').clientWidth;
+        activeSeg = i;
+        const isL = e.target.classList.contains('hL'), isR = e.target.classList.contains('hR');
+        el.setPointerCapture(e.pointerId);
+        const startX = e.clientX, o = { s: segs[i].s, e: segs[i].e };
+        const prev = segs[i - 1], next = segs[i + 1];
         const move = (ev) => {
-          const rect = $('.pv-trim').getBoundingClientRect();
-          const t = t0 + Math.min(1, Math.max(0, (ev.clientX - rect.left) / w)) * (t1 - t0);
-          if (isLeft) selS = Math.min(t, selE - 1);
-          else selE = Math.max(t, selS + 1);
+          const dt = (ev.clientX - startX) / Wpx() * (view.b - view.a);
+          if (isL) {
+            segs[i].s = Math.min(Math.max(prev ? prev.e + 0.1 : 0, o.s + dt), segs[i].e - 0.5);
+          } else if (isR) {
+            segs[i].e = Math.max(Math.min(next ? next.s - 0.1 : dur, o.e + dt), segs[i].s + 0.5);
+          } else {
+            const len = o.e - o.s;
+            let ns = Math.max(prev ? prev.e + 0.1 : 0, Math.min(o.s + dt, (next ? next.s - 0.1 : dur) - len));
+            segs[i].s = ns; segs[i].e = ns + len;
+          }
           video.pause(); playBtn.classList.remove('hidden');
-          video.currentTime = isLeft ? selS : selE;  // 아이폰처럼 핸들 위치의 프레임을 실시간 표시
-          paintTrim();
+          video.currentTime = isR ? segs[i].e : segs[i].s;
+          renderSegs(); renderHead();
         };
-        const up = () => {
-          handleEl.removeEventListener('pointermove', move);
-          handleEl.removeEventListener('pointerup', up);
-          video.currentTime = selS;
-        };
-        handleEl.addEventListener('pointermove', move);
-        handleEl.addEventListener('pointerup', up);
+        const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); };
+        el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+      });
+      el.querySelector('.del').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (segs.length <= 1) return;   // 최소 한 조각은 남긴다
+        segs.splice(i, 1);
+        activeSeg = Math.max(0, Math.min(activeSeg, segs.length - 1));
+        redraw();
       });
     }
-    dragHandle($('.pv-hL'), true);
-    dragHandle($('.pv-hR'), false);
-    // 노란 박스 가운데를 잡으면 선택 구간을 길이 유지한 채 통째로 이동(아이폰과 동일).
-    selBox.addEventListener('pointerdown', (e) => {
-      if (e.target !== selBox) return; // 핸들 드래그와 충돌 방지
-      e.preventDefault();
-      selBox.setPointerCapture(e.pointerId);
-      const w = $('.pv-trim').clientWidth;
-      const len = selE - selS;
-      const grabT = t0 + ((e.clientX - $('.pv-trim').getBoundingClientRect().left) / w) * (t1 - t0);
-      const grabOffset = grabT - selS;
-      const move = (ev) => {
-        const rect = $('.pv-trim').getBoundingClientRect();
-        const t = t0 + Math.min(1, Math.max(0, (ev.clientX - rect.left) / w)) * (t1 - t0);
-        selS = Math.min(Math.max(t0, t - grabOffset), t1 - len);
-        selE = selS + len;
-        video.pause(); playBtn.classList.remove('hidden');
-        video.currentTime = selS;
-        paintTrim();
-      };
-      const up = () => {
-        selBox.removeEventListener('pointermove', move);
-        selBox.removeEventListener('pointerup', up);
-      };
-      selBox.addEventListener('pointermove', move);
-      selBox.addEventListener('pointerup', up);
-    });
-    paintTrim();
 
-    // ── 재생/일시정지 (다듬은 구간만 미리 듣기) ──
-    const playBtn = $('.pv-play');
+    // 휠로 확대/축소 (커서 위치 중심)
+    trimEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const pivot = x2t(e.clientX - trimEl.getBoundingClientRect().left);
+      const f = e.deltaY < 0 ? 0.8 : 1.25;  // 위로 굴리면 확대
+      view.a = pivot - (pivot - view.a) * f;
+      view.b = pivot + (view.b - pivot) * f;
+      clampView(); redraw();
+    }, { passive: false });
+    $('.pv-zoomin').addEventListener('click', () => { const c = (view.a + view.b) / 2, h = (view.b - view.a) * 0.4; view.a = c - h; view.b = c + h; clampView(); redraw(); });
+    $('.pv-zoomout').addEventListener('click', () => { const c = (view.a + view.b) / 2, h = (view.b - view.a) * 0.625; view.a = c - h; view.b = c + h; clampView(); redraw(); });
+
+    // 분할: 재생 위치(playhead)가 든 조각을 그 지점에서 둘로 나눔
+    $('.pv-split').addEventListener('click', () => {
+      const t = video.currentTime;
+      for (let i = 0; i < segs.length; i++) {
+        if (t > segs[i].s + 0.3 && t < segs[i].e - 0.3) {
+          segs.splice(i + 1, 0, { s: t, e: segs[i].e });
+          segs[i].e = t; activeSeg = i + 1; redraw(); return;
+        }
+      }
+    });
+
+    // 타임라인 빈 곳 클릭 = 재생 위치 이동
+    trimEl.addEventListener('click', (e) => {
+      if (e.target.closest('.pv-seg')) return;
+      const t = Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
+      video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHead();
+    });
+
+    video.addEventListener('loadedmetadata', () => { video.currentTime = segs[0].s; });
+    redraw();
+
+    // ── 재생: 남긴 조각들만 순서대로 미리듣기(잘린 gap은 건너뜀) ──
     playBtn.addEventListener('click', () => {
       if (video.paused) {
-        if (video.currentTime < selS || video.currentTime >= selE - 0.05) video.currentTime = selS;
+        const inSeg = segs.some((sg) => video.currentTime >= sg.s - 0.05 && video.currentTime < sg.e - 0.05);
+        if (!inSeg) video.currentTime = segs[0].s;
         video.play(); playBtn.classList.add('hidden');
       }
     });
     video.addEventListener('click', () => { if (!video.paused) { video.pause(); playBtn.classList.remove('hidden'); } });
     video.addEventListener('timeupdate', () => {
-      if (video.currentTime >= selE) { video.pause(); video.currentTime = selS; playBtn.classList.remove('hidden'); }
+      renderHead();
+      const t = video.currentTime;
+      for (let i = 0; i < segs.length; i++) { if (t >= segs[i].s - 0.05 && t < segs[i].e) return; }  // 아직 조각 안
+      const nxt = segs.find((sg) => sg.s > t);  // gap이면 다음 조각으로 점프
+      if (nxt && !video.paused) { video.currentTime = nxt.s; return; }
+      video.pause(); video.currentTime = segs[0].s; playBtn.classList.remove('hidden'); renderHead();
     });
 
     // ── 제목/자막 드래그 (편집 페이지와 같은 좌표계: 렌더 px 오프셋 저장) ──
@@ -2242,10 +2321,13 @@ PREVIEW_MODAL_JS = r"""
         title_offset_x: state.title.x, title_offset_y: state.title.y,
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
       };
-      if (Math.abs(selS - C.start) > 0.05 || Math.abs(selE - C.end) > 0.05) {
-        payload.clip_start = selS; payload.clip_end = selE;
-        // 원래 구간과 아예 안 겹치는 곳으로 옮겼으면 저장된 자막은 무효 → 비워서 재전사 유도.
-        if (selE <= C.start || selS >= C.end) payload.captions = [];
+      const outS = segs[0].s, outE = segs[segs.length - 1].e;
+      const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
+      if (changed) {
+        payload.clip_start = outS; payload.clip_end = outE;
+        payload.keep_ranges = segs.map((sg) => [sg.s, sg.e]);
+        // 구간을 바꾸면 이전에 저장된 자막 타임스탬프는 무효 → 비워서 렌더 때 재전사 유도.
+        payload.captions = [];
       }
       const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/position', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

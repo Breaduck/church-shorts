@@ -96,6 +96,10 @@ class Clip:
     # 편집기에서 사용자가 영상 구간을 직접 정했으면 True. 이 경우 렌더 시 문장 끝 자동 확장/스냅을
     # 하지 않고 사용자가 정한 start/end를 그대로 쓴다.
     trimmed: bool = False
+    # 확인 팝업에서 클립을 '분할'하고 일부 조각을 지운 경우, 실제로 남길 구간들(절대초 [start,end]).
+    # 비어 있으면 [start,end] 전체를 남긴다. 여러 개면 렌더가 무음 제거와 같은 방식으로 이어붙인다
+    # (render._combine_keep → select/aselect 필터). start/end는 이 구간들의 바깥 경계와 일치시킨다.
+    keep_ranges: list = field(default_factory=list)
 
 
 def build_prompt(
