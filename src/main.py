@@ -344,22 +344,35 @@ def reanalyze_clip_region(
         "이 토막 전사에서 글자 그대로 인용해 경계를 확정한다.\n"
     )
 
-    clips = select_highlights_auto(
-        transcript=window,
-        peak_hints=[],
-        min_clips=1,
-        max_clips=1,
-        min_duration_sec=h["min_duration_sec"],
-        max_duration_sec=h["max_duration_sec"],
-        categories=h["categories"],
-        feedback_block=focus,
-        model=model or h.get("model", ""),
-        # 전체 선정용 thinking_tokens(8192, 2026-09-02 품질 상향)를 그대로 물려받으면 "구간 하나만
-        # 다시 보는" 가벼운 작업도 몇 분씩 걸린다(thinking 1k ≈ 20~30초). 이 작업은 ~150초 창
-        # 하나·클립 1개·경계 재탐색뿐이라 훨씬 적은 사고 예산으로 충분하다("재분석이 느리다" 원인).
-        thinking_tokens=int(h.get("reanalyze_thinking_tokens", 2048)),
-        on_progress=on_progress,
-    )
+    def _try(thinking_tokens: int) -> list[Clip]:
+        return select_highlights_auto(
+            transcript=window,
+            peak_hints=[],
+            min_clips=1,
+            max_clips=1,
+            min_duration_sec=h["min_duration_sec"],
+            max_duration_sec=h["max_duration_sec"],
+            categories=h["categories"],
+            feedback_block=focus,
+            model=model or h.get("model", ""),
+            thinking_tokens=thinking_tokens,
+            on_progress=on_progress,
+        )
+
+    # 전체 선정용 thinking_tokens(8192, 2026-09-02 품질 상향)를 그대로 물려받으면 "구간 하나만
+    # 다시 보는" 가벼운 작업도 몇 분씩 걸린다(thinking 1k ≈ 20~30초) — 그래서 가벼운 예산으로
+    # 먼저 시도한다. 하지만 짧고 애매한 구간에서는 이 예산으로 인용문 경계를 못 찾아 빈 결과가
+    # 나오는 경우가 실측됐다("후보를 얻지 못했습니다" 실패). 실패하면 조용히 전체 선정과 같은
+    # 예산으로 한 번 더 시도한다(느려도 성공이 우선) — 사용자에게 "왜 실패했냐"는 재요청을
+    # 시키지 않는다.
+    fast_tokens = int(h.get("reanalyze_thinking_tokens", 2048))
+    clips = _try(fast_tokens)
+    if not clips:
+        full_tokens = int(h.get("thinking_tokens", 8192))
+        if full_tokens > fast_tokens:
+            if on_progress:
+                on_progress(0.05, "짧은 예산으로 실패 — 더 깊게 재시도 중...")
+            clips = _try(full_tokens)
     if not clips:
         raise RuntimeError("재분석에서 후보를 얻지 못했습니다 (모델 응답 비어있음/한도 가능성)")
 
