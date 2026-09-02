@@ -163,8 +163,15 @@ def _clamp_lines_non_overlap(lines: list[CaptionLine]) -> list[CaptionLine]:
     유튜브 자동자막으로 폴백하면 단어 end 타임스탬프가 다음 단어 위로 길게 겹치는
     '롤링' 특성 때문에, 4단어씩 끊은 인접 라인의 표시 구간이 시간상 겹쳐 화면에 자막이
     2줄로 동시에 뜬다. 시작 시간 순으로 정렬한 뒤 각 라인의 end를 다음 라인 start까지만
-    보이도록 잘라, 어떤 순간에도 한 줄만 표시되게 한다. (라인 내부 \\k 카라오케 타이밍은
-    상대값이라 영향 없음.) 길이가 0 이하가 되는 라인은 버린다."""
+    보이도록 잘라, 어떤 순간에도 한 줄만 표시되게 한다. 길이가 0 이하가 되는 라인은 버린다.
+
+    라인 end를 자르면 그 안의 단어(\\k 카라오케 타이밍)도 같이 잘라야 한다 — "상대값이라
+    영향 없다"는 예전 가정이 틀렸다: caption_overrides가 실제 단어(base_segments)의 원래
+    타임스탬프를 그대로 물려받는 경우(실측: 롤링 자막에서 매칭된 단어들의 원래 구간이
+    4초인데, 다음 줄과 겹쳐 표시 구간이 0.1초로 잘린 사례), \\k 합계(4초)가 실제 표시
+    시간(0.1초)보다 훨씬 길게 남아 강조색이 글자가 사라진 뒤에도 계속 진행 중인 것처럼
+    보였다("싱크가 안 맞는다"의 실제 원인). 단어를 라인의 최종 end 안으로 잘라 넣어
+    \\k 합계가 항상 실제 표시 시간과 일치하게 만든다."""
     ordered = sorted(lines, key=lambda l: l.start)
     result: list[CaptionLine] = []
     for i, line in enumerate(ordered):
@@ -173,7 +180,23 @@ def _clamp_lines_non_overlap(lines: list[CaptionLine]) -> list[CaptionLine]:
             end = min(end, ordered[i + 1].start)
         if end - line.start < 0.05:
             continue
-        result.append(CaptionLine(start=line.start, end=end, words=line.words))
+        # 단어끼리도 겹치지 않게 순서대로 눌러 담는다 — 롤링 자막에서 매칭된 실제 단어들이
+        # 서로 겹치는 타임스탬프를 갖는 경우(개별 중복 제거로는 안 잡히는 부분 겹침)에도
+        # \\k 합계가 라인의 실제 표시 시간을 넘지 않도록 이중으로 보장한다.
+        words = []
+        prev_end = line.start
+        for w in line.words:
+            ws = max(w.start, prev_end)
+            if ws >= end:
+                continue
+            we = min(w.end, end)
+            if we <= ws:
+                we = min(end, ws + 0.03)
+            words.append(Word(start=ws, end=we, text=w.text))
+            prev_end = we
+        if not words:
+            continue
+        result.append(CaptionLine(start=line.start, end=end, words=words))
     return result
 
 
