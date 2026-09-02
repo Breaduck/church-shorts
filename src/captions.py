@@ -104,11 +104,20 @@ def _lines_from_overrides(
     json3 참조 전사)을 그대로 빌려 쓴다. 라인 텍스트를 단어 수로 그냥 '균등 분배'하면
     강조가 실제 목소리 리듬과 무관하게 일정 속도로 쓸고 지나가 "자막이 목소리랑 따로
     논다/느리다"는 체감이 생긴다(반복 신고된 싱크 문제의 핵심). 그래서:
-      1) 라인 구간에 걸치는 실제 단어 수가 토큰 수와 정확히 일치하면 → 실제 단어 시각을
-         그대로 사용(가장 정확). 표시 텍스트는 편집본을 유지한다.
-      2) 수가 안 맞으면(직접 편집·오인식) → 실제 발화 구간[첫 단어~끝 단어] 안에서 균등 분배.
-      3) 겹치는 실제 단어가 아예 없으면(붙여넣기 등) → 라인 구간에서 균등 분배(옛 동작).
-    """
+      1) 라인 구간에 걸치는 실제 단어 수가 토큰 수와 정확히 일치하면 → 실제 단어 시각의
+         '리듬'(단어별 상대 길이)을 그대로 쓴다. 표시 텍스트는 편집본을 유지한다.
+      2) 수가 안 맞으면(직접 편집·오인식) → 실제 발화 구간[첫 단어~끝 단어] 안에서 글자
+         수 비례 분배.
+      3) 겹치는 실제 단어가 아예 없으면(붙여넣기 등) → 이 줄 자체 구간에서 글자 수 비례.
+
+    중요: 위 어느 경우든 최종 라인은 이 줄 자체가 선언한 [rel_start, rel_end]를 절대
+    벗어나지 않는다. 실제 단어 시각(1·2번)이 그 구간보다 넓으면(롤링 자막의 부풀려진
+    타임스탬프 — 실측: 매칭된 '실제 구간'이 4초인데 이 줄 자체는 다음 줄과 0.1초
+    간격밖에 안 됨) 리듬 비율은 유지한 채 [rel_start, rel_end] 안으로 선형 압축한다.
+    실제 시각을 무제한 신뢰하면 다음 줄과 겹쳐 _clamp_lines_non_overlap가 잘라내면서
+    단어가 통째로 사라진다("자막 내용이 편집기랑 실제 영상에서 다르다" 사고 원인) —
+    이 줄 고유 구간은 항상 인접 줄과 자연스럽게 이어지므로 여기 맞춰 압축하는 쪽이
+    안전하다(단어 유실 없음, 리듬감은 최대한 보존)."""
     rel_words = (
         sorted(
             (Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words),
@@ -117,6 +126,38 @@ def _lines_from_overrides(
         if clip_words
         else []
     )
+
+    def _deoverlap(words: list[Word]) -> list[Word]:
+        """단어끼리 시간이 겹치면(롤링 자막에서 흔함 — 단어 하나가 다음 단어들 위로 길게
+        뻗침) 순서대로 눌러 담아 겹침을 없앤다. 안 그러면 앞 단어의 부풀려진 end가 뒤
+        단어들의 start를 넘어서서, 이후 라인 경계 클램프 때 뒤 단어들이 통째로 잘려나간다
+        (실측: '증가율이'(25.1~26.75) 하나가 뒤 '5월'(25.82~26.09)·'17일도'(26.09~26.3)
+        구간을 통째로 덮어, 두 단어가 사라짐)."""
+        out: list[Word] = []
+        prev_end = None
+        for w in words:
+            ws = w.start if prev_end is None else max(w.start, prev_end)
+            we = max(w.end, ws + 0.03)
+            out.append(Word(start=ws, end=we, text=w.text))
+            prev_end = we
+        return out
+
+    def _fit_to_span(words: list[Word], a: float, b: float) -> list[Word]:
+        """words가 이미 [a,b] 안(약간의 여유 포함)이면 그대로 두고, 벗어나면 상대 리듬을
+        유지한 채 [a,b] 안으로 선형 압축한다. 어느 경우든 단어 개수·순서는 그대로다."""
+        if not words:
+            return words
+        src_a, src_b = words[0].start, words[-1].end
+        if src_a >= a - 0.15 and src_b <= b + 0.15:
+            return words
+        span = max(0.05, b - a)
+        src_span = max(1e-6, src_b - src_a)
+        scale = span / src_span
+        return [
+            Word(start=a + (w.start - src_a) * scale, end=a + (w.end - src_a) * scale, text=w.text)
+            for w in words
+        ]
+
     lines: list[CaptionLine] = []
     for ov in caption_overrides:
         text = _clean_word_text(str(ov.get("text", "")))
@@ -132,25 +173,22 @@ def _lines_from_overrides(
             if rel_start - 0.15 <= (w.start + w.end) / 2 <= rel_end + 0.15
         ]
         if window and len(window) == n:
-            # (1) 단어 수 일치 → 실제 시각 그대로. 텍스트는 편집본 유지(철자 교정 존중).
+            # (1) 단어 수 일치 → 실제 시각의 리듬 사용(텍스트는 편집본 유지).
             ws = [
                 Word(start=w.start, end=max(w.end, w.start + 0.05), text=tok)
                 for w, tok in zip(window, toks)
             ]
-            lines.append(CaptionLine(
-                start=window[0].start,
-                end=max(window[-1].end, window[0].start + 0.05),
-                words=ws,
-            ))
+            ws = _fit_to_span(_deoverlap(ws), rel_start, rel_end)
+            lines.append(CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws))
         elif window:
-            # (2) 수 불일치 → 실제 발화 시작~끝 구간 안에서 '글자 수 비례' 분배(라인은 목소리에 정렬).
-            # 균등 분배는 긴 단어도 짧은 단어와 같은 시간만 강조돼 색이 목소리보다 앞서거나
-            # 뒤처져 보였다("색 따라가는 속도가 이상하다"). 글자 수 비례가 훨씬 자연스럽다.
-            a = window[0].start
-            b = max(window[-1].end, a + 0.1)
-            lines.append(CaptionLine(start=a, end=b, words=_distribute_by_chars(toks, a, b)))
+            # (2) 수 불일치 → 실제 발화 구간 안에서 글자 수 비례 분배 후 이 줄 구간에 맞춤.
+            # (겹침 있는 원본 window라도 최대 end를 정확히 잡기 위해 de-overlap을 거친다.)
+            dow = _deoverlap(window)
+            a, b = dow[0].start, max(dow[-1].end, dow[0].start + 0.1)
+            ws = _fit_to_span(_distribute_by_chars(toks, a, b), rel_start, rel_end)
+            lines.append(CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws))
         else:
-            # (3) 참조 단어 없음 → 라인 구간에서 글자 수 비례 분배.
+            # (3) 참조 단어 없음 → 이 줄 자체 구간에서 글자 수 비례 분배.
             lines.append(CaptionLine(
                 start=rel_start, end=rel_end, words=_distribute_by_chars(toks, rel_start, rel_end)
             ))
