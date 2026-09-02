@@ -1115,17 +1115,36 @@ def render_selected(
         # large-v3가 이름 철자를 맞추게 한다(룻→'루시', 기드온→'기도원' 류 방지, 이중 방어).
         # 사용자가 자막 편집기에서 자막을 확정했으면 재전사 없이 그대로 렌더한다
         # (편집 결과가 최우선이고, 느린 large-v3 재전사도 건너뛰어 훨씬 빠르다).
-        # 사용자가 자막을 편집한 클립(caption_overrides)도 이제 아래 '정밀 재전사'를 그대로 거친다.
-        # 예전엔 여기서 곧장 유튜브 자동자막(base_segments: 롤링·부정확)으로 렌더해, 카라오케
-        # 강조(색 따라가기) 타이밍이 어긋나고·줄이 누락되던 문제가 있었다(사용자 신고 2026-09-03).
-        # 표시 텍스트는 편집본(caption_overrides)을 쓰되, 강조 시각은 정밀 단어(segs)에서 가져온다
-        # (build_ass가 caption_overrides + 정밀 clip_words 조합으로 처리). 시작/끝 문장 스냅은
-        # 사용자가 정한 구간을 존중해 건너뛰고(has_overrides), 편집 자막 끝만 살짝 확장한다.
-        has_overrides = bool(getattr(clip, "caption_overrides", None))
-        if has_overrides and not getattr(clip, "trimmed", False):
-            last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
-            clip.end = max(clip.end, last_ov_end + 0.3)
-            clip.end = _snap_clip_end_to_sentence(clip, base_segments)
+        #
+        # 2026-09-03에 이 fast-path를 없애고 편집 자막도 아래 정밀 재전사(최대 4단계 재시도
+        # 캐스케이드: batched/순차/VAD끔 조합)를 거치게 했었는데, 되돌린다 — 그 재시도 단계마다
+        # 결과가 근소하게 달라질 수 있어(폴백 임계값 근처일 때 특히) "고칠 때마다 결과가
+        # 달라진다"·"한 부분만 고쳤는데 전체가 다시 처리된다"는 정확한 사용자 신고를 받았다.
+        # 편집 자막은 텍스트가 이미 확정돼 있어 재전사로 얻을 게 없다(재전사는 '무슨 말인지'를
+        # 알아내는 용도인데 이미 사용자가 알려줬다) — 그런데도 무겁고 비결정적인 파이프라인을
+        # 태우는 건 손해뿐이었다. 카라오케 타이밍은 base_segments(참조 전사의 실제 발화 시각,
+        # 롤링 중복 제거됨)로 충분히 정확하고, 이건 매번 똑같아 결과가 안정적이다.
+        if getattr(clip, "caption_overrides", None):
+            if not getattr(clip, "trimmed", False):
+                last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
+                clip.end = max(clip.end, last_ov_end + 0.3)
+                clip.end = _snap_clip_end_to_sentence(clip, base_segments)
+            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다. base_segments(참조
+            # 전사 = 유튜브 json3의 '실제 발화 시각')를 함께 넘겨, 카라오케 강조가 목소리 리듬을
+            # 따라가도록 한다(빈 [] 를 넘기면 균등 분배가 되어 자막이 목소리와 따로 논다).
+            _run_with_progress_ticker(
+                lambda: render_clip(video_path, base_segments, clip, out_path, cfg["render"], cfg["captions"]),
+                start_pct=base, end_pct=base + step, progress=progress,
+                message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
+                est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
+            )
+            out_path.with_suffix(".src").write_text(
+                render_signature(clip.start, clip.end), encoding="utf-8"
+            )
+            outputs.append(out_path)
+            continue
 
         hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
         clip_len = clip.end - clip.start
@@ -1269,9 +1288,8 @@ def render_selected(
         # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
         # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
         used_precise = bool(segs) and (segs is not base_segments)
-        # 편집 자막 클립은 사용자가 정한 구간/자막을 존중해 시작·끝 문장 스냅을 건너뛴다
-        # (위에서 끝만 살짝 확장했다). 정밀 segs는 카라오케 강조 시각용으로만 쓰인다.
-        if not getattr(clip, "trimmed", False) and not has_overrides:
+        # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
+        if not getattr(clip, "trimmed", False):
             snap_src = segs if used_precise else (base_segments or segs)
             # 시작 스냅도 폴백(base) 경로에서 함께 돌린다: 이제 세그먼트가 아니라 단어 단위
             # 문장 경계 기준이라 롤링 자막에서도 안전하다(실측: 폴백 렌더가 앞 문장 꼬리
