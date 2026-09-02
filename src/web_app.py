@@ -1119,9 +1119,12 @@ def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict
     max_title_size = (
         getattr(clip, "title_size", 0) or captions_cfg.get("title_font_size") or int(captions_cfg["font_size"] * 1.3)
     )
+    _title_top = max(24, int(resolution[1] * 0.06))
+    title_avail_h = max(80, int(vby) - _title_top - 20)
     title_size = _fit_title_font_size(
         clip.title or "", max_title_size, min_size=captions_cfg["font_size"],
         available_width_px=resolution[0] - 80, font_family=title_font_name,
+        available_height_px=title_avail_h,
     )
     base_title_margin_v, base_caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
 
@@ -2031,6 +2034,9 @@ PREVIEW_MODAL_JS = r"""
      (1) 2줄로 보여 실제와 배열이 다르고 (2) 줄바꿈 때문에 scrollWidth가 한계를 안 넘어
      fitToWidth 축소가 아예 작동하지 않아 크기까지 다르게 보였다 — 반드시 nowrap. */
   .pv-title { white-space: nowrap; }
+  /* 제목 텍스트: 여러 줄(사용자 줄바꿈)에서도 폭 측정(scrollWidth)이 정확하려면 inline-block. */
+  .pv-txt { display: inline-block; text-align: center; outline: none; }
+  .pv-title.editing { border-color: #3182f6; background: rgba(49,130,246,.10); cursor: text; }
   .pv-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
     width: 54px; height: 54px; border-radius: 50%; border: none; cursor: pointer;
     background: rgba(15,23,42,.55); color: #fff; font-size: 22px; display: flex;
@@ -2388,7 +2394,18 @@ PREVIEW_MODAL_JS = r"""
     };
     const titleEl = $('.pv-title'), capEl = $('.pv-caption');
     const titleTxt = titleEl.querySelector('.pv-txt');
-    titleTxt.textContent = C.title;
+    let chosenTitle = C.title;   // 후보 선택·직접 수정으로 바뀔 수 있음(payload에 저장)
+    let editing = false;         // 제목 인라인 편집 중이면 드래그를 막는다
+    // 제목 텍스트를 '\n'→<br>로 그린다. textContent만 쓰면 nowrap에서 줄바꿈이 공백으로 뭉개진다.
+    function setTitleText(str) {
+      titleTxt.textContent = '';
+      String(str == null ? '' : str).split('\n').forEach((p, i) => {
+        if (i > 0) titleTxt.appendChild(document.createElement('br'));
+        titleTxt.appendChild(document.createTextNode(p));
+      });
+    }
+    setTitleText(C.title);
+    titleEl.title = '더블클릭하면 제목을 직접 고칠 수 있어요 · Enter로 줄바꿈';
     capEl.textContent = info.caption_preview;
     // libass는 ASS Fontsize를 셀 높이로 해석해 같은 숫자라도 브라우저보다 작게 그린다
     // (Gmarket Sans ≈ 0.87배, 서버가 폰트별 계수를 계산해 내려줌). 미리보기 px에 이
@@ -2417,8 +2434,14 @@ PREVIEW_MODAL_JS = r"""
       el.style.left = (bases[key].left + state[key].x * SC) + 'px';
       el.style.top = (bases[key].top + state[key].y * SC) + 'px';
     }
-    function makeDraggable(el, key) {
+    function makeDraggable(el, key, onDbl) {
+      let lastDown = 0;
       el.addEventListener('pointerdown', (e) => {
+        if (editing) return;   // 편집 중엔 커서/선택이 우선 — 드래그 금지
+        if (onDbl && e.timeStamp - lastDown < 320) {  // 빠른 두 번 클릭 = 더블클릭
+          lastDown = 0; e.preventDefault(); onDbl(); return;
+        }
+        lastDown = e.timeStamp;
         e.preventDefault();
         el.classList.add('dragging');
         el.setPointerCapture(e.pointerId);
@@ -2437,9 +2460,52 @@ PREVIEW_MODAL_JS = r"""
         el.addEventListener('pointerup', up);
       });
     }
+
+    // ── 제목 직접 수정: 더블클릭 → 인라인 편집, Enter=줄바꿈, 포커스 잃으면 확정 ──
+    function startEdit() {
+      if (editing) return;
+      editing = true;
+      titleEl.classList.add('editing');
+      titleTxt.setAttribute('contenteditable', 'true');
+      titleTxt.style.whiteSpace = 'pre-wrap';   // 편집 중엔 긴 줄·줄바꿈이 다 보이게
+      titleTxt.focus();
+      const r = document.createRange(); r.selectNodeContents(titleTxt);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    }
+    // contenteditable 내용을 텍스트로 읽는다: <br>/블록 노드를 줄바꿈으로 바꿔 반환한다
+    // (innerText는 white-space 렌더에 따라 줄바꿈이 공백으로 뭉개져 신뢰할 수 없었다).
+    function readEditedText() {
+      let out = '';
+      titleTxt.childNodes.forEach((n) => {
+        if (n.nodeName === 'BR') out += '\n';
+        else if (n.nodeType === 1) { if (out && !out.endsWith('\n')) out += '\n'; out += (n.textContent || ''); }
+        else out += (n.textContent || '');
+      });
+      return out;
+    }
+    function commitEdit() {
+      if (!editing) return;
+      editing = false;
+      titleTxt.removeAttribute('contenteditable');
+      titleTxt.style.whiteSpace = '';
+      titleEl.classList.remove('editing');
+      let t = readEditedText().split('\n').map(function (s) { return s.replace(/\s+$/, ''); }).join('\n').replace(/\n+$/, '');
+      if (!t.trim()) t = chosenTitle;   // 빈 제목 방지 — 되돌린다
+      chosenTitle = t;
+      setTitleText(t);                  // DOM 정규화(편집 흔적 제거)
+      applyTitleSize(); fitToWidth(titleEl, titleTxt);
+      candsBox.querySelectorAll('.pv-cand').forEach((x) => x.classList.remove('sel'));
+    }
+    titleTxt.addEventListener('keydown', (e) => {
+      if (!editing) return;
+      if (e.key === 'Enter') { e.preventDefault(); document.execCommand('insertLineBreak'); }
+      else if (e.key === 'Escape') { e.preventDefault(); setTitleText(chosenTitle); titleTxt.blur(); }
+    });
+    titleTxt.addEventListener('blur', commitEdit);
+
     fitToWidth(titleEl, titleTxt); fitToWidth(capEl);
     paintBox(titleEl, 'title'); paintBox(capEl, 'caption');
-    makeDraggable(titleEl, 'title'); makeDraggable(capEl, 'caption');
+    makeDraggable(titleEl, 'title', startEdit); makeDraggable(capEl, 'caption');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
       applyTitleSize();
       fitToWidth(titleEl, titleTxt);
@@ -2477,7 +2543,6 @@ PREVIEW_MODAL_JS = r"""
 
     // ── 제목 후보 5개 ──
     const candsBox = $('.pv-cands');
-    let chosenTitle = C.title;
     (C.title_candidates || []).forEach((t, i) => {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'pv-cand' + (t === chosenTitle ? ' sel' : '');
@@ -2486,7 +2551,7 @@ PREVIEW_MODAL_JS = r"""
         chosenTitle = t;
         candsBox.querySelectorAll('.pv-cand').forEach((x) => x.classList.remove('sel'));
         b.classList.add('sel');
-        titleTxt.textContent = t;
+        setTitleText(t);
         applyTitleSize();
         fitToWidth(titleEl, titleTxt);
       });

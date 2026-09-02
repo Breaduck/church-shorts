@@ -188,8 +188,10 @@ render:
 captions:
   enabled: true
   template: "karaoke"        # "minimal" | "vibrant" | "karaoke" — 단어별 강조가 정확도 체감/몰입도를 높임
-  font_path: "assets/fonts/Pretendard-Bold.ttf"
-  font_family: "Pretendard"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
+  font_path: "글씨체/GmarketSansTTF/GmarketSansTTFMedium.ttf"  # 참고용(실제 해석은 family name+fontsdir)
+  # 자막도 제목과 같은 지마켓 산스로 통일(사용자 요청, 2026-09-03). Medium + ASS Bold(-1) 조합이
+  # 예전 Pretendard(regular)+Bold와 같은 '굵게' 느낌을 낸다(Bold 패밀리를 쓰면 이중 볼드로 과함).
+  font_family: "Gmarket Sans Medium"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
   font_size: 72
   title_font_size: 130  # 190→130: "제목이 너무 크다, 1줄 안에 들어가게"(사용자 요청, 2026-09-02)
   title_font_family: "Gmarket Sans Bold"  # Pretendard ExtraBold→지마켓 산스 Bold(사용자 요청, 2026-09-02)
