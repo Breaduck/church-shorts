@@ -2257,11 +2257,19 @@ PREVIEW_MODAL_JS = r"""
       }
     });
 
-    // 타임라인 빈 곳 클릭 = 재생 위치 이동
+    // 타임라인 클릭 = 그 지점이 클립 '시작'이 되게 한다(파란 재생선도 거기로 슉 이동).
     trimEl.addEventListener('click', (e) => {
-      if (e.target.closest('.pv-seg')) return;
+      if (e.target.closest('.pv-seg')) return;  // 조각/핸들 드래그는 제외
       const t = Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
-      video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHead();
+      let i = segs.findIndex((sg) => t < sg.e - 0.5);  // 이 지점이 시작이 될 조각
+      if (i === -1) {  // 모든 조각보다 뒤를 클릭 → 경계는 안 건드리고 재생선만 이동
+        video.currentTime = t; video.pause(); playBtn.classList.remove('hidden'); renderHead(); return;
+      }
+      const prev = segs[i - 1];
+      segs[i].s = Math.max(prev ? prev.e + 0.1 : 0, Math.min(t, segs[i].e - 0.5));  // 시작을 클릭 지점으로
+      activeSeg = i;
+      video.currentTime = segs[i].s; video.pause(); playBtn.classList.remove('hidden');
+      renderSegs(); renderHead();
     });
 
     video.addEventListener('loadedmetadata', () => { video.currentTime = segs[0].s; });
