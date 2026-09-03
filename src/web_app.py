@@ -369,6 +369,14 @@ CANDIDATES_TEMPLATE = f"""
   .reason-caption {{ color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0 0 8px; }}
   .reason-hashtags {{ color: var(--text-faint); font-size: 12.5px; margin: 0 0 10px; }}
   .reason-text {{ color: var(--text-muted); font-size: 13px; line-height: 1.65; white-space: pre-line; margin: 0; }}
+  .capcopy {{ background: #fff; border: 1.5px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; }}
+  .capcopy-head {{ display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); margin-bottom: 7px; }}
+  .capcopy-btn {{ margin-left: auto; padding: 5px 12px; font-size: 12px; font-weight: 700; font-family: inherit;
+    border: 1.5px solid var(--border); background: #fafbfc; color: var(--accent); border-radius: 8px; cursor: pointer; }}
+  .capcopy-btn:hover {{ border-color: var(--accent); background: #f0f6ff; }}
+  .capcopy-done {{ font-size: 12px; color: #16a34a; font-weight: 700; }}
+  .capcopy-text {{ width: 100%; border: none; background: none; resize: vertical; font-family: inherit;
+    font-size: 13px; line-height: 1.55; color: var(--text); padding: 0; margin: 0; outline: none; }}
   video {{ width: 100%; max-width: 260px; border-radius: 14px; background: #000; margin-top: 14px; display: block; }}
   .actions {{ position: sticky; bottom: 20px; margin-top: 24px; }}
   .actions button {{ box-shadow: 0 8px 24px rgba(49, 130, 246, 0.35); }}
@@ -463,8 +471,19 @@ CANDIDATES_TEMPLATE = f"""
       {{% if c.insight %}}
       <p class="reason-hashtags">💡 {{{{ c.insight }}}}</p>
       {{% endif %}}
-      <p class="reason-caption">{{{{ c.caption }}}}</p>
-      <p class="reason-hashtags">{{{{ c.hashtags|join(' ') }}}}</p>
+      {{# 업로드용 캡션: 제목+캡션+해시태그를 붙여넣기 좋은 형태로 조립, 한 번에 복사. #}}
+      <div class="capcopy">
+        <div class="capcopy-head">
+          <span>📝 업로드 캡션</span>
+          <button type="button" class="capcopy-btn">복사</button>
+          <span class="capcopy-done" hidden>복사됨 ✓</span>
+        </div>
+        <textarea class="capcopy-text" readonly rows="5">{{{{ c.title }}}}
+
+{{{{ c.caption }}}}
+
+{{{{ c.hashtags|join(' ') }}}} #shorts</textarea>
+      </div>
       <p class="reason-text">{{{{ c.reason }}}}</p>
     </div>
     <div class="cand-video" id="candvid-{{{{ loop.index0 }}}}">
@@ -579,6 +598,25 @@ CANDIDATES_TEMPLATE = f"""
       reason.hidden = !willOpen;
       btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
       btn.firstChild.textContent = willOpen ? '접기 ' : '상세 보기 ';
+    }});
+  }});
+
+  // 업로드 캡션 한 번에 복사 (클립보드 API 실패 시 select+execCommand 폴백)
+  document.querySelectorAll('.capcopy').forEach(function(box) {{
+    var btn = box.querySelector('.capcopy-btn');
+    var done = box.querySelector('.capcopy-done');
+    var ta = box.querySelector('.capcopy-text');
+    btn.addEventListener('click', function() {{
+      var text = ta.value;
+      var ok = function() {{
+        done.hidden = false;
+        setTimeout(function() {{ done.hidden = true; }}, 1800);
+      }};
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(ok, function() {{ ta.select(); document.execCommand('copy'); ok(); }});
+      }} else {{
+        ta.select(); document.execCommand('copy'); ok();
+      }}
     }});
   }});
 
