@@ -165,6 +165,14 @@ render:
   end_pad_sec: 1.0
   # 끝 소리 페이드아웃(초): 마지막 말끝을 부드럽게 줄여 무음 여운→로고로 자연스럽게 넘어가게.
   end_audio_fade_sec: 0.6
+  # 훅(초반) 속도 올리기: 설교는 말이 느려 초반 이탈이 크다. 클립 첫 first_sec초를 factor배로
+  # 살짝 빠르게 감아 "훅에 바로 집중"시킨다(사용자 요청, 2026-09-03). 오디오는 atempo로 피치
+  # 유지(목소리 톤 안 변함), 자막 시각도 같은 워프로 리매핑돼 싱크 유지. card 레이아웃 +
+  # 구간 분할/무음제거 안 한 클립에서만 적용(분할과 겹치면 복잡해 스킵).
+  hook_speedup:
+    enabled: true
+    first_sec: 2.0
+    factor: 1.15
   silence_threshold_db: -35
   silence_min_duration_sec: 1.2  # 설교자의 정상적인 강조 호흡(0.6~1초대)까지 잘라내면 말이 너무 툭툭 끊겨서 상향
   ken_burns:
@@ -184,7 +192,7 @@ render:
   # "끝에 로고 3초 넣기" 체크박스로 매 렌더마다 켜고 끌 수 있다(기본 켜짐).
   outro:
     enabled: true
-    duration_sec: 3
+    duration_sec: 2   # 3→2초(사용자 요청, 2026-09-03)
     image_path: "assets/outro/logo.png"  # 1080x1920 — render.resolution과 이미 일치
 
 captions:

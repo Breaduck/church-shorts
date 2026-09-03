@@ -545,7 +545,7 @@ CANDIDATES_TEMPLATE = f"""
   {{% endfor %}}
   <div class="actions">
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 3초 넣기
+      <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 2초 넣기
     </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
@@ -2239,6 +2239,9 @@ PREVIEW_MODAL_JS = r"""
     color: #6b7684; font-weight: 600; margin-bottom: 8px; }
   .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
     border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
+  .pv-capcopyall { flex: 0 0 auto; margin-left: auto; padding: 6px 9px; font-size: 13px;
+    border: 1.5px solid #f0f1f3; background: #fafbfc; border-radius: 8px; cursor: pointer; }
+  .pv-capcopyall:hover { border-color: #3182f6; background: #f0f6ff; }
   .pv-retrans, .pv-syncbtn, .pv-shiftm, .pv-shiftp { flex: 0 0 auto; padding: 6px 10px;
     font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
     background: #fafbfc; color: #3182f6; border-radius: 8px; cursor: pointer; white-space: nowrap; }
@@ -2358,6 +2361,7 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
       '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
+      '      <button type="button" class="pv-capcopyall" title="자막 내용 전체 복사">📋</button>' +
       '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
@@ -2976,6 +2980,24 @@ PREVIEW_MODAL_JS = r"""
     }
     $('.pv-shiftm').addEventListener('click', () => shiftAll(-0.1));
     $('.pv-shiftp').addEventListener('click', () => shiftAll(0.1));
+
+    // 자막 내용 전체 복사(시간 없이 텍스트만, 줄바꿈으로).
+    const capCopyAll = $('.pv-capcopyall');
+    capCopyAll.addEventListener('click', () => {
+      const txt = [...capRowsBox.querySelectorAll('.pv-cap-text')]
+        .map((el) => el.value.trim()).filter(Boolean).join('\n');
+      if (!txt) { alert('복사할 자막이 없습니다'); return; }
+      const done = () => { capCopyAll.textContent = '✓'; setTimeout(() => { capCopyAll.textContent = '📋'; }, 1500); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(done, () => {
+          const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta);
+          ta.select(); document.execCommand('copy'); ta.remove(); done();
+        });
+      } else {
+        const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); ta.remove(); done();
+      }
+    });
 
     // ── 닫기/저장/확정 ──
     function close() { video.pause(); back.remove(); }

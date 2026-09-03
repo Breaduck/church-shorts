@@ -367,6 +367,7 @@ def _build_card_filter_complex(
     source_fps: float,
     vbh: int,
     vby: int,
+    speedup: tuple[float, float] | None = None,
 ) -> tuple[str, str]:
     """카드형 레이아웃(흰 배경 + 둥근 모서리 영상 박스): filter_complex 문자열과
     최종 비디오 출력 라벨을 반환한다.
@@ -390,6 +391,11 @@ def _build_card_filter_complex(
     if select_expr:
         video_parts.append(f"select='{select_expr}'")
         video_parts.append("setpts=N/FRAME_RATE/TB")
+    elif speedup:
+        # 훅 배속: 초반 f초를 k배로 감는 시간 워프(초 단위 T). setpts는 select와 동시엔 안
+        # 온다(warp는 keep_segments 없을 때만 활성). captions.warp_time과 동일한 식이어야 함.
+        f, k = speedup
+        video_parts.append(f"setpts='(if(lt(T,{f}),T/{k},{f}/{k}+(T-{f})))/TB'")
     video_parts.append(card_source_video_filter(card, vbw, vbh))
     video_chain = ",".join(video_parts)
 
@@ -505,6 +511,18 @@ def render_clip(
         # (실제 신고된 잔존 싱크 문제의 원인 중 하나).
         voice_silences = _detect_silences(video_path, clip.start, clip.end, -32.0, 0.3)
 
+    # 훅 배속: 초반 first_sec초를 factor배로 빠르게(card + 분할/무음제거 안 한 클립에서만).
+    hs_cfg = render_cfg.get("hook_speedup") or {}
+    _hs_first = float(hs_cfg.get("first_sec", 0) or 0)
+    _hs_factor = float(hs_cfg.get("factor", 1.0) or 1.0)
+    warp_active = bool(
+        is_card and hs_cfg.get("enabled") and _hs_factor > 1.0 and _hs_first > 0
+        and not keep_segments and duration > _hs_first + 0.5
+    )
+    hook_speedup = (_hs_first, _hs_factor) if warp_active else None
+    # 배속 후 실제 본문 길이(warp_time(duration))
+    warped_dur = (_hs_first / _hs_factor + (duration - _hs_first)) if warp_active else duration
+
     ass_path = output_path.with_suffix(".ass")
     ass_content = build_ass_for_clip(
         segments=segments,
@@ -532,6 +550,7 @@ def render_clip(
             "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
         },
         voice_silences=voice_silences,
+        hook_speedup=hook_speedup,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
@@ -564,7 +583,7 @@ def render_clip(
     # 걸어서, 말끝 → 페이드 → 무음 여운 → 로고로 자연스럽게 이어진다.
     fade_d = float(render_cfg.get("end_audio_fade_sec", 0.6) or 0.0)
     content_dur = (
-        sum(e - s for s, e in keep_segments) if keep_segments else duration
+        sum(e - s for s, e in keep_segments) if keep_segments else warped_dur
     )
     afade_af = (
         f"afade=t=out:st={max(0.0, content_dur - fade_d):.3f}:d={fade_d:.3f}"
@@ -581,19 +600,41 @@ def render_clip(
             card_layout["video_box_width"], card_layout["video_box_height"], card_layout["corner_radius"]
         )
         cmd += ["-loop", "1", "-i", str(mask_path)]  # 입력 1번: 둥근 모서리 마스크 이미지
+        # color 배경 길이도 배속된 본문 길이에 맞춘다(warp 시 duration보다 짧아짐).
         filter_complex, vout_label = _build_card_filter_complex(
-            render_cfg, captions_cfg, resolution, duration, select_expr, ass_path_ff, font_dir,
+            render_cfg, captions_cfg, resolution, warped_dur, select_expr, ass_path_ff, font_dir,
             source_fps, card_layout["video_box_height"], card_layout["video_box_y"],
+            speedup=hook_speedup,
         )
         if vpad_vf:
             filter_complex += f";{vout_label}{vpad_vf}[vpad]"
             vout_label = "[vpad]"
         cmd += ["-filter_complex", filter_complex, "-map", vout_label]
-        cmd += _join_af(audio_filter)
-        # 마스크 입력(-loop 1)이 무한 스트림이라 -shortest 없이는 ffmpeg가 멈출 시점을 몰라
-        # 인코딩이 끝나지 않는다. 반드시 필요. (tpad/apad로 영상·오디오 둘 다 +end_pad가 되어
-        # -shortest가 여운을 자르지 않는다.)
-        cmd += ["-map", "0:a", "-shortest"]
+        if warp_active:
+            # 오디오도 초반 f초만 k배(atempo, 피치 유지) 후 나머지와 concat → afade/apad 적용.
+            f, k = hook_speedup
+            a_post = ",".join(p for p in (afade_af, apad_af) if p)
+            afx = (
+                f"[0:a]atrim=0:{f},asetpts=PTS-STARTPTS,atempo={k}[hsa0];"
+                f"[0:a]atrim=start={f},asetpts=PTS-STARTPTS[hsa1];"
+                f"[hsa0][hsa1]concat=n=2:v=0:a=1[hsac]"
+            )
+            filter_complex += ";" + afx
+            if a_post:
+                filter_complex += f";[hsac]{a_post}[aout]"
+                aout_label = "[aout]"
+            else:
+                aout_label = "[hsac]"
+            # filter_complex를 이미 cmd에 넣었으므로 문자열을 갱신해 재지정한다.
+            fc_idx = cmd.index("-filter_complex") + 1
+            cmd[fc_idx] = filter_complex
+            cmd += ["-map", aout_label, "-shortest"]
+        else:
+            cmd += _join_af(audio_filter)
+            # 마스크 입력(-loop 1)이 무한 스트림이라 -shortest 없이는 ffmpeg가 멈출 시점을 몰라
+            # 인코딩이 끝나지 않는다. 반드시 필요. (tpad/apad로 영상·오디오 둘 다 +end_pad가 되어
+            # -shortest가 여운을 자르지 않는다.)
+            cmd += ["-map", "0:a", "-shortest"]
     else:
         video_filter = _build_video_filter(
             render_cfg, captions_cfg, resolution, select_expr, ass_path_ff, font_dir, source_fps

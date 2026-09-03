@@ -366,6 +366,19 @@ def _fit_title_font_size(
     return max(min_size, min(max_size, size))
 
 
+def warp_time(t: float, first_sec: float, factor: float) -> float:
+    """훅 배속(초반 first_sec초를 factor배로 빠르게)이 적용된 '출력 타임라인'에서의 시각.
+
+    렌더(ffmpeg setpts/atempo)와 자막(ASS 이벤트 시각)이 이 함수 하나를 공유해야 자막이
+    영상과 정확히 맞는다. 초반 구간은 압축되고(t/factor), 그 이후는 압축량만큼 통째로 당겨진다.
+    factor<=1 또는 first_sec<=0이면 항등(원래 시각)."""
+    if factor <= 1.0 or first_sec <= 0:
+        return t
+    if t <= first_sec:
+        return t / factor
+    return first_sec / factor + (t - first_sec)
+
+
 def _snap_word_starts_to_voice(
     words: list[Word], silences: list[tuple[float, float]]
 ) -> list[Word]:
@@ -473,6 +486,7 @@ def build_ass(
     caption_spacing: float = 0.0,
     voice_silences: list[tuple[float, float]] | None = None,
     sync_offset_sec: float = 0.0,
+    hook_speedup: tuple[float, float] | None = None,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -564,8 +578,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         sum(e - s for s, e in keep_segments) if keep_segments else clip_duration
     )
 
+    # 훅 배속(초반 first_sec초를 factor배로): 자막 이벤트 시각도 렌더(setpts/atempo)와
+    # 같은 워프를 태워야 영상과 맞는다. 항등(None/factor<=1)이면 원래 시각 그대로.
+    _wf, _wk = hook_speedup if hook_speedup else (0.0, 1.0)
+
+    def _w(t: float) -> float:
+        return warp_time(t, _wf, _wk)
+
+    def _warp_line(line: CaptionLine) -> CaptionLine:
+        if _wk <= 1.0 or _wf <= 0:
+            return line
+        return CaptionLine(
+            start=_w(line.start), end=_w(line.end),
+            words=[Word(start=_w(w.start), end=_w(w.end), text=w.text) for w in line.words],
+        )
+
     if hook_text:
         hook_end = final_duration if (hook_always_on and final_duration > 0) else hook_duration_sec
+        hook_end = _w(hook_end)  # 배속된 최종 길이에 맞춰 제목 표시 끝도 당긴다
         # 캡션은 _display_text/_karaoke_text가 끝 마침표를 떼지만, 제목(Hook)은 그 경로를
         # 안 타서 모델이 붙인 마침표가 그대로 나갈 수 있었다("자막 끝마다 점" 원인 중 하나).
         # 사용자가 팝업에서 Enter로 넣은 줄바꿈(\n)은 ASS의 강제 줄바꿈(\N)으로 변환한다.
@@ -579,6 +609,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 유튜브 자동자막 단어 시각이 전반적으로 0.2~0.5초 이른 '상시 리드'는 무음 교정
         # (긴 쉼만 잡음)으로는 안 잡혀서, 최종 이벤트 시각에서 통째로 민다. 카라오케 \k는
         # 라인 시작 기준 상대값이라 라인과 함께 자연히 밀린다.
+        line = _warp_line(line)  # 훅 배속 반영(항등이면 그대로)
         start_t = _ass_time(max(0.0, line.start + sync_offset_sec))
         end_t = _ass_time(max(0.0, line.end + sync_offset_sec))
         if template == "karaoke":
@@ -651,6 +682,7 @@ def build_ass_for_clip(
     caption_overrides: list | None = None,
     font_style: dict | None = None,
     voice_silences: list[tuple[float, float]] | None = None,
+    hook_speedup: tuple[float, float] | None = None,
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -697,4 +729,5 @@ def build_ass_for_clip(
         caption_spacing=float(fs.get("caption_spacing", 0) or 0),
         voice_silences=voice_silences,
         sync_offset_sec=float(config_captions.get("sync_offset_sec", 0.0) or 0.0),
+        hook_speedup=hook_speedup,
     )
