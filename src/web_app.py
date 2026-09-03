@@ -1235,10 +1235,41 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     transcript_path = OUTPUT_ROOT / video_id / "transcript.json"
     if not transcript_path.exists():
         return []
-    from src.main import json_load_transcript
+    from src.main import (
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, json_load_transcript,
+    )
 
-    segs = json_load_transcript(transcript_path)["segments"]
-    words = _collect_words_in_range(segs, clip.start, clip.end)  # 롤링 중복 제거됨
+    # ── 구조적 핵심(2026-09-03 "편집할수록 자막이 무너진다" 근본 수정) ──
+    # 편집기 초안은 "실제 렌더가 구울 것과 동일한 소스"에서 만들어야 한다. 예전엔 무조건
+    # 유튜브 자동자막(부정확)으로 초안을 만들어서, 사용자가 2~3줄만 고쳐 저장해도 나머지
+    # 수십 줄이 전부 '정확한 정밀 자막 → 부정확한 자동자막 초안'으로 통째로 바뀌어 굳었다.
+    # 이제 정밀 재전사 캐시가 있으면 그걸 초안 소스로 쓴다(렌더와 같은 결과) — 한 줄만
+    # 고치면 정말 그 한 줄만 달라진다. 캐시가 없으면 예전처럼 자동자막 폴백.
+    segs = None
+    try:
+        w = cfg["whisper"]
+        tdata = json_load_transcript(transcript_path)
+        base_text_all = " ".join((s.text or "") for s in tdata["segments"])
+        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+        sig = hashlib.md5(
+            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+        ).hexdigest()[:8]
+        model = w.get("precise_model_size", w["model_size"])
+        segs = _precise_cache_find(
+            OUTPUT_ROOT / video_id / "precise_cache", model, sig, clip.start, clip.end + 4.0
+        )
+    except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
+        segs = None
+    if segs is None:
+        segs = json_load_transcript(transcript_path)["segments"]
+    # 오탈자 교정도 렌더와 동일하게 적용(예전엔 편집기 초안에만 미적용 → 저장 시 오탈자 굳음).
+    _apply_corrections(segs, cfg.get("captions", {}).get("corrections") or {})
+    # 필러 제거 설정도 렌더와 동일하게(예전엔 기본값이라 렌더가 지우는 '그/막/뭐'가 초안에 남았다).
+    words = _collect_words_in_range(
+        segs, clip.start, clip.end,
+        strip_filler=cfg["captions"].get("strip_filler", True),
+        aggressive_filler=cfg["captions"].get("aggressive_filler", False),
+    )
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
     # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
     res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]

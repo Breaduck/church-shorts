@@ -163,6 +163,8 @@ render:
   # 구간엔 아무 글자도 안 뜬다. 카드 'N초' 라벨은 이 여운을 뺀 본문 길이 기준이라 실제 mp4는
   # 약 이만큼 더 길다.)
   end_pad_sec: 1.0
+  # 끝 소리 페이드아웃(초): 마지막 말끝을 부드럽게 줄여 무음 여운→로고로 자연스럽게 넘어가게.
+  end_audio_fade_sec: 0.6
   silence_threshold_db: -35
   silence_min_duration_sec: 1.2  # 설교자의 정상적인 강조 호흡(0.6~1초대)까지 잘라내면 말이 너무 툭툭 끊겨서 상향
   ken_burns:

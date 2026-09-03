@@ -559,8 +559,20 @@ def render_clip(
     vpad_vf = f"tpad=stop_mode=clone:stop_duration={end_pad}" if end_pad > 0 else None
     apad_af = f"apad=pad_dur={end_pad}" if end_pad > 0 else None
 
+    # 끝 소리 페이드아웃: 본 영상이 끝나고 로고(아웃트로)로 넘어갈 때 소리가 뚝 끊기지 않게
+    # 마지막 구간을 부드럽게 줄인다(사용자 요청, 2026-09-03). 무음 여운(end_pad) 시작 직전에
+    # 걸어서, 말끝 → 페이드 → 무음 여운 → 로고로 자연스럽게 이어진다.
+    fade_d = float(render_cfg.get("end_audio_fade_sec", 0.6) or 0.0)
+    content_dur = (
+        sum(e - s for s, e in keep_segments) if keep_segments else duration
+    )
+    afade_af = (
+        f"afade=t=out:st={max(0.0, content_dur - fade_d):.3f}:d={fade_d:.3f}"
+        if fade_d > 0 else None
+    )
+
     def _join_af(base: str | None) -> list[str]:
-        chain = ",".join(p for p in (base, apad_af) if p)
+        chain = ",".join(p for p in (base, afade_af, apad_af) if p)
         return ["-af", chain] if chain else []
 
     source_fps = _probe_fps(video_path)
