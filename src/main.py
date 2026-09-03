@@ -30,6 +30,7 @@ from src.highlights import (
     save_clips_json,
     save_prompt_for_manual_mode,
     select_highlights_auto,
+    select_praise_songs,
 )
 from src.feedback import format_feedback_for_prompt, load_feedback
 from src.render import render_clip
@@ -404,6 +405,7 @@ def reanalyze_clip_region(
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
     transcript_text: str = "", force: bool = False, model: str = "",
+    mode: str = "sermon",
 ) -> tuple[Path, list[Clip]]:
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
@@ -420,18 +422,29 @@ def analyze(
     # 시각 폭을 좁게(합 30%) 주고, 실제로 몇 분 걸리는 하이라이트 선정에 70%를 준다 →
     # "지금 30%면 선정 중"처럼 %와 단계 라벨이 항상 일치한다. 스텝 라벨 구간(웹): 다운로드
     # 0-10, 전사 10-30, 하이라이트 선정 30-100 과 정확히 맞춘다.
-    stages = [
-        _Stage("download", "영상 정보 확인 중...", est=8, span=10),
-        _Stage("transcript", "자막 준비 중...", est=12, span=15),
-        _Stage("hints", "핵심 구간 분석 중...", est=5, span=5),
-        # 하이라이트 선정(claude -p): 예상시간은 고정값 대신 직전 실행들의 실측 중앙값으로
-        # 보정한다(_stage_time_est). 기록이 없을 때만 기본 200초(thinking 2048 + 출력
-        # 다이어트 기준 실측 추정)를 쓴다.
-        _Stage(
-            "highlight", "하이라이트 후보 선정 중...",
-            est=_stage_time_est("selection", 200.0), span=70,
-        ),
-    ]
+    if mode == "praise":
+        # 찬양 모드: 오디오 힌트 단계가 없고, 선정 대신 '곡 구간 감지'가 마지막 단계다.
+        stages = [
+            _Stage("download", "영상 정보 확인 중...", est=8, span=10),
+            _Stage("transcript", "자막 준비 중...", est=12, span=15),
+            _Stage(
+                "praise", "찬양 곡 구간 찾는 중...",
+                est=_stage_time_est("praise_selection", 240.0), span=75,
+            ),
+        ]
+    else:
+        stages = [
+            _Stage("download", "영상 정보 확인 중...", est=8, span=10),
+            _Stage("transcript", "자막 준비 중...", est=12, span=15),
+            _Stage("hints", "핵심 구간 분석 중...", est=5, span=5),
+            # 하이라이트 선정(claude -p): 예상시간은 고정값 대신 직전 실행들의 실측 중앙값으로
+            # 보정한다(_stage_time_est). 기록이 없을 때만 기본 200초(thinking 2048 + 출력
+            # 다이어트 기준 실측 추정)를 쓴다.
+            _Stage(
+                "highlight", "하이라이트 후보 선정 중...",
+                est=_stage_time_est("selection", 200.0), span=70,
+            ),
+        ]
     sp = StageProgress(progress, stages)
     try:
         # 완성본이 이미 있으면 그대로, 없으면 메타데이터만 받고 다운로드는 백그라운드로.
@@ -560,6 +573,32 @@ def analyze(
                             shutil.move(str(p), str(arch / p.name))
                         except OSError:
                             pass  # 사용 중 파일 등은 남겨둔다(치명적이지 않음)
+
+        # 찬양 모드: 곡별 구간 감지 → 시간순 후보 저장(채점/앵커링/오디오 힌트 없음) --------
+        if mode == "praise":
+            sp.advance("AI가 예배 실황에서 찬양 곡을 찾는 중...")
+            p = cfg.get("praise", {}) or {}
+            t_sel = time.time()
+            clips = select_praise_songs(
+                transcript=transcript,
+                min_duration_sec=int(p.get("min_duration_sec", 60)),
+                max_duration_sec=int(p.get("max_duration_sec", 420)),
+                pad_start_sec=float(p.get("pad_start_sec", 4.0)),
+                pad_end_sec=float(p.get("pad_end_sec", 6.0)),
+                model=model or p.get("model", ""),
+                thinking_tokens=int(p.get("thinking_tokens", 4096)),
+                on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+            )
+            _record_stage_time("praise_selection", time.time() - t_sel)
+            if not clips:
+                raise RuntimeError(
+                    "찬양 곡을 찾지 못했습니다. 영상에 찬양이 없거나 전사본에 가사가 거의 "
+                    "안 잡혔을 수 있어요(자동자막 없는 실황은 직접 전사라 시간이 걸립니다)."
+                )
+            with CLIPS_LOCK:
+                save_clips_json(clips, clips_path)
+            sp.finish(f"완료: 찬양 {len(clips)}곡 감지")
+            return video_dir, clips
 
         # 3) 오디오 에너지 힌트 -------------------------------------------------
         sp.advance("핵심 구간 분석 중...")
@@ -1127,6 +1166,35 @@ def render_selected(
     for i, idx in enumerate(clip_indices):
         clip = clips[idx]
         base = i * step
+
+        # 찬양 곡 통편집: 정밀 재전사·자막·문장 스냅·훅 배속을 모두 건너뛰고
+        # 곡 구간 그대로 + 상단 제목(곡 제목)만 넣어 렌더한다. 노래에 문장 스냅은
+        # 무의미하고, 배속은 곡 템포를 바꿔버리며, 자막은 사용자가 원치 않았다.
+        if getattr(clip, "clip_type", "") == "praise":
+            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            pr_render = {
+                **cfg["render"],
+                "remove_silence": False,           # 간주/조용한 피아노 구간을 무음으로 오인해 자르지 않게
+                "hook_speedup": {"enabled": False},
+            }
+            # 주의: captions enabled=False로 두면 ffmpeg subtitles 필터가 통째로 빠져
+            # 같은 ASS에 든 '제목'까지 안 구워진다(실측: 제목 없는 찬양 렌더). 켠 채로 두고
+            # segments=[]를 넘겨 가사 자막 이벤트만 0개가 되게 한다.
+            pr_captions = dict(cfg["captions"])
+            _run_with_progress_ticker(
+                lambda: render_clip(video_path, [], clip, out_path, pr_render, pr_captions),
+                start_pct=base, end_pct=base + step, progress=progress,
+                message=f"[{i+1}/{total}] 찬양 렌더링 중: {clip.title}",
+                # 곡은 3~6분으로 길다 — 인코딩 시간도 대략 길이에 비례(QSV 기준 실측 보수치)
+                est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
+            )
+            out_path.with_suffix(".src").write_text(
+                render_signature(clip.start, clip.end), encoding="utf-8"
+            )
+            outputs.append(out_path)
+            continue
+
         # 최종 화면 자막은 유튜브 자동자막(부정확)이 아니라 이 정밀 재전사 결과를 쓴다.
         # precise_model_size로 정밀 재전사만 더 정확한 모델(예: large-v3)로 올릴 수 있다
         # (짧은 선택 클립에만 돌리므로 전체 영상을 큰 모델로 돌리는 부담 없이 정확도만 취함).

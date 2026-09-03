@@ -252,6 +252,12 @@ INDEX_TEMPLATE = f"""
   <p class="subtitle">유튜브 설교 링크를 넣으면 하이라이트 후보를 뽑아드려요.</p>
   <div class="card">
     <form id="f">
+      <div class="model-pick" style="margin:0 0 12px">
+        <div class="seg">
+          <label><input type="radio" name="mode" value="sermon" checked>말씀<span class="seg-sub">설교 하이라이트 쇼츠</span></label>
+          <label><input type="radio" name="mode" value="praise">찬양<span class="seg-sub">전체 예배 실황에서 곡별 통편집</span></label>
+        </div>
+      </div>
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
       <details class="adv">
         <summary>고급 옵션 <span class="adv-sub">자막 붙여넣기 · 새로 분석</span></summary>
@@ -288,11 +294,12 @@ f.addEventListener('submit', async (e) => {{
   const transcript_text = document.getElementById('transcript').value;
   const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
   const model = (f.querySelector('input[name="model"]:checked') || {{}}).value || '';
+  const mode = (f.querySelector('input[name="mode"]:checked') || {{}}).value || 'sermon';
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
   try {{
     const res = await fetch('/analyze', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model}})
+      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model, mode}})
     }});
     const data = await res.json();
     if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }}
@@ -859,7 +866,7 @@ CANDIDATES_TEMPLATE = f"""
 
 def _run_analyze_job(
     video_id_holder: dict, url: str, transcript_text: str = "", force: bool = False,
-    model: str = "",
+    model: str = "", mode: str = "sermon",
 ) -> None:
     try:
         video_dir, clips = analyze(
@@ -870,6 +877,7 @@ def _run_analyze_job(
             transcript_text=transcript_text,
             force=force,
             model=model,
+            mode=mode,
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -896,6 +904,10 @@ def analyze_route():
     model = (body.get("model") or "").strip()
     if model and model not in _ALLOWED_MODELS:
         model = ""
+    # 인덱스의 말씀/찬양 버튼. 허용 목록 밖 값은 기본(말씀)으로.
+    mode = (body.get("mode") or "sermon").strip()
+    if mode not in ("sermon", "praise"):
+        mode = "sermon"
     if not url:
         return jsonify({"error": "URL이 비어있습니다"}), 400
 
@@ -920,7 +932,8 @@ def analyze_route():
 
     holder = {"id": video_id}
     threading.Thread(
-        target=_run_analyze_job, args=(holder, url, transcript_text, force, model), daemon=True
+        target=_run_analyze_job, args=(holder, url, transcript_text, force, model, mode),
+        daemon=True,
     ).start()
     return jsonify({"video_id": video_id})
 
@@ -1264,6 +1277,11 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
     from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
+
+    # 찬양 클립은 가사 자막을 넣지 않는다(사용자 결정) — 편집기에도 초안을 채우지 않는다.
+    # (자동 전사가 받아적은 부정확한 가사 조각이 초안으로 뜨면 오히려 혼란.)
+    if getattr(clip, "clip_type", "") == "praise":
+        return []
 
     def _strip_trailing_dots(text: str) -> str:
         # 실제 렌더(_karaoke_text)는 단어별로 끝 마침표를 뗀다. 편집기 미리보기도 같은

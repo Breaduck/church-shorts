@@ -100,6 +100,10 @@ class Clip:
     # 비어 있으면 [start,end] 전체를 남긴다. 여러 개면 렌더가 무음 제거와 같은 방식으로 이어붙인다
     # (render._combine_keep → select/aselect 필터). start/end는 이 구간들의 바깥 경계와 일치시킨다.
     keep_ranges: list = field(default_factory=list)
+    # 클립 종류. ""(기본)=설교 하이라이트(기존 동작 전부 그대로), "praise"=찬양 곡 통편집.
+    # praise 클립은 렌더 시 정밀 재전사·자막·훅 배속·문장 스냅을 모두 건너뛰고
+    # 곡 구간 그대로 + 상단 제목(곡 제목)만 넣는다.
+    clip_type: str = ""
 
 
 def build_prompt(
@@ -558,7 +562,27 @@ def select_highlights_auto(
         feedback_block=feedback_block,
         transcript_is_cleaned=transcript_is_cleaned,
     )
+    raw_clips = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress, max_clips=max_clips,
+    )
+    return _validate_and_build_clips(
+        raw_clips, transcript.duration_sec, min_duration_sec, max_duration_sec
+    )
 
+
+def _invoke_claude_json(
+    prompt: str,
+    model: str = "",
+    thinking_tokens: int = 2048,
+    timeout_sec: int = 900,
+    on_progress=None,
+    max_clips: int = 6,
+) -> list[dict]:
+    """`claude -p`에 프롬프트를 보내 JSON 배열 응답을 받아 파싱한다.
+
+    select_highlights_auto(설교)와 select_praise_songs(찬양)가 공유하는 실행부 —
+    스트리밍 진행률/워치독/한도 감지/JSON 추출까지 동일하게 처리한다."""
     claude_path = shutil.which("claude")
     if not claude_path:
         raise RuntimeError("claude CLI를 PATH에서 찾을 수 없습니다 (claude --version으로 설치 확인)")
@@ -666,7 +690,7 @@ def select_highlights_auto(
 
     threading.Thread(target=_feed_stdin, daemon=True).start()
     try:
-        _notify(0.02, "AI가 설교 전사본을 읽는 중...")
+        _notify(0.02, "AI가 전사본을 읽는 중...")
         for line in proc.stdout:
             raw_stdout.append(line)
             stripped = line.strip()
@@ -684,7 +708,7 @@ def select_highlights_auto(
             if ev.get("type") == "system" and ev.get("subtype") == "thinking_tokens":
                 est_tok = float(ev.get("estimated_tokens") or 0)
                 frac = 0.03 + 0.37 * min(1.0, est_tok / max(1.0, float(thinking_tokens)))
-                _notify(frac, "AI가 설교 전체를 읽으며 구간을 고르는 중...")
+                _notify(frac, "AI가 전사본 전체를 읽으며 구간을 고르는 중...")
                 continue
             delta = _stream_delta(ev)
             if delta is None:
@@ -693,7 +717,7 @@ def select_highlights_auto(
             if kind == "thinking":
                 thinking_chars += len(chunk)
                 frac = 0.03 + 0.37 * min(1.0, thinking_chars / think_budget_chars)
-                _notify(frac, "AI가 설교 전체를 읽으며 구간을 고르는 중...")
+                _notify(frac, "AI가 전사본 전체를 읽으며 구간을 고르는 중...")
             else:
                 text_parts.append(chunk)
                 text_chars += len(chunk)
@@ -757,14 +781,154 @@ def select_highlights_auto(
             _raise_quota(result_text)
         raise RuntimeError(f"claude -p 오류: {str(result_text)[:300]}")
     try:
-        raw_clips = _extract_json_array(result_text)
+        return _extract_json_array(result_text)
     except ValueError:
         # 성공 형식이지만 result가 클립 배열이 아니라 한도 안내문인 경우(실측 존재).
         if _quota_hint(result_text):
             _raise_quota(result_text)
         raise
-    return _validate_and_build_clips(
-        raw_clips, transcript.duration_sec, min_duration_sec, max_duration_sec
+
+
+def build_praise_prompt(
+    transcript: Transcript,
+    min_duration_sec: int,
+    max_duration_sec: int,
+    video_duration_sec: float,
+) -> str:
+    """전체 예배 실황 전사본에서 '찬양 곡' 각각의 구간과 제목을 찾는 프롬프트.
+
+    설교 하이라이트 선정과 달리 바이럴 채점이 아니라 '구간 분할 + 곡 식별'이 과제다.
+    노래는 자동 전사가 가사를 띄엄띄엄 받아적으므로, 반복 후렴/시적 표현/짧은 줄 패턴으로
+    노래 구간을 알아보게 하고, 설교·기도·광고·멘트는 제외하도록 명시한다."""
+    transcript_text = transcript.to_plain_text_with_timestamps()
+    return f"""너는 교회 예배 실황 영상을 편집하는 전문가다. 아래는 약 {video_duration_sec/60:.0f}분짜리 '전체 예배 실황'의
+전사본이다 (타임스탬프 [HH:MM:SS] 포함). 이 영상에는 회중 찬양(다같이 부르는 찬양), 성가대/특송 찬양,
+설교, 기도, 성경봉독, 광고·멘트가 섞여 있다.
+
+## 과제
+'찬양 곡' 하나하나를 각각 정확히 하나의 구간으로 찾아라. 곡별로 세로 영상(쇼츠 형태)으로 잘라 올릴 것이다.
+
+## 전사본에서 노래를 알아보는 법 (중요)
+- 노래(찬양)는 자동 전사가 가사를 띄엄띄엄·부정확하게 받아적는다. 반복되는 후렴 구절, 시적 표현
+  ("주님", "은혜", "찬양", "영광" 등), 짧고 리듬감 있는 줄이 이어지면 노래일 가능성이 크다.
+- 말(설교/기도/광고)은 문장이 산문적이고 논리가 이어진다. "다음 찬양은…", "다 같이 일어나서" 같은
+  멘트는 곡 사이의 안내이지 곡이 아니다.
+- 같은 곡 안에서 가사 인식이 몇십 초씩 비는 구간(간주)이 있어도 한 곡으로 묶어라.
+  반대로 서로 다른 곡을 하나로 합치지 마라(후렴 가사가 완전히 달라지면 새 곡이다).
+
+## 각 곡의 필드
+- "start": 그 곡의 가사가 처음 들리는 시각(초, 숫자). 전주는 시스템이 자동으로 몇 초 앞을 붙이니 가사 기준으로.
+- "end": 마지막 가사가 끝나는 시각(초, 숫자).
+- "title": 곡 제목. 가사로 곡을 알아볼 수 있으면 정확한 원제("주 은혜임을" 등)를 써라.
+  확신이 없으면 대표 가사 한 소절을 제목으로 써라(예: "내 영혼이 은총 입어").
+- "song_type": "다같이" | "성가대" | "특송" 중 하나. 성가대 곡은 보통 설교 직전에 있고 화음 합창이다. 애매하면 "다같이".
+- "first_line": 구간 첫머리에 실제로 들리는 가사(전사본에서 그대로 인용) — 경계 검증용.
+- "last_line": 구간 끝에 실제로 들리는 가사(전사본에서 그대로 인용).
+- "confidence": 이 구간이 정말 한 곡의 찬양이라는 확신(1~10).
+- "caption": 업로드용 한 줄 설명(곡 제목 + 예배 맥락, 담백하게).
+- "hashtags": 5개 내외(#찬양 #ccm #교회 등 + 곡 관련).
+- "reason": 왜 이 경계인지 한 문장.
+
+## 규칙
+- 곡 길이는 보통 {min_duration_sec}~{max_duration_sec}초다. {min_duration_sec}초보다 훨씬 짧은 조각은 멘트/간주로 보고 제외하라.
+- 설교·기도·성경봉독·광고는 절대 곡으로 포함하지 마라.
+- 곡을 빠뜨리지 마라: 예배 앞부분 경배와 찬양(보통 여러 곡 연속)과 성가대 찬양을 모두 찾아라.
+- 시간순(start 오름차순)으로 정렬해서 출력하라.
+
+전사본:
+{transcript_text}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만. 다른 설명은 쓰지 마라."""
+
+
+def _build_praise_clips(
+    raw: list[dict],
+    video_duration_sec: float,
+    min_duration_sec: int,
+    max_duration_sec: int,
+    pad_start_sec: float = 4.0,
+    pad_end_sec: float = 6.0,
+) -> list[Clip]:
+    """찬양 곡 감지 결과를 Clip 목록으로 변환한다.
+
+    - 가사 기준 경계에 전주/여운 패딩을 붙이되, 이웃 곡 경계는 침범하지 않는다.
+    - trimmed=True: 렌더의 문장 끝 스냅/자동 확장은 노래에 무의미하므로 경계 그대로 쓴다.
+    - score는 채점 개념이 없으므로 None, 배열 순서는 시간순(곡 순서)이다."""
+    items: list[dict] = []
+    for i, c in enumerate(raw):
+        try:
+            start = max(0.0, float(c["start"]))
+            end = min(video_duration_sec, float(c["end"]))
+        except (KeyError, TypeError, ValueError):
+            print(f"[praise] 곡 {i} 건너뜀: start/end 파싱 실패")
+            continue
+        dur = end - start
+        if dur <= 0 or dur < min_duration_sec * 0.5:
+            print(f"[praise] 곡 {i} 건너뜀: 너무 짧음({dur:.0f}초)")
+            continue
+        if dur > max_duration_sec * 1.5:
+            print(f"[praise] 곡 {i} 건너뜀: 너무 김({dur:.0f}초) - 여러 곡을 합쳤을 가능성")
+            continue
+        items.append({**c, "start": start, "end": end})
+    items.sort(key=lambda c: c["start"])
+
+    clips: list[Clip] = []
+    for i, c in enumerate(items):
+        # 전주/여운 패딩: 앞 곡 끝·뒤 곡 시작을 넘지 않는 선에서 붙인다.
+        prev_end = items[i - 1]["end"] if i > 0 else 0.0
+        next_start = items[i + 1]["start"] if i + 1 < len(items) else video_duration_sec
+        start = max(prev_end, c["start"] - pad_start_sec)
+        end = min(next_start, c["end"] + pad_end_sec, video_duration_sec)
+        song_type = str(c.get("song_type", "") or "다같이").strip()
+        # 모델이 hashtags를 배열 대신 "#찬양 #교회" 문자열로 줄 때가 있다(실측) —
+        # 문자열을 그대로 이터레이션하면 글자 하나하나가 태그가 되므로 공백 분리로 방어.
+        raw_tags = c.get("hashtags", [])
+        if isinstance(raw_tags, str):
+            raw_tags = raw_tags.split()
+        clips.append(
+            Clip(
+                start=start,
+                end=end,
+                title=str(c.get("title", "")).strip() or f"찬양 {i+1}",
+                caption=str(c.get("caption", "")).strip(),
+                hashtags=[str(h).strip() for h in raw_tags if str(h).strip()],
+                reason=f"[{song_type}] " + str(c.get("reason", "")).strip(),
+                appeal=song_type,
+                hook_line=str(c.get("first_line", "")).strip(),
+                payoff_line=str(c.get("last_line", "")).strip(),
+                trimmed=True,
+                clip_type="praise",
+            )
+        )
+    return clips
+
+
+def select_praise_songs(
+    transcript: Transcript,
+    min_duration_sec: int,
+    max_duration_sec: int,
+    pad_start_sec: float = 4.0,
+    pad_end_sec: float = 6.0,
+    model: str = "",
+    thinking_tokens: int = 4096,
+    timeout_sec: int = 900,
+    on_progress=None,
+) -> list[Clip]:
+    """전체 예배 실황 전사본에서 찬양 곡별 구간을 자동 감지한다(claude -p)."""
+    prompt = build_praise_prompt(
+        transcript=transcript,
+        min_duration_sec=min_duration_sec,
+        max_duration_sec=max_duration_sec,
+        video_duration_sec=transcript.duration_sec,
+    )
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress,
+        max_clips=10,  # 진행률 표기용 예상 곡 수(경배와찬양 4~6곡 + 성가대 1~2곡)
+    )
+    return _build_praise_clips(
+        raw, transcript.duration_sec, min_duration_sec, max_duration_sec,
+        pad_start_sec=pad_start_sec, pad_end_sec=pad_end_sec,
     )
 
 

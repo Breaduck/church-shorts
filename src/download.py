@@ -18,7 +18,8 @@ class DownloadResult:
 
 
 def extract_video_id(url: str) -> str:
-    match = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", url)
+    # live/: 실시간 스트리밍 다시보기 URL(youtube.com/live/<id>) — 전체 예배 실황이 이 형식
+    match = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{11})", url)
     if not match:
         raise ValueError(f"유튜브 URL에서 video id를 찾을 수 없습니다: {url}")
     return match.group(1)
