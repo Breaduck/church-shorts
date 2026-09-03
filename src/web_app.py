@@ -2142,6 +2142,17 @@ PREVIEW_MODAL_JS = r"""
     color: #6b7684; font-weight: 600; margin-bottom: 8px; }
   .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
     border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
+  .pv-capsel-toggle, .pv-capsel-merge, .pv-capsel-del { flex: 0 0 auto; padding: 6px 10px;
+    font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
+    background: #fafbfc; color: #191f28; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  .pv-capsel-toggle:hover { border-color: #3182f6; color: #3182f6; }
+  .pv-capsel-toggle.on { border-color: #3182f6; background: #eef4ff; color: #1b64da; }
+  .pv-capsel-merge { color: #3182f6; }
+  .pv-capsel-merge:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-capsel-del { color: #e02424; }
+  .pv-capsel-del:hover { border-color: #e02424; background: #ffe2e2; }
+  .pv-cap-sel { display: none; flex: 0 0 auto; width: 16px; height: 16px; accent-color: #3182f6; }
+  .pv-caprows.selmode .pv-cap-sel { display: block; }
   .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
   .pv-caprow { display: flex; gap: 6px; align-items: center; }
   /* input[type=number]/[type=text]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가
@@ -2234,7 +2245,11 @@ PREVIEW_MODAL_JS = r"""
       '    </div>' +
       '  </div>' +
       '  <div class="pv-capsec hidden">' +
-      '    <label class="pv-capfont-row">자막 글꼴 <select class="pv-capfont"></select></label>' +
+      '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
+      '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
+      '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
+      '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
+      '    </div>' +
       '    <div class="pv-caprows"></div>' +
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
@@ -2660,6 +2675,7 @@ PREVIEW_MODAL_JS = r"""
       const row = document.createElement('div');
       row.className = 'pv-caprow';
       row.innerHTML =
+        '<input type="checkbox" class="pv-cap-sel" title="선택">' +
         '<input type="number" class="pv-cap-start" step="0.1">' +
         '<input type="number" class="pv-cap-end" step="0.1">' +
         '<input type="text" class="pv-cap-text">' +
@@ -2671,6 +2687,47 @@ PREVIEW_MODAL_JS = r"""
       if (chosenCaptionFont) textEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
       capRowsBox.appendChild(row);
     }
+
+    // ── 자막 줄 선택 모드: 체크박스로 여러 줄 골라 병합(최대 4개)·삭제 ──
+    const selToggle = $('.pv-capsel-toggle'), selMerge = $('.pv-capsel-merge'), selDel = $('.pv-capsel-del');
+    let selMode = false;
+    selToggle.addEventListener('click', () => {
+      selMode = !selMode;
+      capRowsBox.classList.toggle('selmode', selMode);
+      selToggle.classList.toggle('on', selMode);
+      selToggle.textContent = selMode ? '선택 취소' : '☑ 선택하기';
+      selMerge.hidden = selDel.hidden = !selMode;
+      if (!selMode) capRowsBox.querySelectorAll('.pv-cap-sel').forEach((c) => { c.checked = false; });
+    });
+    function selectedRows() {
+      return [...capRowsBox.querySelectorAll('.pv-caprow')]
+        .filter((r) => r.querySelector('.pv-cap-sel').checked);
+    }
+    selDel.addEventListener('click', () => {
+      const rows = selectedRows();
+      if (!rows.length) { alert('삭제할 자막 줄을 먼저 체크하세요'); return; }
+      rows.forEach((r) => r.remove());
+      capsDirty = true;
+    });
+    selMerge.addEventListener('click', () => {
+      const rows = selectedRows();
+      if (rows.length < 2) { alert('병합할 자막 줄을 2개 이상 체크하세요'); return; }
+      if (rows.length > 4) { alert('병합은 최대 4개까지만 가능합니다'); return; }
+      // 시간순으로 합친다: 시작=가장 이른 시작, 끝=가장 늦은 끝, 내용은 시간순 이어붙임.
+      rows.sort((a, b) =>
+        (parseFloat(a.querySelector('.pv-cap-start').value) || 0)
+        - (parseFloat(b.querySelector('.pv-cap-start').value) || 0));
+      const s = Math.min(...rows.map((r) => parseFloat(r.querySelector('.pv-cap-start').value) || 0));
+      const e = Math.max(...rows.map((r) => parseFloat(r.querySelector('.pv-cap-end').value) || 0));
+      const text = rows.map((r) => r.querySelector('.pv-cap-text').value.trim()).filter(Boolean).join(' ');
+      const first = rows[0];
+      first.querySelector('.pv-cap-start').value = s.toFixed(1);
+      first.querySelector('.pv-cap-end').value = e.toFixed(1);
+      first.querySelector('.pv-cap-text').value = text;
+      first.querySelector('.pv-cap-sel').checked = false;
+      rows.slice(1).forEach((r) => r.remove());
+      capsDirty = true;
+    });
     (info.caption_lines || []).forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
     // 실제로 자막을 고쳤을 때만 저장한다. 안 고쳤는데 매번 초안을 '사용자 확정본'으로
     // 저장하면, (아직 정밀 재전사 전인 클립은) 부정확한 자동자막 초안이 그대로 굳어서
