@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -2142,6 +2143,14 @@ PREVIEW_MODAL_JS = r"""
     color: #6b7684; font-weight: 600; margin-bottom: 8px; }
   .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
     border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
+  .pv-retrans { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; font-weight: 700;
+    font-family: inherit; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #3182f6;
+    border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  .pv-retrans:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-retrans:disabled { opacity: .6; cursor: default; }
+  .pv-savebtn { flex: 0 0 auto; padding: 13px 18px; border: 1.5px solid #3182f6; border-radius: 12px;
+    background: #fff; color: #3182f6; font-weight: 700; font-size: 14px; font-family: inherit; cursor: pointer; }
+  .pv-savebtn:hover { background: #f0f6ff; }
   .pv-capsel-toggle, .pv-capsel-merge, .pv-capsel-del { flex: 0 0 auto; padding: 6px 10px;
     font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
     background: #fafbfc; color: #191f28; border-radius: 8px; cursor: pointer; white-space: nowrap; }
@@ -2246,6 +2255,7 @@ PREVIEW_MODAL_JS = r"""
       '  </div>' +
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
+      '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
@@ -2254,7 +2264,7 @@ PREVIEW_MODAL_JS = r"""
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
       '  <div class="pv-cands"></div>' +
-      '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
+      '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
       '</div>';
     document.body.appendChild(back);
@@ -2783,11 +2793,48 @@ PREVIEW_MODAL_JS = r"""
       poll();
     });
 
-    // ── 닫기/확정 ──
+    // ── 자막 꼼꼼 재분석: 이 구간만 정밀 음성인식을 새로 돌려 자막 초안을 다시 뽑는다 ──
+    const retransBtn = $('.pv-retrans');
+    retransBtn.addEventListener('click', async () => {
+      retransBtn.disabled = true;
+      const t0 = Date.now();
+      retransBtn.textContent = '정밀 인식 중… (1~3분)';
+      let started = null;
+      try { started = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/retranscribe', { method: 'POST' }); }
+      catch (e) { started = null; }
+      if (!started || !started.ok) {
+        alert('재분석 시작 실패');
+        retransBtn.disabled = false; retransBtn.textContent = '🔍 꼼꼼 재분석'; return;
+      }
+      const poll = () => {
+        if (!back.isConnected) return;  // 팝업 닫혔으면 중단(서버 작업은 계속 돌지만 결과 반영처가 없음)
+        fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/retranscribe_status')
+          .then((r) => r.json()).then((j) => {
+            if (!back.isConnected) return;
+            if (j.running) {
+              retransBtn.textContent = '정밀 인식 중… ' + Math.round((Date.now() - t0) / 1000) + '초';
+              setTimeout(poll, 2000); return;
+            }
+            if (j.error || !j.lines) {
+              alert('자막 재분석 실패: ' + (j.error || '결과 없음'));
+              retransBtn.disabled = false; retransBtn.textContent = '🔍 꼼꼼 재분석'; return;
+            }
+            // 편집 목록을 새 정밀 자막으로 교체하고, 확정 시 저장되도록 dirty 표시.
+            capRowsBox.innerHTML = '';
+            j.lines.forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
+            capsDirty = true;
+            capSec.classList.remove('hidden');
+            retransBtn.disabled = false; retransBtn.textContent = '✓ 새 자막 적용됨 (저장 필요)';
+          }).catch(() => setTimeout(poll, 2500));
+      };
+      poll();
+    });
+
+    // ── 닫기/저장/확정 ──
     function close() { video.pause(); back.remove(); }
     $('.pv-x').addEventListener('click', close);
     $('.pv-cancel').addEventListener('click', close);
-    $('.pv-ok').addEventListener('click', async () => {
+    function buildPayload() {
       const payload = {
         title: chosenTitle,
         title_offset_x: state.title.x, title_offset_y: state.title.y,
@@ -2805,13 +2852,33 @@ PREVIEW_MODAL_JS = r"""
         // 구간을 바꾸면 이전에 저장된 자막 타임스탬프는 무효 → 비워서 렌더 때 재전사 유도.
         payload.captions = [];
       }
+      return { payload, outS, outE };
+    }
+    async function saveNow() {
+      const { payload, outS, outE } = buildPayload();
       const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/position', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       });
-      if (!r.ok) { alert('저장에 실패했어요'); return; }
-      // 목록 카드의 제목도 갱신해 팝업에서 고른 제목이 바로 보이게.
+      if (!r.ok) return false;
+      // 저장 성공 → 현재 상태를 새 기준으로: 다음 저장에서 '구간 바뀜' 오판 방지, dirty 해제.
+      C.start = outS; C.end = outE;
+      capsDirty = false;
       const card = document.getElementById('cand-' + idx);
       if (card) { const h = card.querySelector('h3.title'); if (h) h.textContent = chosenTitle; }
+      return true;
+    }
+    const saveBtn = $('.pv-savebtn');
+    saveBtn.addEventListener('click', async () => {
+      saveBtn.disabled = true;
+      const ok = await saveNow();
+      saveBtn.disabled = false;
+      saveBtn.textContent = ok ? '저장됨 ✓' : '저장 실패';
+      setTimeout(() => { saveBtn.textContent = '저장'; }, 2000);
+      if (!ok) alert('저장에 실패했어요');
+    });
+    $('.pv-ok').addEventListener('click', async () => {
+      const ok = await saveNow();
+      if (!ok) { alert('저장에 실패했어요'); return; }
       close();
       onConfirm();
     });
@@ -2878,6 +2945,92 @@ def reanalyze_clip_route(video_id: str, idx: int):
 @app.route("/video/<video_id>/reanalyze_status")
 def reanalyze_status(video_id: str):
     j = _reanalyze_jobs.get(video_id) or {"running": False, "error": None, "new_idx": None, "pct": 0.0}
+    return jsonify(j)
+
+
+# ── 팝업 "자막 꼼꼼 재분석": 이 클립 구간만 정밀 재전사(large-v3)해 자막 초안을 새로 뽑는다 ──
+_retrans_jobs: dict[str, dict] = {}
+
+
+def _run_retranscribe_job(video_id: str, idx: int) -> None:
+    """백그라운드: 클립 구간을 정밀 재전사해 자막 라인을 만들고, 결과를 정밀 캐시에도
+    저장한다(다음 렌더가 같은 결과를 재사용 → 결정적). 토큰 비용 없음(로컬 whisper)."""
+    key = f"{video_id}:{idx}"
+    try:
+        video_dir = OUTPUT_ROOT / video_id
+        cfg = _load_config()
+        w = cfg["whisper"]
+        clips = load_clips_json(video_dir / "clips.json")
+        clip = clips[idx]
+
+        from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
+        from src.main import (
+            _apply_corrections, _build_clip_hotwords, _precise_cache_save, json_load_transcript,
+        )
+        from src.transcribe import transcribe_clip_precise
+
+        tdata = json_load_transcript(video_dir / "transcript.json")
+        base_text_all = " ".join((s.text or "") for s in tdata["segments"])
+        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+        sig = hashlib.md5(
+            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+        ).hexdigest()[:8]
+        model = w.get("precise_model_size", w["model_size"])
+        tr_a = max(0.0, clip.start - 4.0)
+        tr_b = clip.end + 16.0  # 렌더 경로와 같은 버퍼(문장 끝 탐색 여유)
+
+        segs = transcribe_clip_precise(
+            video_dir / "source.mp4", tr_a, tr_b,
+            model_size=model, device=w["device"], compute_type=w["compute_type"],
+            language=w["language"], vad_filter=w.get("vad_filter", True),
+            initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
+            cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
+        )
+        corrections = cfg.get("captions", {}).get("corrections") or {}
+        _apply_corrections(segs, corrections)
+        _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
+
+        captions_cfg = cfg["captions"]
+        words = _collect_words_in_range(
+            segs, clip.start, clip.end,
+            strip_filler=captions_cfg.get("strip_filler", True),
+            aggressive_filler=captions_cfg.get("aggressive_filler", False),
+        )
+        max_wpl = captions_cfg.get("max_words_per_line", 4)
+        res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
+        max_units = max(4.0, (res_w - 104) / max(1, captions_cfg.get("font_size", 72)))
+        lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
+        out = [
+            {"start": ln.start, "end": ln.end, "text": " ".join(_display_text(x.text) for x in ln.words)}
+            for ln in lines
+        ]
+        for i in range(len(out) - 1):
+            if out[i]["end"] > out[i + 1]["start"]:
+                out[i]["end"] = max(out[i]["start"] + 0.3, out[i + 1]["start"] - 0.02)
+        if not out:
+            raise RuntimeError("정밀 재전사 결과가 비었습니다 (무음 구간이거나 인식 실패)")
+        _retrans_jobs[key] = {"running": False, "error": None, "lines": out}
+    except Exception as e:  # noqa: BLE001 - 실패 사유를 팝업에 그대로 알린다
+        traceback.print_exc()
+        _retrans_jobs[key] = {"running": False, "error": str(e)[:300], "lines": None}
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/retranscribe", methods=["POST"])
+def retranscribe_route(video_id: str, idx: int):
+    if not (OUTPUT_ROOT / video_id / "clips.json").exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    key = f"{video_id}:{idx}"
+    cur = _retrans_jobs.get(key)
+    if cur and cur.get("running"):
+        return jsonify({"ok": True, "already": True})
+    _retrans_jobs[key] = {"running": True, "error": None, "lines": None}
+    threading.Thread(target=_run_retranscribe_job, args=(video_id, idx), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/retranscribe_status")
+def retranscribe_status(video_id: str, idx: int):
+    j = _retrans_jobs.get(f"{video_id}:{idx}") or {"running": False, "error": None, "lines": None}
     return jsonify(j)
 
 
