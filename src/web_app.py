@@ -2174,11 +2174,11 @@ PREVIEW_MODAL_JS = r"""
     color: #6b7684; font-weight: 600; margin-bottom: 8px; }
   .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
     border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
-  .pv-retrans { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; font-weight: 700;
+  .pv-retrans, .pv-syncbtn { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; font-weight: 700;
     font-family: inherit; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #3182f6;
     border-radius: 8px; cursor: pointer; white-space: nowrap; }
-  .pv-retrans:hover { border-color: #3182f6; background: #f0f6ff; }
-  .pv-retrans:disabled { opacity: .6; cursor: default; }
+  .pv-retrans:hover, .pv-syncbtn:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-retrans:disabled, .pv-syncbtn:disabled { opacity: .6; cursor: default; }
   .pv-savebtn { flex: 0 0 auto; padding: 13px 18px; border: 1.5px solid #3182f6; border-radius: 12px;
     background: #fff; color: #3182f6; font-weight: 700; font-size: 14px; font-family: inherit; cursor: pointer; }
   .pv-savebtn:hover { background: #f0f6ff; }
@@ -2287,6 +2287,7 @@ PREVIEW_MODAL_JS = r"""
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
+      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
       '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
@@ -2861,6 +2862,38 @@ PREVIEW_MODAL_JS = r"""
       poll();
     });
 
+    // ── 싱크 맞추기: 자막 내용·분할은 그대로, 각 줄의 시작·끝만 실제 발화 시각에 재정렬 ──
+    const syncBtn = $('.pv-syncbtn');
+    syncBtn.addEventListener('click', async () => {
+      const caps = collectCaptions();
+      if (!caps.length) { alert('맞출 자막이 없습니다'); return; }
+      syncBtn.disabled = true; syncBtn.textContent = '맞추는 중…';
+      let r = null;
+      try {
+        r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/sync_captions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ captions: caps }),
+        });
+      } catch (e) { r = null; }
+      const j = r && r.ok ? await r.json().catch(() => null) : null;
+      syncBtn.disabled = false;
+      if (!j || !j.lines) {
+        syncBtn.textContent = '⏱ 싱크 맞추기';
+        alert('싱크 맞추기 실패' + (j && j.error ? ': ' + j.error : '')); return;
+      }
+      // 행 순서는 그대로 두고 시간만 갱신(텍스트·분할 불변).
+      const rows = [...capRowsBox.querySelectorAll('.pv-caprow')];
+      j.lines.forEach((ln, i) => {
+        if (!rows[i]) return;
+        rows[i].querySelector('.pv-cap-start').value = (ln.start - C.start).toFixed(1);
+        rows[i].querySelector('.pv-cap-end').value = (ln.end - C.start).toFixed(1);
+      });
+      capsDirty = true;
+      capSec.classList.remove('hidden');
+      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
+      setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
+    });
+
     // ── 닫기/저장/확정 ──
     function close() { video.pause(); back.remove(); }
     $('.pv-x').addEventListener('click', close);
@@ -3063,6 +3096,89 @@ def retranscribe_route(video_id: str, idx: int):
 def retranscribe_status(video_id: str, idx: int):
     j = _retrans_jobs.get(f"{video_id}:{idx}") or {"running": False, "error": None, "lines": None}
     return jsonify(j)
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/sync_captions", methods=["POST"])
+def sync_captions_route(video_id: str, idx: int):
+    """'싱크 맞추기': 현재 자막 줄 구조(텍스트·분할)는 그대로 두고, 각 줄의 시작·끝만
+    정밀 인식 단어 시각에 다시 정렬한다. 줄 텍스트를 참조 단어열과 퍼지 매칭(순차)해서
+    맞는 구간을 찾는다 — 몇 초면 끝나고 토큰 비용 없음."""
+    import difflib
+    import re as _re
+
+    video_dir = OUTPUT_ROOT / video_id
+    clips_path = video_dir / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "잘못된 클립 번호"}), 400
+    clip = clips[idx]
+    body = request.get_json() or {}
+    in_lines = body.get("captions") or []
+    if not in_lines:
+        return jsonify({"error": "정렬할 자막이 없습니다"}), 400
+
+    from src.captions import _collect_words_in_range
+    from src.main import (
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, json_load_transcript,
+    )
+
+    cfg = _load_config()
+    w = cfg["whisper"]
+    tdata = json_load_transcript(video_dir / "transcript.json")
+    base_text_all = " ".join((s.text or "") for s in tdata["segments"])
+    hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+    sig = hashlib.md5(
+        f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+    ).hexdigest()[:8]
+    model = w.get("precise_model_size", w["model_size"])
+    segs = _precise_cache_find(video_dir / "precise_cache", model, sig, clip.start, clip.end + 4.0)
+    used = "정밀 캐시"
+    if segs is None:
+        segs = tdata["segments"]
+        used = "참조 전사(캐시 없음 — '꼼꼼 재분석' 후 다시 누르면 더 정확)"
+    _apply_corrections(segs, cfg.get("captions", {}).get("corrections") or {})
+    words = _collect_words_in_range(segs, clip.start - 2.0, clip.end + 4.0)
+    if not words:
+        return jsonify({"error": "참조할 단어 시각이 없습니다"}), 400
+
+    def norm(s: str) -> str:
+        return _re.sub(r"[^0-9가-힣a-zA-Z]", "", s or "")
+
+    out = []
+    wi = 0  # 순차 정렬: 다음 줄은 이전 줄 매칭 지점 이후에서 찾는다
+    n_words = len(words)
+    matched_n = 0
+    for ln in in_lines:
+        text = str(ln.get("text", "")).strip()
+        target = norm(text)
+        cur = {"start": float(ln.get("start", 0)), "end": float(ln.get("end", 0)), "text": text}
+        if not target or wi >= n_words:
+            out.append(cur)
+            continue
+        best = None  # (score, i, j)
+        for i in range(wi, min(wi + 30, n_words)):
+            acc = ""
+            for j in range(i, min(i + 12, n_words)):
+                acc += norm(words[j].text)
+                if len(acc) > len(target) * 2 + 8:
+                    break
+                score = difflib.SequenceMatcher(None, acc, target).ratio()
+                if best is None or score > best[0]:
+                    best = (score, i, j)
+        if best and best[0] >= 0.6:
+            _, i, j = best
+            cur["start"] = round(words[i].start, 2)
+            cur["end"] = round(max(words[j].end, words[i].start + 0.3), 2)
+            wi = j + 1
+            matched_n += 1
+        out.append(cur)
+    # 줄끼리 겹치지 않게(다음 줄 시작 - 0.02까지만) 정리해 화면에 두 줄이 겹쳐 뜨는 것 방지.
+    for k in range(len(out) - 1):
+        if out[k]["end"] > out[k + 1]["start"]:
+            out[k]["end"] = round(max(out[k]["start"] + 0.2, out[k + 1]["start"] - 0.02), 2)
+    return jsonify({"lines": out, "matched": matched_n, "total": len(out), "source": used})
 
 
 def _tracking_scheduler_loop() -> None:

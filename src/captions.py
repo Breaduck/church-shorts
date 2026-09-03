@@ -100,64 +100,16 @@ def _lines_from_overrides(
 ) -> list[CaptionLine]:
     """사용자가 편집기에서 확정한 자막 라인({start,end,text} 절대초)을 화면용 라인으로 변환한다.
 
-    카라오케(\\k) 강조 타이밍은 가능하면 '실제 발화 단어 시각'(clip_words: 예: 유튜브
-    json3 참조 전사)을 그대로 빌려 쓴다. 라인 텍스트를 단어 수로 그냥 '균등 분배'하면
-    강조가 실제 목소리 리듬과 무관하게 일정 속도로 쓸고 지나가 "자막이 목소리랑 따로
-    논다/느리다"는 체감이 생긴다(반복 신고된 싱크 문제의 핵심). 그래서:
-      1) 라인 구간에 걸치는 실제 단어 수가 토큰 수와 정확히 일치하면 → 실제 단어 시각의
-         '리듬'(단어별 상대 길이)을 그대로 쓴다. 표시 텍스트는 편집본을 유지한다.
-      2) 수가 안 맞으면(직접 편집·오인식) → 실제 발화 구간[첫 단어~끝 단어] 안에서 글자
-         수 비례 분배.
-      3) 겹치는 실제 단어가 아예 없으면(붙여넣기 등) → 이 줄 자체 구간에서 글자 수 비례.
+    원칙: **편집기에 보이는 시간이 곧 영상에 구워지는 시간**(WYSIWYG). 각 줄은 사용자가
+    선언한 [start, end]를 그대로 쓰고, 줄 안의 카라오케(\\k)는 글자 수 비례로 나눈다.
 
-    중요: 위 어느 경우든 최종 라인은 이 줄 자체가 선언한 [rel_start, rel_end]를 절대
-    벗어나지 않는다. 실제 단어 시각(1·2번)이 그 구간보다 넓으면(롤링 자막의 부풀려진
-    타임스탬프 — 실측: 매칭된 '실제 구간'이 4초인데 이 줄 자체는 다음 줄과 0.1초
-    간격밖에 안 됨) 리듬 비율은 유지한 채 [rel_start, rel_end] 안으로 선형 압축한다.
-    실제 시각을 무제한 신뢰하면 다음 줄과 겹쳐 _clamp_lines_non_overlap가 잘라내면서
-    단어가 통째로 사라진다("자막 내용이 편집기랑 실제 영상에서 다르다" 사고 원인) —
-    이 줄 고유 구간은 항상 인접 줄과 자연스럽게 이어지므로 여기 맞춰 압축하는 쪽이
-    안전하다(단어 유실 없음, 리듬감은 최대한 보존)."""
-    rel_words = (
-        sorted(
-            (Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words),
-            key=lambda w: w.start,
-        )
-        if clip_words
-        else []
-    )
-
-    def _deoverlap(words: list[Word]) -> list[Word]:
-        """단어끼리 시간이 겹치면(롤링 자막에서 흔함 — 단어 하나가 다음 단어들 위로 길게
-        뻗침) 순서대로 눌러 담아 겹침을 없앤다. 안 그러면 앞 단어의 부풀려진 end가 뒤
-        단어들의 start를 넘어서서, 이후 라인 경계 클램프 때 뒤 단어들이 통째로 잘려나간다
-        (실측: '증가율이'(25.1~26.75) 하나가 뒤 '5월'(25.82~26.09)·'17일도'(26.09~26.3)
-        구간을 통째로 덮어, 두 단어가 사라짐)."""
-        out: list[Word] = []
-        prev_end = None
-        for w in words:
-            ws = w.start if prev_end is None else max(w.start, prev_end)
-            we = max(w.end, ws + 0.03)
-            out.append(Word(start=ws, end=we, text=w.text))
-            prev_end = we
-        return out
-
-    def _fit_to_span(words: list[Word], a: float, b: float) -> list[Word]:
-        """words가 이미 [a,b] 안(약간의 여유 포함)이면 그대로 두고, 벗어나면 상대 리듬을
-        유지한 채 [a,b] 안으로 선형 압축한다. 어느 경우든 단어 개수·순서는 그대로다."""
-        if not words:
-            return words
-        src_a, src_b = words[0].start, words[-1].end
-        if src_a >= a - 0.15 and src_b <= b + 0.15:
-            return words
-        span = max(0.05, b - a)
-        src_span = max(1e-6, src_b - src_a)
-        scale = span / src_span
-        return [
-            Word(start=a + (w.start - src_a) * scale, end=a + (w.end - src_a) * scale, text=w.text)
-            for w in words
-        ]
-
+    예전엔 참조 전사(clip_words)에서 '실제 발화 리듬'을 빌려오는 3단계 로직이 있었지만
+    전면 제거했다(2026-09-03) — 참조 시각은 편집기에 보이는 시간과 미묘하게 달라서
+    (무음 보정 유무·롤링 겹침·압축 보정), 저장할 때마다 싱크가 흔들리고 단어가 유실되는
+    사고가 연쇄로 났다("수정할수록 싱크가 깨진다" 신고의 구조적 원인). 이제 편집기 초안
+    자체가 정밀 인식 시각에서 나오므로(web_app._caption_lines_for_clip), 선언된 줄 시간이
+    이미 정확하고, 시간을 다시 맞추고 싶으면 '싱크 맞추기' 버튼(명시적 동작)을 쓴다.
+    clip_words 인자는 하위 호환용으로만 남겨두고 사용하지 않는다."""
     lines: list[CaptionLine] = []
     for ov in caption_overrides:
         text = _clean_word_text(str(ov.get("text", "")))
@@ -165,33 +117,10 @@ def _lines_from_overrides(
             continue
         rel_start = float(ov["start"]) - clip_start
         rel_end = max(rel_start + 0.05, float(ov["end"]) - clip_start)
-        toks = text.split()
-        n = len(toks) or 1
-        # 이 라인 구간에 '발화 중간점'이 들어오는 실제 단어들 (경계는 살짝 여유)
-        window = [
-            w for w in rel_words
-            if rel_start - 0.15 <= (w.start + w.end) / 2 <= rel_end + 0.15
-        ]
-        if window and len(window) == n:
-            # (1) 단어 수 일치 → 실제 시각의 리듬 사용(텍스트는 편집본 유지).
-            ws = [
-                Word(start=w.start, end=max(w.end, w.start + 0.05), text=tok)
-                for w, tok in zip(window, toks)
-            ]
-            ws = _fit_to_span(_deoverlap(ws), rel_start, rel_end)
-            lines.append(CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws))
-        elif window:
-            # (2) 수 불일치 → 실제 발화 구간 안에서 글자 수 비례 분배 후 이 줄 구간에 맞춤.
-            # (겹침 있는 원본 window라도 최대 end를 정확히 잡기 위해 de-overlap을 거친다.)
-            dow = _deoverlap(window)
-            a, b = dow[0].start, max(dow[-1].end, dow[0].start + 0.1)
-            ws = _fit_to_span(_distribute_by_chars(toks, a, b), rel_start, rel_end)
-            lines.append(CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws))
-        else:
-            # (3) 참조 단어 없음 → 이 줄 자체 구간에서 글자 수 비례 분배.
-            lines.append(CaptionLine(
-                start=rel_start, end=rel_end, words=_distribute_by_chars(toks, rel_start, rel_end)
-            ))
+        lines.append(CaptionLine(
+            start=rel_start, end=rel_end,
+            words=_distribute_by_chars(text.split(), rel_start, rel_end),
+        ))
     return lines
 
 
@@ -659,17 +588,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
+    # 시간도 선언된 값 그대로(WYSIWYG) — 참조 전사로 리듬을 빌리거나 무음 보정을 다시
+    # 적용하지 않는다(그게 저장할 때마다 싱크가 흔들리던 구조적 원인, _lines_from_overrides 주석).
     if caption_overrides:
-        # 카라오케 기준 단어(clip_words)에도 무음 교정을 적용한다 — 자동 경로만 교정하면
-        # 편집을 거친 클립만 "자막이 말보다 빠른" 문제가 남는다(실측 잔존 싱크 원인).
-        ov_ref_words = clip_words
-        if voice_silences and not keep_segments and clip_words:
-            ov_rel = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
-            ov_rel = _snap_word_starts_to_voice(ov_rel, voice_silences)
-            ov_ref_words = [Word(start=w.start + clip_start, end=w.end + clip_start, text=w.text) for w in ov_rel]
-        lines = _clamp_lines_non_overlap(
-            _lines_from_overrides(caption_overrides, clip_start, ov_ref_words)
-        )
+        lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
         for line in lines:
             _emit_line(line)
         return header + "\n".join(events) + "\n"
