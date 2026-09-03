@@ -423,6 +423,12 @@ CANDIDATES_TEMPLATE = f"""
   <h1>하이라이트 후보</h1>
   <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
   {{% endif %}}
+  {{% if analyze_error %}}
+  <div class="status-box error-box" style="margin-bottom:16px">
+    ⚠️ 새로 분석 실패 — {{{{ analyze_error }}}}<br>
+    <span style="font-size:12.5px;color:var(--text-muted)">아래 목록은 <b>이전 분석 결과</b>입니다. 잠시 후 첫 화면에서 다시 시도하세요.</span>
+  </div>
+  {{% endif %}}
 
   {{% if status != 'ready' %}}
   <div class="prog-card" id="prog" data-kind="analyze" data-pct="{{{{ pct }}}}" data-msg="{{{{ status_message }}}}" data-url="/video/{{{{ video_id }}}}/status">
@@ -964,6 +970,11 @@ def video_detail(video_id: str):
         c.upload_max_checks = up.max_checks if up else 0
         c.upload_done = up.done if up else False
 
+    # '새로 분석'이 실패한 경우(세션 한도 등): 옛 clips.json이 남아 있으면 페이지는 그걸
+    # '완료'로 보여주는데, 에러 표시가 없으면 "새로 분석했는데 옛날 그대로"로 오인된다
+    # (실신고). 실패 사유를 배너로 함께 보여준다.
+    analyze_error = job.get("message") if job.get("status") == "error" else None
+
     return render_template_string(
         CANDIDATES_TEMPLATE,
         video_id=video_id,
@@ -971,6 +982,7 @@ def video_detail(video_id: str):
         status_message=job.get("message", "처리 중..."),
         pct=pct,
         clips=clips,
+        analyze_error=analyze_error,
         rendering=job.get("rendering", False),
         render_message=job.get("render_message", "렌더링 준비 중..."),
         render_pct=job.get("render_pct", 0),

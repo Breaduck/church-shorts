@@ -538,9 +538,28 @@ def analyze(
             # 사라진 채 남아 영상 페이지가 404가 되고 이전 후보까지 잃는다. 원본을 남기면
             # 실패 시 이전 후보가 그대로 살아 있고, 재선정 중 '옛 캐시를 완료로 오인'하는
             # 문제는 _clips_ready의 mtime(job.started 이후) 검사가 이미 막아준다.
-            backup = clips_path.with_name(f"clips.{time.strftime('%Y%m%d_%H%M%S')}.bak.json")
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            backup = clips_path.with_name(f"clips.{ts}.bak.json")
             with CLIPS_LOCK:
                 shutil.copy2(clips_path, backup)
+            # 옛 렌더 산출물(short_N.mp4/.ass/.src)도 백업 폴더로 '이동'해 새 후보에 붙지
+            # 않게 한다(삭제 아님 — 버전 보존 원칙). 재선정이 같은 장면을 다시 고르면 인용문
+            # 앵커링 때문에 시작·끝(=서명)까지 동일해져, 예전 스타일로 구운 옛 영상이 새
+            # 후보의 '완성됨'으로 그대로 붙어 보이는 잔해물 문제가 있었다(실신고).
+            render_dir = video_dir / "clips"
+            if render_dir.exists():
+                stale = [
+                    p for p in render_dir.iterdir()
+                    if p.is_file() and p.name.startswith("short_")
+                ]
+                if stale:
+                    arch = render_dir / f"backup_{ts}"
+                    arch.mkdir(exist_ok=True)
+                    for p in stale:
+                        try:
+                            shutil.move(str(p), str(arch / p.name))
+                        except OSError:
+                            pass  # 사용 중 파일 등은 남겨둔다(치명적이지 않음)
 
         # 3) 오디오 에너지 힌트 -------------------------------------------------
         sp.advance("핵심 구간 분석 중...")
