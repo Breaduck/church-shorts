@@ -478,9 +478,11 @@ CANDIDATES_TEMPLATE = f"""
           <button type="button" class="capcopy-btn">복사</button>
           <span class="capcopy-done" hidden>복사됨 ✓</span>
         </div>
-        <textarea class="capcopy-text" readonly rows="5">{{{{ c.title }}}}
+        <textarea class="capcopy-text" readonly rows="7">{{{{ c.title }}}}
 
 {{{{ c.caption }}}}
+
+🔗 풀 설교 보기 👉 https://youtu.be/{{{{ video_id }}}}
 
 {{{{ c.hashtags|join(' ') }}}} #shorts</textarea>
       </div>
