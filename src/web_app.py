@@ -2174,11 +2174,14 @@ PREVIEW_MODAL_JS = r"""
     color: #6b7684; font-weight: 600; margin-bottom: 8px; }
   .pv-capfont { flex: 1; min-width: 0; padding: 7px 9px; font-size: 13px; font-family: inherit;
     border: 1.5px solid #f0f1f3; border-radius: 8px; background: #fafbfc; color: #191f28; }
-  .pv-retrans, .pv-syncbtn { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; font-weight: 700;
-    font-family: inherit; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #3182f6;
-    border-radius: 8px; cursor: pointer; white-space: nowrap; }
-  .pv-retrans:hover, .pv-syncbtn:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-retrans, .pv-syncbtn, .pv-shiftm, .pv-shiftp { flex: 0 0 auto; padding: 6px 10px;
+    font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
+    background: #fafbfc; color: #3182f6; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  .pv-retrans:hover, .pv-syncbtn:hover, .pv-shiftm:hover, .pv-shiftp:hover {
+    border-color: #3182f6; background: #f0f6ff; }
   .pv-retrans:disabled, .pv-syncbtn:disabled { opacity: .6; cursor: default; }
+  .pv-shiftm, .pv-shiftp { color: #191f28; }
+  .pv-capfont-row { flex-wrap: wrap; }
   .pv-savebtn { flex: 0 0 auto; padding: 13px 18px; border: 1.5px solid #3182f6; border-radius: 12px;
     background: #fff; color: #3182f6; font-weight: 700; font-size: 14px; font-family: inherit; cursor: pointer; }
   .pv-savebtn:hover { background: #f0f6ff; }
@@ -2288,6 +2291,8 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
+      '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
+      '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
       '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
@@ -2893,6 +2898,19 @@ PREVIEW_MODAL_JS = r"""
       syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
       setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
     });
+
+    // ── 전체 밀기: 모든 자막 줄의 시작·끝을 한 번에 ±0.1초 이동(귀로 미세 조정용) ──
+    function shiftAll(delta) {
+      capRowsBox.querySelectorAll('.pv-caprow').forEach((r) => {
+        const s = r.querySelector('.pv-cap-start'), e = r.querySelector('.pv-cap-end');
+        s.value = ((parseFloat(s.value) || 0) + delta).toFixed(1);
+        e.value = ((parseFloat(e.value) || 0) + delta).toFixed(1);
+      });
+      capsDirty = true;
+      capSec.classList.remove('hidden');
+    }
+    $('.pv-shiftm').addEventListener('click', () => shiftAll(-0.1));
+    $('.pv-shiftp').addEventListener('click', () => shiftAll(0.1));
 
     // ── 닫기/저장/확정 ──
     function close() { video.pause(); back.remove(); }

@@ -591,6 +591,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # 시간도 선언된 값 그대로(WYSIWYG) — 참조 전사로 리듬을 빌리거나 무음 보정을 다시
     # 적용하지 않는다(그게 저장할 때마다 싱크가 흔들리던 구조적 원인, _lines_from_overrides 주석).
     if caption_overrides:
+        # 전역 sync_offset(+0.25초, 유튜브 자동자막의 '상시 리드' 보정용)도 여기선 끈다 —
+        # 편집 자막 시각은 정밀 인식/사용자 지정이라 이미 정확한데 그 위에 0.25초를 또
+        # 더하면 전체가 미세하게 늦어진다("전체적으로 미세하게 안 맞는다" 실신고 원인).
+        # 전체를 밀고 싶으면 편집기의 '전체 밀기' 버튼으로 명시적으로 조절한다.
+        sync_offset_sec = 0.0
         lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
         for line in lines:
             _emit_line(line)
