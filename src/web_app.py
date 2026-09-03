@@ -3147,9 +3147,14 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
             except Exception:  # noqa: BLE001
                 pass
         corrections = cfg.get("captions", {}).get("corrections") or {}
-        _apply_corrections(segs, corrections)
         if _hole(segs) < 5.0:
+            _apply_corrections(segs, corrections)
             _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
+        else:
+            # 재시도까지 해도 5초+ 구멍이 남는 난구간: 렌더와 같은 규칙으로 base(참조 전사)
+            # 폴백 — 초안과 실제 렌더가 항상 같은 소스를 쓰게 유지한다(자막 실종 방지 우선).
+            segs = base_segs
+            _apply_corrections(segs, corrections)
 
         captions_cfg = cfg["captions"]
         words = _collect_words_in_range(

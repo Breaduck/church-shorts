@@ -1289,12 +1289,19 @@ def render_selected(
                 except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
                     pass
             # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
-            if base_n >= 5 and precise_n < max(3, int(base_n * 0.35)):
+            # 단어 수(35%)만이 아니라 '구멍'도 본다: 재시도까지 다 해도 5초+ 구간이 통째로 빈
+            # 정밀 결과는 단어 수 검사를 통과해도 그대로 구우면 그 구간 자막이 실종된다
+            # (실측: base 54단어 vs precise 32단어=59%로 통과했지만 16초 구멍 → 자막 공백 렌더).
+            final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
+            if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
                 progress(
-                    f"[{idx+1}/{total}] 정밀 자막 부실({precise_n}단어) → 원본 자막({base_n}단어)으로 대체",
+                    f"[{idx+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
                     base + step * 0.5,
                 )
-                _rlog(video_dir, f"clip{idx} 폴백: precise {precise_n}단어 < base {base_n}단어의 35%")
+                _rlog(
+                    video_dir,
+                    f"clip{idx} 폴백: precise {precise_n}단어/구멍 {final_hole:.1f}초 (base {base_n}단어)",
+                )
                 segs = base_segments
             elif segs and precise_n > 0:
                 _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
