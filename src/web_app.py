@@ -1153,6 +1153,44 @@ def media(video_id: str, rank: int):
 
 PREVIEW_CANVAS_WIDTH = 360  # 실제 렌더 해상도(보통 1080px 폭)를 화면에 축소해서 보여줄 너비(px)
 
+# 클립별 무음 지도 캐시(ffmpeg silencedetect 2~3초 — 팝업 열 때마다 다시 돌리지 않게)
+_silences_cache: dict = {}
+
+
+def _clip_voice_silences(video_id: str, start: float, end: float) -> list:
+    """렌더와 동일한 파라미터(-32dB/0.3s)로 클립 구간 무음 지도를 얻는다(클립 상대시간)."""
+    key = (video_id, round(start, 1), round(end, 1))
+    if key in _silences_cache:
+        return _silences_cache[key]
+    sil: list = []
+    src = OUTPUT_ROOT / video_id / "source.mp4"
+    if src.exists():
+        try:
+            from src.render import _detect_silences
+            sil = _detect_silences(src, start, end, -32.0, 0.3)
+        except Exception:  # noqa: BLE001 - 무음 감지 실패 시 보정 없이 진행
+            sil = []
+    _silences_cache[key] = sil
+    return sil
+
+
+def _voice_corrected_words(words_abs: list, video_id: str, clip_start: float, clip_end: float) -> list:
+    """단어 시각에 렌더와 동일한 무음 보정(_snap_word_starts_to_voice)을 적용한다.
+
+    처음 렌더(자동 경로)는 이 보정을 거친 시각으로 자막을 굽는다 — 편집기 초안도 같은
+    보정을 거쳐야 "처음 영상은 싱크가 맞는데 편집만 하면 무너진다"가 안 생긴다(쉼 직후
+    단어는 whisper가 침묵을 흡수해 1~2초 이르게 찍히는데, 초안이 그 생시각을 보여주면
+    저장하는 순간 그 이른 시각이 그대로 구워져 싱크가 무너졌다)."""
+    from src.captions import _snap_word_starts_to_voice
+    from src.transcribe import Word
+
+    sil = _clip_voice_silences(video_id, clip_start, clip_end)
+    if not sil:
+        return words_abs
+    rel = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in words_abs]
+    rel = _snap_word_starts_to_voice(rel, sil)
+    return [Word(start=w.start + clip_start, end=w.end + clip_start, text=w.text) for w in rel]
+
 
 def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict:
     """위치 편집 화면에 필요한 좌표들을 render.py/captions.py와 동일한 공식으로 계산한다.
@@ -1236,7 +1274,8 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     if not transcript_path.exists():
         return []
     from src.main import (
-        _apply_corrections, _build_clip_hotwords, _precise_cache_find, json_load_transcript,
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_worst_hole,
+        json_load_transcript,
     )
 
     # ── 구조적 핵심(2026-09-03 "편집할수록 자막이 무너진다" 근본 수정) ──
@@ -1258,6 +1297,12 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
         segs = _precise_cache_find(
             OUTPUT_ROOT / video_id / "precise_cache", model, sig, clip.start, clip.end + 4.0
         )
+        # 렌더와 같은 '구멍' 검사: 앞/중간이 통째로 빈 불량 캐시(VAD/배치 사고)를 신뢰하면
+        # 초안 자체가 십수 초 어긋난다(실측: 19초 구멍 캐시 → 초안 전체 밀림).
+        if segs is not None and _precise_worst_hole(
+            tdata["segments"], segs, clip.start, clip.end
+        ) >= 5.0:
+            segs = None
     except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
         segs = None
     if segs is None:
@@ -1270,13 +1315,21 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
         strip_filler=cfg["captions"].get("strip_filler", True),
         aggressive_filler=cfg["captions"].get("aggressive_filler", False),
     )
+    # 처음 렌더(자동 경로)와 '정확히 같은 시각'을 보여준다: 무음 보정 + 전역 오프셋까지.
+    # 이 두 보정이 초안에 빠져 있으면, 텍스트만 고쳐 저장해도 시간축 전체가 (보정 안 된)
+    # 다른 기준으로 바뀌어 "편집하는 순간 싱크가 무너지는" 사후 회귀가 났다(실신고).
+    words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+    sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
     # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
     res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
     max_units = max(4.0, (res_w - 104) / max(1, cfg["captions"].get("font_size", 72)))
     lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
     out = [
-        {"start": ln.start, "end": ln.end, "text": " ".join(_display_text(w.text) for w in ln.words)}
+        {
+            "start": ln.start + sync_off, "end": ln.end + sync_off,
+            "text": " ".join(_display_text(w.text) for w in ln.words),
+        }
         for ln in lines
     ]
     # 각 줄 끝이 다음 줄 시작을 넘지 않게 잘라 자막이 겹쳐 뜨는 걸 막는다(싱크 안정).
@@ -3047,12 +3100,14 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
 
         from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
         from src.main import (
-            _apply_corrections, _build_clip_hotwords, _precise_cache_save, json_load_transcript,
+            _apply_corrections, _build_clip_hotwords, _precise_cache_save, _precise_worst_hole,
+            json_load_transcript,
         )
         from src.transcribe import transcribe_clip_precise
 
         tdata = json_load_transcript(video_dir / "transcript.json")
-        base_text_all = " ".join((s.text or "") for s in tdata["segments"])
+        base_segs = tdata["segments"]
+        base_text_all = " ".join((s.text or "") for s in base_segs)
         hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
         sig = hashlib.md5(
             f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
@@ -3061,16 +3116,40 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
         tr_a = max(0.0, clip.start - 4.0)
         tr_b = clip.end + 16.0  # 렌더 경로와 같은 버퍼(문장 끝 탐색 여유)
 
-        segs = transcribe_clip_precise(
-            video_dir / "source.mp4", tr_a, tr_b,
-            model_size=model, device=w["device"], compute_type=w["compute_type"],
-            language=w["language"], vad_filter=w.get("vad_filter", True),
-            initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
-            cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
-        )
+        def _precise(vad: bool, batched: bool = True):
+            return transcribe_clip_precise(
+                video_dir / "source.mp4", tr_a, tr_b,
+                model_size=model, device=w["device"], compute_type=w["compute_type"],
+                language=w["language"], vad_filter=vad,
+                initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
+                cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
+                batched=batched,
+            )
+
+        def _hole(s):
+            return _precise_worst_hole(base_segs, s, clip.start, clip.end)
+
+        # 렌더 경로와 같은 '구멍' 방어: 배치 인식이 앞/중간을 통째로 놓치면(실측: 19초 구멍)
+        # VAD 끔 → 순차 모드 순으로 재시도한다. 구멍 난 결과는 캐시에 저장하지 않는다.
+        segs = _precise(w.get("vad_filter", True))
+        if _hole(segs) >= 5.0:
+            try:
+                s2 = _precise(False)
+                if _hole(s2) < _hole(segs):
+                    segs = s2
+            except Exception:  # noqa: BLE001
+                pass
+        if _hole(segs) >= 5.0:
+            try:
+                s3 = _precise(False, batched=False)
+                if _hole(s3) < _hole(segs):
+                    segs = s3
+            except Exception:  # noqa: BLE001
+                pass
         corrections = cfg.get("captions", {}).get("corrections") or {}
         _apply_corrections(segs, corrections)
-        _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
+        if _hole(segs) < 5.0:
+            _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
 
         captions_cfg = cfg["captions"]
         words = _collect_words_in_range(
@@ -3078,12 +3157,18 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
             strip_filler=captions_cfg.get("strip_filler", True),
             aggressive_filler=captions_cfg.get("aggressive_filler", False),
         )
+        # 처음 렌더와 같은 시간축(무음 보정 + 전역 오프셋)으로 초안을 만든다(_caption_lines_for_clip 주석).
+        words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+        sync_off = float(captions_cfg.get("sync_offset_sec", 0.0) or 0.0)
         max_wpl = captions_cfg.get("max_words_per_line", 4)
         res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
         max_units = max(4.0, (res_w - 104) / max(1, captions_cfg.get("font_size", 72)))
         lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
         out = [
-            {"start": ln.start, "end": ln.end, "text": " ".join(_display_text(x.text) for x in ln.words)}
+            {
+                "start": ln.start + sync_off, "end": ln.end + sync_off,
+                "text": " ".join(_display_text(x.text) for x in ln.words),
+            }
             for ln in lines
         ]
         for i in range(len(out) - 1):
@@ -3139,7 +3224,8 @@ def sync_captions_route(video_id: str, idx: int):
 
     from src.captions import _collect_words_in_range
     from src.main import (
-        _apply_corrections, _build_clip_hotwords, _precise_cache_find, json_load_transcript,
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_worst_hole,
+        json_load_transcript,
     )
 
     cfg = _load_config()
@@ -3153,6 +3239,8 @@ def sync_captions_route(video_id: str, idx: int):
     model = w.get("precise_model_size", w["model_size"])
     segs = _precise_cache_find(video_dir / "precise_cache", model, sig, clip.start, clip.end + 4.0)
     used = "정밀 캐시"
+    if segs is not None and _precise_worst_hole(tdata["segments"], segs, clip.start, clip.end) >= 5.0:
+        segs = None  # 구멍 난 불량 캐시는 신뢰하지 않는다
     if segs is None:
         segs = tdata["segments"]
         used = "참조 전사(캐시 없음 — '꼼꼼 재분석' 후 다시 누르면 더 정확)"
@@ -3160,6 +3248,9 @@ def sync_captions_route(video_id: str, idx: int):
     words = _collect_words_in_range(segs, clip.start - 2.0, clip.end + 4.0)
     if not words:
         return jsonify({"error": "참조할 단어 시각이 없습니다"}), 400
+    # 정렬 목표 시각도 처음 렌더와 같은 시간축(무음 보정 + 전역 오프셋)으로.
+    words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+    sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
 
     def norm(s: str) -> str:
         return _re.sub(r"[^0-9가-힣a-zA-Z]", "", s or "")
@@ -3187,8 +3278,8 @@ def sync_captions_route(video_id: str, idx: int):
                     best = (score, i, j)
         if best and best[0] >= 0.6:
             _, i, j = best
-            cur["start"] = round(words[i].start, 2)
-            cur["end"] = round(max(words[j].end, words[i].start + 0.3), 2)
+            cur["start"] = round(words[i].start + sync_off, 2)
+            cur["end"] = round(max(words[j].end, words[i].start + 0.3) + sync_off, 2)
             wi = j + 1
             matched_n += 1
         out.append(cur)
