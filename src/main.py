@@ -22,6 +22,7 @@ import yaml
 
 from src.audio_peaks import detect_peak_hints
 from src.download import DownloadResult, _probe_duration_sec, download_video, find_cached, probe_video
+from src.render import _probe_resolution
 from src.highlights import (
     CLIPS_LOCK,
     Clip,
@@ -1259,6 +1260,28 @@ def render_selected(
             pr_captions = dict(cfg["captions"])
             is_upload = video_dir.name.startswith("upload_")
             pr_segments = base_segments if is_upload else []
+            if is_upload:
+                # 직접 찍어 올린 영상은 원본 16:9를 그대로 유지하고(카드 세로 크롭 없음),
+                # 가사 자막은 영상 화면 위에 흰 글씨로 오버레이한다(사용자 요청, 2026-09-04).
+                # 싱크 정밀도보다 가사 정확도가 우선이라는 것도 같은 요청 — 이 부분은 이미
+                # correct_praise_lyrics(정식 가사 교정)로 처리돼 있으므로 여기선 레이아웃만 바꾼다.
+                src_w, src_h = _probe_resolution(video_path)
+                if src_w > 1920:  # 너무 크면 다운스케일(인코딩 시간/용량 절약), 비율은 유지
+                    src_h = int(src_h * (1920 / src_w))
+                    src_w = 1920
+                out_res = (src_w - src_w % 2, src_h - src_h % 2)  # 짝수 강제(인코더 요구사항)
+                pr_render = {
+                    **pr_render, "resolution": out_res, "background_mode": "pad",
+                    # 로고 아웃트로는 세로(1080x1920) 전용 이미지라 16:9에 붙이면 찌그러진다 — 끔.
+                    "outro": {**pr_render.get("outro", {}), "enabled": False},
+                }
+                pr_captions = {
+                    **pr_captions,
+                    "position": "bottom",
+                    "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
+                    "outline_color": "&H00000000",     # 검정 외곽선(어떤 배경에도 읽히도록)
+                    "outline_width": max(3, int(pr_captions.get("outline_width", 0) or 0)),
+                }
             _run_with_progress_ticker(
                 lambda: render_clip(video_path, pr_segments, clip, out_path, pr_render, pr_captions),
                 start_pct=base, end_pct=base + step, progress=progress,
