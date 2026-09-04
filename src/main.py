@@ -549,10 +549,15 @@ def analyze(
                 # 찬양 모드: VAD가 노래(음악+합창)를 '음성 아님'으로 판단해 곡 구간 전체를
                 # 통째로 건너뛴다(실측: 3.5분 업로드에서 찬송 2.5분이 전사 0단어). 가사를
                 # 받아적어야 곡 식별·자막이 되므로 찬양 모드는 VAD를 끈다.
+                # 찬양 전용 모델(config whisper.praise_model_size, 기본 medium=설교와 동일).
+                # small로 낮추면 2~3배 빨라지지만 사용자 결정: 자막 정확도 우선 — medium 유지.
                 _vad = False if mode == "praise" else w.get("vad_filter", True)
+                _model_size = (
+                    w.get("praise_model_size", w["model_size"]) if mode == "praise" else w["model_size"]
+                )
                 transcript = transcribe_and_save(
                     dl.video_path, transcript_path,
-                    model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
+                    model_size=_model_size, device=w["device"], compute_type=w["compute_type"],
                     language=w["language"], vad_filter=_vad,
                     cpu_threads=int(w.get("cpu_threads", 0)),
                     on_segment=lambda seg_end, duration: sp.set_fraction(
