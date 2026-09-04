@@ -258,7 +258,11 @@ INDEX_TEMPLATE = f"""
           <label><input type="radio" name="mode" value="praise">찬양<span class="seg-sub">전체 예배 실황에서 곡별 통편집</span></label>
         </div>
       </div>
-      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." autofocus>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
+        📁 <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="font-size:12.5px">
+      </label>
+      <p class="hint" style="margin-top:4px">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
       <details class="adv">
         <summary>고급 옵션 <span class="adv-sub">자막 붙여넣기 · 새로 분석</span></summary>
         <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다. 유튜브 '스크립트 표시' 복사 또는 SRT/VTT 권장."></textarea>
@@ -291,16 +295,32 @@ f.addEventListener('submit', async (e) => {{
                                     // 중복 실행돼 진행률이 널뛰고 세션 한도만 낭비된다.
   submitBtn.disabled = true;
   const url = document.getElementById('url').value;
+  const vfile = document.getElementById('vfile').files[0] || null;
   const transcript_text = document.getElementById('transcript').value;
   const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
   const model = (f.querySelector('input[name="model"]:checked') || {{}}).value || '';
   const mode = (f.querySelector('input[name="mode"]:checked') || {{}}).value || 'sermon';
+  if (!url.trim() && !vfile) {{
+    statusEl.style.display = 'block';
+    statusEl.innerText = '유튜브 링크를 넣거나 동영상 파일을 선택해 주세요.';
+    submitBtn.disabled = false; return;
+  }}
   statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
+  statusEl.innerHTML = vfile
+    ? '<span class="spinner"></span>동영상 업로드 중… (파일이 크면 시간이 걸려요)'
+    : '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
   try {{
-    const res = await fetch('/analyze', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model, mode}})
-    }});
+    let res;
+    if (vfile) {{
+      // 파일 업로드 경로: multipart로 보내고, 서버가 저장 후 whisper 직접 전사부터 시작한다.
+      const fd = new FormData();
+      fd.append('file', vfile); fd.append('mode', mode); fd.append('model', model);
+      res = await fetch('/analyze_upload', {{ method: 'POST', body: fd }});
+    }} else {{
+      res = await fetch('/analyze', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model, mode}})
+      }});
+    }}
     const data = await res.json();
     if (!res.ok) {{ statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }}
     // 진행률(%)과 ETA는 영상 진행바 페이지에서 폴링으로 실시간 표시된다. 링크만 넣어도
@@ -938,6 +958,46 @@ def analyze_route():
     return jsonify({"video_id": video_id})
 
 
+@app.route("/analyze_upload", methods=["POST"])
+def analyze_upload_route():
+    """직접 찍은 동영상 파일 업로드 → 저장 후 로컬 분석("local:<vid>" 경로).
+
+    유튜브 링크 대신 파일이 소스다: output/upload_<ts>/source.mp4로 저장하고,
+    analyze()가 다운로드/유튜브 자막을 건너뛰고 whisper 직접 전사부터 시작한다."""
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"error": "업로드된 파일이 없습니다"}), 400
+    mode = (request.form.get("mode") or "sermon").strip()
+    if mode not in ("sermon", "praise"):
+        mode = "sermon"
+    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
+    model = (request.form.get("model") or "").strip()
+    if model and model not in _ALLOWED_MODELS:
+        model = ""
+
+    video_id = "upload_" + time.strftime("%Y%m%d_%H%M%S")
+    video_dir = OUTPUT_ROOT / video_id
+    video_dir.mkdir(parents=True, exist_ok=True)
+    # 확장자와 무관하게 source.mp4로 저장한다 — ffmpeg/whisper는 파일 내용으로 컨테이너를
+    # 판별하므로(mov/mp4/mkv 모두 OK) 이름은 파이프라인 규약(source.mp4)만 따르면 된다.
+    save_path = video_dir / "source.mp4"
+    f.save(save_path)
+    if not save_path.exists() or save_path.stat().st_size == 0:
+        return jsonify({"error": "파일 저장에 실패했습니다"}), 500
+
+    with _jobs_lock:
+        _jobs.setdefault(video_id, {}).update(
+            status="analyzing", message="업로드 완료, 분석 시작...", pct=0, started=time.time()
+        )
+    holder = {"id": video_id}
+    threading.Thread(
+        target=_run_analyze_job,
+        args=(holder, f"local:{video_id}", "", False, model, mode),
+        daemon=True,
+    ).start()
+    return jsonify({"video_id": video_id})
+
+
 @app.route("/video/<video_id>")
 def video_detail(video_id: str):
     with _jobs_lock:
@@ -1278,9 +1338,10 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
     from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
 
-    # 찬양 클립은 가사 자막을 넣지 않는다(사용자 결정) — 편집기에도 초안을 채우지 않는다.
-    # (자동 전사가 받아적은 부정확한 가사 조각이 초안으로 뜨면 오히려 혼란.)
-    if getattr(clip, "clip_type", "") == "praise":
+    # 유튜브 실황의 찬양 클립은 가사 자막을 넣지 않는다(화면에 교회 가사 슬라이드가 이미
+    # 있음) — 편집기에도 초안을 채우지 않는다. 단, 직접 찍어 업로드한 영상(upload_*)은
+    # 가사 표시가 없어 whisper 자막을 넣으므로 초안도 같은 소스로 채운다(아래 일반 경로).
+    if getattr(clip, "clip_type", "") == "praise" and not video_id.startswith("upload_"):
         return []
 
     def _strip_trailing_dots(text: str) -> str:

@@ -21,13 +21,14 @@ from pathlib import Path
 import yaml
 
 from src.audio_peaks import detect_peak_hints
-from src.download import download_video, find_cached, probe_video
+from src.download import DownloadResult, _probe_duration_sec, download_video, find_cached, probe_video
 from src.highlights import (
     CLIPS_LOCK,
     Clip,
     build_prompt,
     load_clips_json,
     save_clips_json,
+    correct_praise_lyrics,
     save_prompt_for_manual_mode,
     select_highlights_auto,
     select_praise_songs,
@@ -447,10 +448,30 @@ def analyze(
         ]
     sp = StageProgress(progress, stages)
     try:
+        # 업로드된 로컬 영상("local:<video_id>"): 사용자가 직접 찍어 파일로 올린 경우.
+        # 다운로드/메타 조회가 필요 없고, 유튜브 자동자막도 없으므로 아래에서 whisper
+        # 직접 전사 경로를 탄다(웹 라우트가 파일을 output/<vid>/source.mp4로 미리 저장).
+        if url.startswith("local:"):
+            _vid = url.split(":", 1)[1]
+            _local_path = output_root / _vid / "source.mp4"
+            if not _local_path.exists() or _local_path.stat().st_size == 0:
+                raise RuntimeError("업로드된 영상 파일을 찾을 수 없습니다. 다시 업로드해 주세요.")
+            dl = DownloadResult(
+                video_id=_vid, title=_vid, video_path=_local_path,
+                duration_sec=_probe_duration_sec(_local_path),
+            )
+            if dl.duration_sec <= 0:
+                raise RuntimeError("업로드된 파일에서 영상 길이를 읽지 못했습니다(손상되었거나 영상이 아닐 수 있음).")
+            sp.set_fraction(1.0, "업로드된 영상 사용")
+            dl_local = True
+        else:
+            dl_local = False
         # 완성본이 이미 있으면 그대로, 없으면 메타데이터만 받고 다운로드는 백그라운드로.
         # (후보 뽑기는 자막 텍스트만 필요 — 영상 파일은 렌더 때 wait_for_download로 보장)
-        dl = find_cached(url, output_root)
-        if dl is not None:
+        dl = dl if dl_local else find_cached(url, output_root)
+        if dl_local:
+            pass
+        elif dl is not None:
             sp.set_fraction(1.0, "영상 준비됨")
         else:
             dl = probe_video(url, output_root)
@@ -511,8 +532,11 @@ def analyze(
                 json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
             )
         else:
-            sp.message("유튜브 자동 자막 확인 중...")
-            transcript = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
+            if dl_local:
+                transcript = None  # 업로드 파일은 유튜브 자막이 없다 — 바로 whisper 직접 전사로
+            else:
+                sp.message("유튜브 자동 자막 확인 중...")
+                transcript = get_transcript_from_youtube(url, video_dir, dl.duration_sec)
             if transcript is None or not transcript.segments:
                 # 로컬 전사는 영상 길이에 비례해 오래 걸린다 → 예상시간을 크게 잡아 ETA를 맞춘다.
                 sp.set_current_est(max(30.0, dl.duration_sec * 0.5))
@@ -522,10 +546,14 @@ def analyze(
                 wait_for_download(dl.video_id)
                 sp.message("자동 자막이 없어 직접 전사 중 (시간이 걸릴 수 있어요)...")
                 w = cfg["whisper"]
+                # 찬양 모드: VAD가 노래(음악+합창)를 '음성 아님'으로 판단해 곡 구간 전체를
+                # 통째로 건너뛴다(실측: 3.5분 업로드에서 찬송 2.5분이 전사 0단어). 가사를
+                # 받아적어야 곡 식별·자막이 되므로 찬양 모드는 VAD를 끈다.
+                _vad = False if mode == "praise" else w.get("vad_filter", True)
                 transcript = transcribe_and_save(
                     dl.video_path, transcript_path,
                     model_size=w["model_size"], device=w["device"], compute_type=w["compute_type"],
-                    language=w["language"], vad_filter=w.get("vad_filter", True),
+                    language=w["language"], vad_filter=_vad,
                     cpu_threads=int(w.get("cpu_threads", 0)),
                     on_segment=lambda seg_end, duration: sp.set_fraction(
                         min(1.0, seg_end / duration) if duration else 0.0,
@@ -595,6 +623,42 @@ def analyze(
                     "찬양 곡을 찾지 못했습니다. 영상에 찬양이 없거나 전사본에 가사가 거의 "
                     "안 잡혔을 수 있어요(자동자막 없는 실황은 직접 전사라 시간이 걸립니다)."
                 )
+            # 업로드 영상(화면에 가사 슬라이드 없음)은 가사 자막을 넣는다. whisper의 노래
+            # 오인식("만유의"→"마녀의" 실측)을 그대로 구울 수 없으므로, 모델이 아는 정식
+            # 가사로 줄 단위 교정해 caption_overrides(WYSIWYG 자막)로 확정한다.
+            # 교정 실패는 치명적이지 않다 — 자막 없이(원문 폴백) 후보는 그대로 나온다.
+            if dl_local:
+                sp.message("가사 자막을 정식 가사로 교정하는 중...")
+                try:
+                    seg_lines: list[list[dict]] = []
+                    for c in clips:
+                        seg_lines.append([
+                            {"start": s.start, "end": min(s.end, c.end), "text": (s.text or "").strip()}
+                            for s in transcript.segments
+                            if s.start >= c.start - 0.5 and s.start < c.end and (s.text or "").strip()
+                        ])
+                    req = [
+                        {"index": ci, "title": c.title, "lines": [l["text"] for l in seg_lines[ci]]}
+                        for ci, c in enumerate(clips) if seg_lines[ci]
+                    ]
+                    if req:
+                        fixed = correct_praise_lyrics(
+                            req, model=model or p.get("model", ""),
+                            thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
+                        )
+                        for ci, c in enumerate(clips):
+                            lines = seg_lines[ci]
+                            fl = fixed.get(ci)
+                            if fl is not None and len(fl) == len(lines):
+                                for line, txt in zip(lines, fl):
+                                    if txt:
+                                        line["text"] = txt
+                            elif fl is not None:
+                                print(f"[praise] 곡 {ci} 가사 교정 줄 수 불일치({len(fl)} vs {len(lines)}) → 원문 유지")
+                            if lines:
+                                c.caption_overrides = lines
+                except Exception:  # noqa: BLE001 - 가사 교정 실패해도 후보 저장은 계속
+                    traceback.print_exc()
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
             sp.finish(f"완료: 찬양 {len(clips)}곡 감지")
@@ -1109,6 +1173,9 @@ def render_selected(
         wait_for_download(video_dir.name)
     # 자기치유: 원본(source.mp4)이 없거나 깨졌으면(예: 이전 다운로드가 중단돼 조각만 남은
     # 경우) 렌더가 raw ffmpeg 오류로 죽지 않도록, video id로 유튜브 URL을 복원해 다시 받는다.
+    # 단, 업로드된 로컬 영상(upload_*)은 유튜브에 없으므로 재다운로드가 불가능하다.
+    if (not video_path.exists() or video_path.stat().st_size == 0) and video_dir.name.startswith("upload_"):
+        raise RuntimeError("업로드된 원본 영상이 사라졌습니다. 파일을 다시 업로드해 주세요.")
     if not video_path.exists() or video_path.stat().st_size == 0:
         progress("영상 원본이 없어 다시 내려받는 중...", 0)
         download_video(
@@ -1167,9 +1234,12 @@ def render_selected(
         clip = clips[idx]
         base = i * step
 
-        # 찬양 곡 통편집: 정밀 재전사·자막·문장 스냅·훅 배속을 모두 건너뛰고
-        # 곡 구간 그대로 + 상단 제목(곡 제목)만 넣어 렌더한다. 노래에 문장 스냅은
-        # 무의미하고, 배속은 곡 템포를 바꿔버리며, 자막은 사용자가 원치 않았다.
+        # 찬양 곡 통편집: 정밀 재전사·문장 스냅·훅 배속을 모두 건너뛰고
+        # 곡 구간 그대로 + 상단 제목(곡 제목)을 넣어 렌더한다. 노래에 문장 스냅은
+        # 무의미하고, 배속은 곡 템포를 바꿔버린다.
+        # 가사 자막: 유튜브 실황은 화면에 교회 자막(가사 슬라이드)이 이미 있어 안 넣지만,
+        # 직접 찍어 업로드한 영상(upload_*)은 가사 표시가 없으므로 whisper 전사 기반
+        # 카라오케 자막을 설교와 같은 스타일로 넣는다(사용자 요청, 2026-09-04).
         if getattr(clip, "clip_type", "") == "praise":
             out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1180,10 +1250,12 @@ def render_selected(
             }
             # 주의: captions enabled=False로 두면 ffmpeg subtitles 필터가 통째로 빠져
             # 같은 ASS에 든 '제목'까지 안 구워진다(실측: 제목 없는 찬양 렌더). 켠 채로 두고
-            # segments=[]를 넘겨 가사 자막 이벤트만 0개가 되게 한다.
+            # 세그먼트로 자막 유무를 조절한다(빈 리스트 = 가사 자막 이벤트 0개).
             pr_captions = dict(cfg["captions"])
+            is_upload = video_dir.name.startswith("upload_")
+            pr_segments = base_segments if is_upload else []
             _run_with_progress_ticker(
-                lambda: render_clip(video_path, [], clip, out_path, pr_render, pr_captions),
+                lambda: render_clip(video_path, pr_segments, clip, out_path, pr_render, pr_captions),
                 start_pct=base, end_pct=base + step, progress=progress,
                 message=f"[{i+1}/{total}] 찬양 렌더링 중: {clip.title}",
                 # 곡은 3~6분으로 길다 — 인코딩 시간도 대략 길이에 비례(QSV 기준 실측 보수치)
