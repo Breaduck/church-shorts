@@ -2045,6 +2045,9 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
             ),
             key=lambda o: o["start"],
         )
+    # 업로드 찬양 클립의 카라오케 자막 토글(사용자가 "싱크 맞추기"를 눌러 확인한 경우만 켬).
+    if "caption_karaoke" in body:
+        clip.caption_karaoke = bool(body.get("caption_karaoke"))
     # 화면모드 + 제목/자막 글꼴 스타일(편집기에서 선택). 빈 값이면 config 기본값 사용.
     if "fill_mode" in body:
         clip.fill_mode = str(body.get("fill_mode", "") or "")
@@ -2208,6 +2211,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_offset_x": clip.caption_offset_x,
             "caption_offset_y": clip.caption_offset_y,
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
+            "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -2928,6 +2932,8 @@ PREVIEW_MODAL_JS = r"""
     // 저장하면, (아직 정밀 재전사 전인 클립은) 부정확한 자동자막 초안이 그대로 굳어서
     // 렌더의 정밀 재전사(더 정확한 자막)가 영영 건너뛰어진다.
     let capsDirty = false;
+    // 업로드 찬양 클립의 카라오케(단어별 색 변경) 자막 토글 — "싱크 맞추기"를 눌러야 켜진다.
+    let capKaraoke = !!C.caption_karaoke;
     capRowsBox.addEventListener('input', () => { capsDirty = true; });
     $('.pv-capedit-btn').addEventListener('click', () => capSec.classList.toggle('hidden'));
     $('.pv-capadd').addEventListener('click', () => {
@@ -3042,6 +3048,7 @@ PREVIEW_MODAL_JS = r"""
         rows[i].querySelector('.pv-cap-end').value = (ln.end - C.start).toFixed(1);
       });
       capsDirty = true;
+      capKaraoke = true;  // 싱크를 직접 맞춘 클립만 단어별 색이 바뀌는 카라오케 효과를 켠다.
       capSec.classList.remove('hidden');
       syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
       setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
@@ -3092,6 +3099,7 @@ PREVIEW_MODAL_JS = r"""
       };
       // 자막은 사용자가 실제로 고쳤을 때만 확정본으로 저장(위 capsDirty 주석 참고).
       if (capsDirty) payload.captions = collectCaptions();
+      payload.caption_karaoke = capKaraoke;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
       if (changed) {

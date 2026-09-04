@@ -1282,10 +1282,19 @@ def render_selected(
                     # 로고 아웃트로는 세로(1080x1920) 전용 이미지라 16:9에 붙이면 찌그러진다 — 끔.
                     "outro": {**pr_render.get("outro", {}), "enabled": False},
                 }
+                # 카라오케(단어별 발화 싱크에 맞춰 색이 바뀌는 효과)는 기본 끔 — whisper 노래
+                # 타이밍이 부정확할 수 있어, 사용자가 팝업에서 "싱크 맞추기"로 직접 확인·저장한
+                # 클립에만 켠다(clip.caption_karaoke, 사용자 요청 2026-09-05). 기본은 정적인
+                # 흰 자막 한 줄(template!="karaoke") — \k 단어 강조 없이 통째로 같은 색.
+                karaoke_on = bool(getattr(clip, "caption_karaoke", False))
                 pr_captions = {
                     **pr_captions,
                     "position": "bottom",
+                    "font_size": int(pr_captions.get("font_size", 72) * 1.35),  # "자막 좀 더 키워주고"
+                    "template": "karaoke" if karaoke_on else "minimal",
                     "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
+                    # 카라오케 켜졌을 때 강조색: 기존 진한 블루 대신 더 연한 하늘색(사용자 요청).
+                    "karaoke_highlight_color": "&H00FACE87",  # 연한 하늘색(#87CEFA, ASS는 BGR)
                     "outline_color": "&H00000000",     # 검정 외곽선(어떤 배경에도 읽히도록)
                     "outline_width": max(3, int(pr_captions.get("outline_width", 0) or 0)),
                 }
