@@ -22,7 +22,7 @@ import yaml
 
 from src.audio_peaks import detect_peak_hints
 from src.download import DownloadResult, _probe_duration_sec, download_video, find_cached, probe_video
-from src.render import _probe_resolution
+from src.render import _probe_display_resolution
 from src.highlights import (
     CLIPS_LOCK,
     Clip,
@@ -1265,7 +1265,7 @@ def render_selected(
                 # 가사 자막은 영상 화면 위에 흰 글씨로 오버레이한다(사용자 요청, 2026-09-04).
                 # 싱크 정밀도보다 가사 정확도가 우선이라는 것도 같은 요청 — 이 부분은 이미
                 # correct_praise_lyrics(정식 가사 교정)로 처리돼 있으므로 여기선 레이아웃만 바꾼다.
-                src_w, src_h = _probe_resolution(video_path)
+                src_w, src_h = _probe_display_resolution(video_path)
                 if src_w > 1920:  # 너무 크면 다운스케일(인코딩 시간/용량 절약), 비율은 유지
                     src_h = int(src_h * (1920 / src_w))
                     src_w = 1920

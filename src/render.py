@@ -1,6 +1,7 @@
 """ffmpeg로 클립 컷 -> 9:16 변환(+Ken Burns) -> 무음 제거 -> 자막 번인까지 한 번에 처리"""
 from __future__ import annotations
 
+import json
 import subprocess
 import traceback
 from pathlib import Path
@@ -43,6 +44,38 @@ def _probe_resolution(video_path: Path) -> tuple[int, int]:
         return int(w_str), int(h_str)
     except (ValueError, AttributeError):
         return 1920, 1080  # 안전한 기본값 (16:9)
+
+
+def _probe_display_resolution(video_path: Path) -> tuple[int, int]:
+    """실제로 화면에 보이는 가로x세로를 반환한다(회전 메타데이터 반영).
+
+    스마트폰 세로 촬영 영상은 흔히 센서 그대로(가로 픽셀, 예: 1280x720)로 저장하고
+    90/270도 회전 태그로 재생기가 세로로 돌려 보여준다(특히 iOS). ffmpeg CLI는 기본
+    -autorotate가 켜져 있어 디코딩 단계에서 프레임을 실제로 돌리는데, 우리 필터 체인의
+    목표 해상도를 '회전 반영 전' width/height로 계산하면 이미 세로로 돌아간 프레임을
+    가로 캔버스에 욱여넣어 영상이 찌그러진다. 회전이 90/270이면 width/height를 바꿔 반환."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json",
+         str(video_path)],
+        capture_output=True, text=True,
+    )
+    w, h, rot = 1920, 1080, 0
+    try:
+        stream = (json.loads(proc.stdout).get("streams") or [{}])[0]
+        w, h = int(stream["width"]), int(stream["height"])
+        tag = (stream.get("tags") or {}).get("rotate")
+        if tag is not None:
+            rot = int(tag) % 360
+        else:
+            for sd in stream.get("side_data_list") or []:
+                if "rotation" in sd:
+                    rot = int(round(float(sd["rotation"]))) % 360
+                    break
+    except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError):
+        pass
+    if rot in (90, 270):
+        w, h = h, w
+    return w, h
 
 
 def _detect_silences(
