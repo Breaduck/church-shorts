@@ -942,50 +942,80 @@ def correct_praise_lyrics(
     thinking_tokens: int = 2048,
     timeout_sec: int = 600,
     on_progress=None,
-) -> dict[int, list[str]]:
+) -> dict[int, str]:
     """whisper가 받아적은 노래 가사(오인식 다수)를 정식 가사로 교정한다.
 
-    songs: [{"index": i, "title": 곡제목, "lines": [줄 텍스트, ...]}]
-    반환: {index: 교정된 줄 목록} — 줄 수가 입력과 다르면 그 곡은 결과에서 제외(타이밍이
-    줄에 묶여 있어 줄 수가 어긋나면 싱크가 통째로 깨지므로 원문 유지가 안전).
+    songs: [{"index": i, "title": 곡제목, "raw_text": whisper 원문(줄바꿈 없이 이어붙인 텍스트)}]
+    반환: {index: 교정된 가사 전체 텍스트(자막 한 줄 분량마다 \n으로 줄바꿈)}
+
+    이전 버전은 "출력 줄 수가 입력 줄 수와 정확히 같아야만" 교정을 적용했는데, whisper는
+    노래를 숨쉬는 지점(휴지) 기준으로 줄을 들쭉날쭉 나눠서 이 조건이 실전에서 거의 항상
+    깨졌다 — 결과적으로 교정이 사실상 안 먹히는 사고였다(실사용 신고: "자막 정확도 너무
+    안좋음"). 이제 모델이 줄 구조를 자유롭게 다시 나누게 하고, 시간은 whisper 줄 경계가
+    아니라 문자 수 비례로 배분한다(_distribute_lines_by_chars) — 사용자 결정: "싱크는
+    안 맞아도 되니 가사 정확도가 우선"이므로 이 트레이드오프가 맞다.
 
     배경: whisper는 회중 찬양(음악+합창)을 심하게 오인식한다(실측: "금면류관을 드려서
     만유의 주 찬양" → "금멸 육아를 들여서 마녀의 주 찬양"). 찬송가/유명 CCM 가사는
     모델이 이미 알고 있으므로, 별도 크롤링·사전 학습 없이 지식 기반 교정이 가능하다."""
     payload = json.dumps(songs, ensure_ascii=False, indent=1)
     prompt = f"""너는 한국 교회 찬송가·CCM 가사 전문가다. 아래는 음성인식(whisper)이 회중 찬양(노래)을
-받아적은 가사 줄들이다. 노래 전사라 오인식이 많다.
+받아적은 원문이다(줄바꿈 없이 이어붙인 텍스트, 노래 전사라 오인식이 많다).
 (실제 예: "금면류관을 드려서 만유의 주 찬양"이 "금멸 육아를 들여서 마녀의 주 찬양"으로 오인식됨)
 
-각 곡의 제목과 줄 목록이 주어진다. 그 곡을 안다면(찬송가 번호나 가사로 식별) 각 줄을 '정식 가사'로 교정하라.
+각 곡의 제목과 whisper 원문(raw_text)이 주어진다. 그 곡을 안다면(찬송가 번호나 가사로 식별)
+raw_text가 담고 있는 절(들)의 '정식 가사'로 복원하라.
 
 ## 규칙 (모두 중요)
-- **줄 수를 절대 바꾸지 마라.** i번째 출력 줄은 i번째 입력 줄의 교정본이다(각 줄에 표시 타이밍이 묶여 있음).
-- 각 줄은 '그 줄에서 실제로 부르고 있는 소절'로 교정하라 — 전체 가사를 순서대로 재배열하지 말고,
-  입력 줄과 발음이 대응되는 소절을 찾아라. 반복되는 후렴은 반복 그대로.
-- 절(1절/2절/3절…) 순서를 고려하라: 오인식된 줄이라도 발음 유사성으로 어느 절의 어느 소절인지 알 수 있다.
-- 곡을 모르거나 어느 소절인지 확신이 없으면 그 줄은 원문을 유지하되, 명백히 이상한 단어
-  (뜻이 파괴된 오인식)만 자연스럽게 다듬어라.
-- 노래가 아닌 멘트·기도 줄은 원문 그대로 유지하라.
+- raw_text에 실제로 담긴 절만 복원하라 — raw_text에 없는 절(예: 안 부른 3절)을 추가하지 마라.
+  오인식 때문에 원문과 달라 보여도, 발음 유사성과 노래 구조(후렴 반복 등)로 몇 절의 어느
+  소절인지 추론해서 순서대로 채워라.
+- 출력은 자막 한 줄에 어울리는 짧은 소절 단위로 줄바꿈(\\n)하라 — 한 줄은 대략 8~16자.
+  whisper 원문의 줄 구분은 신경 쓰지 마라(숨쉬는 지점 기준이라 노래 소절과 안 맞는다) —
+  가사 자체의 자연스러운 소절 단위로 새로 나눠라.
+- 곡을 전혀 모르겠으면 raw_text를 최대한 자연스럽게 다듬어서(명백한 오인식만 고쳐서) 출력하라
+  — 빈 값을 반환하지 마라(자막이 아예 없는 것보다 원문이라도 있는 게 낫다).
+- 노래가 아닌 멘트·기도가 raw_text에 섞여 있으면 자연스럽게 생략하거나 다듬어라.
 
 입력:
 {payload}
 
 출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만:
-[{{"index": 0, "lines": ["교정된 첫 줄", "..."]}}, ...]
-각 곡의 lines 길이는 입력과 반드시 동일해야 한다."""
+[{{"index": 0, "lyrics": "첫 줄\\n둘째 줄\\n..."}}, ...]"""
     raw = _invoke_claude_json(
         prompt, model=model, thinking_tokens=thinking_tokens,
         timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(songs),
     )
-    out: dict[int, list[str]] = {}
+    out: dict[int, str] = {}
     for item in raw:
         try:
             idx = int(item["index"])
-            lines = [str(x).strip() for x in item["lines"]]
-        except (KeyError, TypeError, ValueError):
+            text = str(item.get("lyrics", "")).strip()
+        except (TypeError, ValueError):
             continue
-        out[idx] = lines
+        if text:
+            out[idx] = text
+    return out
+
+
+def _distribute_lines_by_chars(lines: list[str], start: float, end: float) -> list[dict]:
+    """교정된 가사 줄들을 [start,end] 구간에 문자 수 비례로 시간을 배분한다.
+
+    whisper의 원래 줄 경계(숨쉬는 지점)와 모델이 새로 나눈 줄 경계가 다를 수 있어(그래서
+    correct_praise_lyrics의 '줄 수 일치' 강제를 없앴다), 정확한 단어별 발화 시각 대신
+    문자 수 비례로 근사한다. 사용자 결정: 가사 정확도가 싱크 정밀도보다 우선."""
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return []
+    total_chars = sum(len(ln) for ln in lines) or 1
+    span = max(0.1, end - start)
+    out: list[dict] = []
+    cursor = start
+    for ln in lines:
+        dur = span * (len(ln) / total_chars)
+        out.append({"start": round(cursor, 2), "end": round(cursor + dur, 2), "text": ln})
+        cursor += dur
+    out[-1]["end"] = round(end, 2)
     return out
 
 

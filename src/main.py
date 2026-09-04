@@ -29,6 +29,7 @@ from src.highlights import (
     build_prompt,
     load_clips_json,
     save_clips_json,
+    _distribute_lines_by_chars,
     correct_praise_lyrics,
     save_prompt_for_manual_mode,
     select_highlights_auto,
@@ -631,8 +632,12 @@ def analyze(
                 )
             # 업로드 영상(화면에 가사 슬라이드 없음)은 가사 자막을 넣는다. whisper의 노래
             # 오인식("만유의"→"마녀의" 실측)을 그대로 구울 수 없으므로, 모델이 아는 정식
-            # 가사로 줄 단위 교정해 caption_overrides(WYSIWYG 자막)로 확정한다.
-            # 교정 실패는 치명적이지 않다 — 자막 없이(원문 폴백) 후보는 그대로 나온다.
+            # 가사로 교정해 caption_overrides(WYSIWYG 자막)로 확정한다.
+            # 2026-09-05: 예전엔 "교정 줄 수가 whisper 줄 수와 정확히 같아야만" 적용했는데,
+            # whisper가 숨쉬는 지점 기준으로 줄을 들쭉날쭉 나눠 이 조건이 실전에서 거의 항상
+            # 깨져 교정이 사실상 안 먹혔다("자막 정확도 너무 안좋음" 실신고). 이제 whisper
+            # 줄 구조와 무관하게 교정 텍스트를 문자 수 비례로 시간 배분한다.
+            # 교정 실패(호출 자체 오류)는 치명적이지 않다 — 원문(whisper) 폴백으로 자막은 나온다.
             if dl_local:
                 sp.message("가사 자막을 정식 가사로 교정하는 중...")
                 try:
@@ -644,7 +649,7 @@ def analyze(
                             if s.start >= c.start - 0.5 and s.start < c.end and (s.text or "").strip()
                         ])
                     req = [
-                        {"index": ci, "title": c.title, "lines": [l["text"] for l in seg_lines[ci]]}
+                        {"index": ci, "title": c.title, "raw_text": " ".join(l["text"] for l in seg_lines[ci])}
                         for ci, c in enumerate(clips) if seg_lines[ci]
                     ]
                     if req:
@@ -654,14 +659,19 @@ def analyze(
                         )
                         for ci, c in enumerate(clips):
                             lines = seg_lines[ci]
-                            fl = fixed.get(ci)
-                            if fl is not None and len(fl) == len(lines):
-                                for line, txt in zip(lines, fl):
-                                    if txt:
-                                        line["text"] = txt
-                            elif fl is not None:
-                                print(f"[praise] 곡 {ci} 가사 교정 줄 수 불일치({len(fl)} vs {len(lines)}) → 원문 유지")
-                            if lines:
+                            if not lines:
+                                continue
+                            corrected_text = fixed.get(ci)
+                            corrected_lines = (
+                                [ln.strip() for ln in corrected_text.split("\n") if ln.strip()]
+                                if corrected_text else []
+                            )
+                            if corrected_lines:
+                                c.caption_overrides = _distribute_lines_by_chars(
+                                    corrected_lines, lines[0]["start"], lines[-1]["end"]
+                                )
+                            else:
+                                print(f"[praise] 곡 {ci} 가사 교정 응답 없음 → whisper 원문 폴백")
                                 c.caption_overrides = lines
                 except Exception:  # noqa: BLE001 - 가사 교정 실패해도 후보 저장은 계속
                     traceback.print_exc()
