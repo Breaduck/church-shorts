@@ -1271,7 +1271,14 @@ def render_selected(
                     src_w = 1920
                 out_res = (src_w - src_w % 2, src_h - src_h % 2)  # 짝수 강제(인코더 요구사항)
                 pr_render = {
-                    **pr_render, "resolution": out_res, "background_mode": "pad",
+                    **pr_render, "resolution": out_res,
+                    # "pad"는 반올림 오차로 한두 픽셀 흰 여백이 생길 수 있다(사용자가 실제로
+                    # 흰 배경/템플릿에 갇힌다고 신고, 2026-09-05) — "crop"은 채우기 색을 아예
+                    # 쓰지 않는 스케일+크롭이라 여백이 원천적으로 생기지 않는다. out_res가 이미
+                    # 소스 자체 비율이라 크롭도 사실상 0px(인코더 짝수 강제분 정도).
+                    "background_mode": "crop",
+                    # 제목(곡명) 오버레이도 없앤다(사용자 요청: "제목은 없애고 그냥 자막만").
+                    "hook": {"enabled": False},
                     # 로고 아웃트로는 세로(1080x1920) 전용 이미지라 16:9에 붙이면 찌그러진다 — 끔.
                     "outro": {**pr_render.get("outro", {}), "enabled": False},
                 }
