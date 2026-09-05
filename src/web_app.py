@@ -136,8 +136,10 @@ BASE_STYLE = """
   /* YouTube 업로드 */
   .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .yt-upload-top { flex: 0 0 auto; padding: 10px 16px; font-size: 13.5px; font-weight: 700; font-family: inherit;
-    border: none; border-radius: 10px; background: #ff0033; color: #fff; cursor: pointer; white-space: nowrap; }
-  .yt-upload-top:hover { background: #d40029; }
+    border: none; border-radius: 12px; background: #fff; color: var(--accent); cursor: pointer; white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08); transition: background .15s, box-shadow .15s; }
+  .yt-upload-top:hover { background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }
+  .yt-upload-top:active { transform: scale(0.98); }
   .yt-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none;
     align-items: center; justify-content: center; z-index: 60; }
   .yt-modal-back.show { display: flex; }

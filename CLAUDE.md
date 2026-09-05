@@ -2,3 +2,4 @@
 - 작업이 중단될 때까지 "계속하시겠습니까"라고 묻지 말 것.
 - 앞으로 배포 작업 시 이 Cloudflare Pages 프로젝트(https://dash.cloudflare.com/08571ac869c9f59b8298b94148b8b515/pages/view/shorts)에도 자동으로 배포할 것.
 - 커밋 후에는 GitHub 저장소(https://github.com/Breaduck/church-shorts)의 master 브랜치로 자동으로 push할 것 (Cloudflare Pages가 이 브랜치를 보고 자동 배포함).
+- 앞으로 UI 디자인은 애플 스타일(애플 Human Interface Guidelines, https://developer.apple.com/kr/design/human-interface-guidelines/ · 리퀴드 글래스 느낌)로 만들 것.
