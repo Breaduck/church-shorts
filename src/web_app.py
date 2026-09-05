@@ -2065,6 +2065,11 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     # 업로드 찬양 클립의 카라오케 자막 토글(사용자가 "싱크 맞추기"를 눌러 확인한 경우만 켬).
     if "caption_karaoke" in body:
         clip.caption_karaoke = bool(body.get("caption_karaoke"))
+    # AI 자막 교정이 뽑은 형광 강조어(caption_highlights). 렌더가 이 단어를 자막에서 강조한다.
+    if "caption_highlights" in body:
+        clip.caption_highlights = [
+            str(h).strip() for h in (body.get("caption_highlights") or []) if str(h).strip()
+        ]
     # 화면모드 + 제목/자막 글꼴 스타일(편집기에서 선택). 빈 값이면 config 기본값 사용.
     if "fill_mode" in body:
         clip.fill_mode = str(body.get("fill_mode", "") or "")
@@ -2229,6 +2234,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_offset_y": clip.caption_offset_y,
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
             "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
+            "caption_highlights": (getattr(clip, "caption_highlights", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
         },
         "caption_preview": _preview_caption_text(video_id, clip),
@@ -2460,6 +2466,7 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
+      '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">✨ AI 자막 교정</button>' +
       '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
       '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
@@ -2956,6 +2963,8 @@ PREVIEW_MODAL_JS = r"""
     // 가지 말고 그냥 흰 자막이 계속 떠 있게". 켜고 싶으면 아래 '파란 강조' 버튼으로만 켠다
     // (예전엔 '싱크 맞추기'가 자동으로 켰는데, 그게 원치 않는 파란색의 원인이었다).
     let capKaraoke = !!C.caption_karaoke;
+    // AI 자막 교정이 뽑은 형광 강조어. 저장 시 caption_highlights로 넘어가 렌더가 강조한다.
+    let capHighlights = Array.isArray(C.caption_highlights) ? C.caption_highlights.slice() : [];
     const karaokeBtn = $('.pv-karaoke-toggle');
     // 파란 강조는 업로드 찬양 렌더에서만 의미가 있다 — 그 경우에만 버튼을 보여준다.
     const isUploadPraise = (C.clip_type === 'praise') && VIDEO_ID.indexOf('upload_') === 0;
@@ -3093,6 +3102,35 @@ PREVIEW_MODAL_JS = r"""
       setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
     });
 
+    // ── AI 자막 교정: 문맥·성경지식으로 오타 교정 + 핵심어 형광 강조(줄 수·시간 유지) ──
+    const correctBtn = $('.pv-correctbtn');
+    correctBtn.addEventListener('click', async () => {
+      const caps = collectCaptions();
+      if (!caps.length) { alert('교정할 자막이 없습니다'); return; }
+      correctBtn.disabled = true; correctBtn.textContent = '교정 중… (10~30초)';
+      let r = null;
+      try {
+        r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/correct_captions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ captions: caps, model: '' }),
+        });
+      } catch (e) { r = null; }
+      const j = r && r.ok ? await r.json().catch(() => null) : null;
+      correctBtn.disabled = false;
+      if (!j || !j.lines) {
+        correctBtn.textContent = '✨ AI 자막 교정';
+        alert('AI 자막 교정 실패' + (j && j.error ? ': ' + j.error : '')); return;
+      }
+      // 텍스트만 교체(시간·행 순서 유지). 강조어 저장.
+      const rows = [...capRowsBox.querySelectorAll('.pv-caprow')];
+      j.lines.forEach((ln, i) => { if (rows[i]) rows[i].querySelector('.pv-cap-text').value = ln.text; });
+      capHighlights = Array.isArray(j.highlights) ? j.highlights : [];
+      capsDirty = true;
+      capSec.classList.remove('hidden');
+      correctBtn.textContent = '✓ ' + (j.changed || 0) + '줄 교정 · 강조 ' + capHighlights.length + '개 (저장 필요)';
+      setTimeout(() => { correctBtn.textContent = '✨ AI 자막 교정'; }, 5000);
+    });
+
     // ── 전체 밀기: 모든 자막 줄의 시작·끝을 한 번에 ±0.1초 이동(귀로 미세 조정용) ──
     function shiftAll(delta) {
       capRowsBox.querySelectorAll('.pv-caprow').forEach((r) => {
@@ -3139,6 +3177,7 @@ PREVIEW_MODAL_JS = r"""
       // 자막은 사용자가 실제로 고쳤을 때만 확정본으로 저장(위 capsDirty 주석 참고).
       if (capsDirty) payload.captions = collectCaptions();
       payload.caption_karaoke = capKaraoke;
+      payload.caption_highlights = capHighlights;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
       if (changed) {
@@ -3453,6 +3492,55 @@ def sync_captions_route(video_id: str, idx: int):
         if out[k]["end"] > out[k + 1]["start"]:
             out[k]["end"] = round(max(out[k]["start"] + 0.2, out[k + 1]["start"] - 0.02), 2)
     return jsonify({"lines": out, "matched": matched_n, "total": len(out), "source": used})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/correct_captions", methods=["POST"])
+def correct_captions_route(video_id: str, idx: int):
+    """'AI 자막 교정': 현재 자막 줄의 텍스트를 Claude가 문맥·성경지식으로 교정하고
+    핵심 강조어(caption_highlights)를 뽑는다. 줄 수·시간은 그대로 두고 '내용(단어)'만
+    고친다(1:1 매핑). 결과는 편집기에 반영되고, 저장 시 확정된다."""
+    video_dir = OUTPUT_ROOT / video_id
+    clips_path = video_dir / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "잘못된 클립 번호"}), 400
+    clip = clips[idx]
+    body = request.get_json() or {}
+    in_lines = body.get("captions") or []
+    if not in_lines:
+        return jsonify({"error": "교정할 자막이 없습니다"}), 400
+    model = (body.get("model") or "").strip()
+    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
+    if model and model not in _ALLOWED_MODELS:
+        model = ""
+
+    from src.highlights import correct_sermon_captions
+
+    texts = [str(ln.get("text", "")) for ln in in_lines]
+    cfg = _load_config()
+    p = cfg.get("praise", {}) or {}
+    try:
+        corrected, highlights = correct_sermon_captions(
+            texts,
+            context=clip.title or "",
+            model=model,
+            thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
+        )
+    except Exception as e:  # noqa: BLE001 - 실패해도 원문 유지로 안내
+        return jsonify({"error": f"교정 실패: {e}"}), 500
+
+    out = []
+    for i, ln in enumerate(in_lines):
+        txt = corrected[i] if i < len(corrected) else str(ln.get("text", ""))
+        out.append({
+            "start": float(ln.get("start", 0)),
+            "end": float(ln.get("end", 0)),
+            "text": txt,
+        })
+    changed = sum(1 for i, ln in enumerate(in_lines) if out[i]["text"].strip() != str(ln.get("text", "")).strip())
+    return jsonify({"lines": out, "highlights": highlights, "changed": changed, "total": len(out)})
 
 
 def _tracking_scheduler_loop() -> None:

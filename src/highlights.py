@@ -1080,6 +1080,76 @@ def fetch_praise_lyrics_by_titles(
     return out
 
 
+def correct_sermon_captions(
+    lines: list[str],
+    context: str = "",
+    model: str = "",
+    thinking_tokens: int = 2048,
+    timeout_sec: int = 600,
+    on_progress=None,
+) -> tuple[list[str], list[str]]:
+    """설교 자막 초안(whisper)을 문맥·성경지식으로 교정하고 강조어를 뽑는다.
+
+    사용자 요청(2026-09-05): 인스타 레퍼런스처럼 '뜻을 이해해 오타 없는' 자막을 원함.
+    whisper large-v3도 성경 고유명사·구어체를 이따금 틀린다(룻→루시, 보아스→보아즈 등).
+    Claude가 뜻을 이해해 명백한 오인식만 고치고, 각 줄의 핵심 단어(강조 대상)를 뽑는다.
+
+    핵심 제약: **줄 수와 순서를 그대로 유지**한다(각 줄의 시간축이 1:1로 매핑되므로).
+    줄을 합치거나 나누지 않는다 — 내용(단어)만 고친다.
+
+    lines: 자막 줄 텍스트 목록(시간 순).
+    반환: (교정된 줄 목록(입력과 같은 길이), 강조 키워드 목록)
+    """
+    lines = [str(l or "") for l in lines]
+    if not lines:
+        return [], []
+    numbered = [{"i": i, "text": t} for i, t in enumerate(lines)]
+    payload = json.dumps(numbered, ensure_ascii=False, indent=1)
+    ctx = f"\n이 클립의 주제/제목(참고): {context}\n" if context.strip() else ""
+    prompt = f"""너는 한국 교회 설교 자막 교정 전문가다. 아래는 음성인식(whisper)이 설교를 받아적은
+자막 줄들이다(대체로 정확하나 성경 고유명사·구어체에서 이따금 오인식이 있다).
+{ctx}
+## 할 일 (각 줄마다)
+1) 명백한 오인식만 고쳐라(뜻이 통하게). 특히 성경 인물/지명/용어의 철자
+   (예: 보아즈→보아스, 루시→룻, 기도원→기드온 류)를 문맥으로 바로잡아라.
+2) 그 줄에서 '가장 강조하고 싶은 핵심 단어' 0~2개를 골라 "hl"에 넣어라
+   (설교 메시지가 실린 명사·동사. 조사는 빼고 어간만: "은혜","십자가","사랑").
+
+## 규칙 (매우 중요)
+- 줄 수와 순서를 입력과 정확히 똑같이 유지하라(합치기·나누기·삭제 금지). i를 그대로 붙여라.
+- 뜻이 이미 자연스러운 줄은 text를 원문 그대로 두라(억지 교정 금지). 문장을 새로 쓰지 마라.
+- 확신이 없으면 원문을 유지하라(추측으로 바꾸지 마라).
+
+입력:
+{payload}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만:
+[{{"i": 0, "text": "교정된 줄", "hl": ["핵심어"]}}, ...]"""
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress, max_clips=1,
+    )
+    corrected = list(lines)
+    highlights: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item["i"])
+            txt = str(item.get("text", "")).strip()
+        except (TypeError, ValueError, KeyError):
+            continue
+        if 0 <= idx < len(corrected) and txt:
+            corrected[idx] = txt
+        for h in (item.get("hl") or []):
+            hs = str(h).strip()
+            if hs and hs.lower() not in seen:
+                seen.add(hs.lower())
+                highlights.append(hs)
+    return corrected, highlights
+
+
 def _build_praise_clips_from_titles(
     titles: list[str],
     lyrics_by_idx: dict[int, list[str]],
