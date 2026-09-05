@@ -571,10 +571,11 @@ def build_ass(
     # 아래로 내려가므로(상단 기준 정렬), offset_y를 그대로 더하면 된다. 좌우는 중앙 정렬
     # 기준 MarginL/MarginR을 반대 방향으로 움직여서 중심을 offset_x만큼 이동시킨다.
     # 오버레이 모드(card 없음 = 업로드 찬양 등)는 세로 쇼츠에서 우측 버튼 기둥(좋아요/댓글,
-    # 화면 우측 ~13%)과 겹치지 않게 좌우 여백을 화면 폭의 11%씩 준다(자막 최대 폭 ~78%,
-    # 사용자 우려 2026-09-05 "백퍼 겹칠 것 같은데") — 한 줄 강제(_fit_fs)가 이 폭에 맞춰
-    # 폰트를 줄여주므로 넘치지 않는다. 카드 레이아웃은 영상 밖 캡션 영역이라 기존 40px 유지.
-    base_margin_lr = 40 if card_layout else max(40, int(width * 0.11))
+    # 화면 우측 ~13%)과 겹치지 않게 좌우 여백을 준다. 11%였을 때는 자막 최대 폭이 78%
+    # (11%~89%)라 우측 안전영역(87%~100%) 시작선을 2%p 침범할 수 있었다(스튜디오 미리보기
+    # 가이드선 침범 실신고 2026-09-06) — 여백을 안전영역 폭(13%)보다 넉넉히 15%로 올려
+    # 자막 최대 폭 70%(15%~85%)가 안전영역(87%~)에 절대 안 닿게 한다.
+    base_margin_lr = 40 if card_layout else max(40, int(width * 0.15))
     title_margin_l = max(0, base_margin_lr + title_offset_x)
     title_margin_r = max(0, base_margin_lr - title_offset_x)
     caption_margin_l = max(0, base_margin_lr + caption_offset_x)
@@ -727,18 +728,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 return max(28, int(base_size * usable_px / w_px))
             return None
 
-        for line in lines:
-            ko_text = " ".join(_display_text(w.text) for w in line.words)
-            fitted = _fit_fs(ko_text, caption_size)
-            prefix = f"{{\\fs{fitted}}}" if fitted else ""
+        ko_texts = [" ".join(_display_text(w.text) for w in line.words) for line in lines]
+        # 줄마다 따로 맞추면 긴 줄만 작아지고 짧은 줄은 커서 클립 안에서 자막 크기가
+        # 들쭉날쭉해 보인다(실사용 신고: "차라리 좀 더 작게 해서라도 크기는 동일하게").
+        # 클립 전체에서 가장 많이 줄여야 하는 줄 기준으로 '하나의 크기'를 정해 모든 줄에
+        # 똑같이 적용한다 — 그 줄만 한 줄로 들어가고 나머지는 항상 그보다 여유 있으므로
+        # 다 같이 작아져도 전부 한 줄을 유지한다.
+        _fitted_all = [_fit_fs(t, caption_size) for t in ko_texts]
+        _needed = [f for f in _fitted_all if f is not None]
+        uniform_ko_size = min(_needed) if _needed else None
+        en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
+        base_en_size = max(16, int(caption_size * 0.45))
+        _fitted_en = [
+            _fit_fs(_display_text(t), base_en_size) for t in en_texts if t
+        ]
+        uniform_en_size = min(_fitted_en) if _fitted_en else None
+
+        for line, ko_text, en_text in zip(lines, ko_texts, en_texts):
+            ko_size = uniform_ko_size or caption_size
+            prefix = f"{{\\fs{ko_size}}}" if uniform_ko_size else ""
             extra = ""
-            en_text = en_by_start.get(round(line.start + clip_start, 2), "")
             if en_text:
                 # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
                 # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
                 en_disp = _display_text(en_text)
-                en_size = max(16, int(caption_size * 0.45))
-                en_size = _fit_fs(en_disp, en_size) or en_size  # 영어도 한 줄 강제
+                en_size = uniform_en_size or base_en_size
                 # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
                 extra = f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}{en_disp}{{\\r}}"
             _emit_line(line, extra_text=extra, prefix_text=prefix)

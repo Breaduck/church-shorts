@@ -133,30 +133,32 @@ BASE_STYLE = """
   .subscore b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 700; }
   .sbar { width: 46px; height: 5px; border-radius: 999px; background: var(--border); overflow: hidden; }
   .sbar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
-  /* 성과 피드백 폼 */
-  .fb { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 14px; }
-  .fb summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); }
-  .fb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
-  .fb-grid label { font-size: 11.5px; color: var(--text-faint); font-weight: 600; display: block; margin-bottom: 4px; }
-  .fb-rate { display: flex; gap: 8px; margin-top: 10px; }
-  .fb-rate button {
-    flex: 1; padding: 9px; font-size: 13px; font-weight: 600; font-family: inherit;
-    border: 1.5px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer; color: var(--text-muted);
-  }
-  .fb-rate button.sel { border-color: var(--accent); color: var(--accent); background: #f0f6ff; }
-  .fb-save {
-    margin-top: 12px; padding: 10px 14px; font-size: 13px; font-weight: 600; font-family: inherit;
-    color: #fff; background: var(--accent); border: none; border-radius: 10px; cursor: pointer;
-  }
-  .fb-saved { font-size: 12.5px; color: #12b886; font-weight: 600; margin-left: 10px; }
   /* YouTube 업로드 */
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .yt-upload-top { flex: 0 0 auto; padding: 10px 16px; font-size: 13.5px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 10px; background: #ff0033; color: #fff; cursor: pointer; white-space: nowrap; }
+  .yt-upload-top:hover { background: #d40029; }
+  .yt-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none;
+    align-items: center; justify-content: center; z-index: 60; }
+  .yt-modal-back.show { display: flex; }
+  .yt-modal { background: var(--card, #fff); border-radius: 16px; padding: 22px; width: 420px; max-width: 92vw;
+    max-height: 80vh; overflow-y: auto; }
+  .yt-modal h2 { font-size: 16px; margin-bottom: 4px; }
+  .yt-modal .sub { font-size: 12.5px; color: var(--text-muted); margin-bottom: 14px; }
+  .yt-pick-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 12px; border: 1.5px solid var(--border, #f0f1f3); border-radius: 10px; margin-bottom: 8px; }
+  .yt-pick-row .name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1; }
+  .yt-pick-row .st { font-size: 11.5px; color: var(--text-faint); flex: 0 0 auto; }
+  .yt-pick-row button { flex: 0 0 auto; padding: 6px 12px; font-size: 12.5px; font-weight: 700;
+    font-family: inherit; border: none; border-radius: 8px; background: #3182f6; color: #fff; cursor: pointer; }
+  .yt-pick-row button:disabled { opacity: .55; cursor: default; }
+  .yt-pick-row.done button { background: #eee; color: #888; }
+  .yt-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 20px 0; }
+  .yt-modal-close { display: block; width: 100%; margin-top: 8px; padding: 10px; border: none;
+    border-radius: 10px; background: var(--border, #f0f1f3); color: var(--text-muted); font-weight: 700;
+    font-family: inherit; cursor: pointer; }
   .yt-upload { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .yt-upload-btn {
-    padding: 9px 14px; font-size: 13px; font-weight: 600; font-family: inherit;
-    border: 1.5px solid var(--accent); border-radius: 10px; background: #fff; color: var(--accent); cursor: pointer;
-  }
-  .yt-upload-btn:disabled { opacity: 0.6; cursor: default; }
-  .yt-status { font-size: 12.5px; color: var(--text-muted); }
   .yt-link { font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; }
   .yt-link:hover { text-decoration: underline; }
   .yt-track { font-size: 12px; color: var(--text-faint); }
@@ -465,8 +467,13 @@ CANDIDATES_TEMPLATE = f"""
   <h1>쇼츠를 준비하고 있어요</h1>
   <p class="subtitle">링크를 받아 하이라이트를 뽑는 중이에요. 잠시만 기다려주세요…</p>
   {{% else %}}
-  <h1>하이라이트 후보</h1>
-  <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
+  <div class="page-head">
+    <div>
+      <h1>하이라이트 후보</h1>
+      <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
+    </div>
+    <button type="button" class="yt-upload-top" id="ytUploadTop">📤 YouTube 업로드</button>
+  </div>
   {{% endif %}}
   {{% if analyze_error %}}
   <div class="status-box error-box" style="margin-bottom:16px">
@@ -549,45 +556,17 @@ CANDIDATES_TEMPLATE = f"""
       <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4" download>⬇ 영상 저장</a>
     {{% endif %}}
     </div>
-    {{% if c.rendered %}}
+    {{# 업로드 버튼은 카드마다 두지 않고 우측 상단 '📤 YouTube 업로드' 하나로 통합했다
+       (사용자 요청 2026-09-06). 이미 업로드된 것의 링크·성과체크 상태만 카드에 남긴다. #}}
+    {{% if c.rendered and c.youtube_id %}}
     <div class="yt-upload" data-idx="{{{{ loop.index0 }}}}">
-      {{% if c.youtube_id %}}
       <a class="yt-link" href="https://youtu.be/{{{{ c.youtube_id }}}}" target="_blank" rel="noopener">▶ YouTube에서 보기</a>
       <span class="yt-track">
         {{% if c.upload_done %}}자동 성과 체크 완료 (4/4주)
         {{% elif c.upload_max_checks %}}자동 성과 체크 진행 중 ({{{{ c.upload_checks_done }}}}/{{{{ c.upload_max_checks }}}}주, 매주 자동 확인)
         {{% endif %}}
       </span>
-      {{% else %}}
-      <button type="button" class="yt-upload-btn">YouTube에 업로드</button>
-      <span class="yt-status"></span>
-      {{% endif %}}
     </div>
-    {{% endif %}}
-    {{% if c.rendered %}}
-    {{# 성과 입력은 실제로 만든(렌더된) 클립에서만 의미가 있다 — 안 만든 후보 카드는 조용하게. #}}
-    <details class="fb" data-idx="{{{{ loop.index0 }}}}" data-title="{{{{ c.title|e }}}}">
-      <summary>📊 실제 성과 입력 (업로드 후 조회수는 매주 자동 수집돼요 — 느낀 점만 적어도 충분)</summary>
-      <div class="fb-grid">
-        <div><label>조회수</label><input type="number" class="fb-views" min="0" placeholder="예: 12000"></div>
-        <div><label>평균 조회율(%)</label><input type="number" class="fb-ret" min="0" max="100" placeholder="예: 45"></div>
-        <div><label>저장</label><input type="number" class="fb-saves" min="0" placeholder="예: 320"></div>
-        <div><label>공유</label><input type="number" class="fb-shares" min="0" placeholder="예: 80"></div>
-        <div><label>좋아요</label><input type="number" class="fb-likes" min="0" placeholder="예: 540"></div>
-        <div><label>댓글</label><input type="number" class="fb-comments" min="0" placeholder="예: 25"></div>
-      </div>
-      <div class="fb-rate">
-        <button type="button" data-rate="hit">잘 됨 ✅</button>
-        <button type="button" data-rate="ok">보통</button>
-        <button type="button" data-rate="flop">망함 ❌</button>
-      </div>
-      <div style="margin-top:12px">
-        <label style="font-size:11.5px;color:var(--text-faint);font-weight:600;display:block;margin-bottom:4px">메모(선택)</label>
-        <input type="text" class="fb-notes" placeholder="예: 훅이 강했다 / 초반 이탈 많음">
-      </div>
-      <button type="button" class="fb-save">성과 저장</button>
-      <span class="fb-saved" hidden>저장됨 ✓</span>
-    </details>
     {{% endif %}}
   </div>
   {{% endfor %}}
@@ -638,7 +617,16 @@ CANDIDATES_TEMPLATE = f"""
   <div class="status-box error-box" style="margin-top:16px">오류: {{{{ render_error }}}}</div>
   {{% endif %}}
   <div class="status-box" id="renderStatus" style="display:none; margin-top:16px"></div>
+  <div class="yt-modal-back" id="ytModalBack">
+    <div class="yt-modal">
+      <h2>YouTube에 업로드</h2>
+      <p class="sub">만든 쇼츠 중 하나를 골라 업로드하세요. 업로드 후 성과는 매주 자동으로 체크돼요.</p>
+      <div id="ytPickList"></div>
+      <button type="button" class="yt-modal-close" id="ytModalClose">닫기</button>
+    </div>
+  </div>
   <script>
+  const CLIPS_SUMMARY = {{{{ clips_summary_json | safe }}}};
   document.getElementById('renderForm').addEventListener('submit', async (e) => {{
     e.preventDefault();
     const idx = [...document.querySelectorAll('input[name=idx]:checked')].map(el => parseInt(el.value));
@@ -724,54 +712,50 @@ CANDIDATES_TEMPLATE = f"""
     }});
   }});
 
-  // 성과 피드백: 등급 선택 + 저장 → 서버에 기록(다음 선정 프롬프트에 캘리브레이션으로 주입됨).
-  document.querySelectorAll('details.fb').forEach(function(fb) {{
-    var rate = 'ok';
-    fb.querySelectorAll('.fb-rate button').forEach(function(b) {{
-      b.addEventListener('click', function() {{
-        rate = b.dataset.rate;
-        fb.querySelectorAll('.fb-rate button').forEach(x => x.classList.remove('sel'));
-        b.classList.add('sel');
-      }});
-    }});
-    var num = function(sel) {{ var v = fb.querySelector(sel).value.trim(); return v === '' ? null : parseFloat(v); }};
-    fb.querySelector('.fb-save').addEventListener('click', async function() {{
-      var payload = {{
-        clip_index: parseInt(fb.dataset.idx), title: fb.dataset.title, rating: rate,
-        views: num('.fb-views'), retention_pct: num('.fb-ret'), saves: num('.fb-saves'),
-        shares: num('.fb-shares'), likes: num('.fb-likes'), comments: num('.fb-comments'),
-        notes: fb.querySelector('.fb-notes').value.trim(),
-      }};
-      var res = await fetch('/video/{{{{ video_id }}}}/feedback', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(payload)
-      }});
-      var saved = fb.querySelector('.fb-saved');
-      if (res.ok) {{ saved.hidden = false; setTimeout(() => {{ saved.hidden = true; }}, 2500); }}
-      else {{ alert('저장 실패'); }}
-    }});
-  }});
-
-  // YouTube 업로드 버튼: 눌러 업로드되면 이후 성과는 주 1회 최대 4주 자동으로 체크된다.
-  document.querySelectorAll('.yt-upload').forEach(function(box) {{
-    var btn = box.querySelector('.yt-upload-btn');
-    if (!btn) return;
-    var status = box.querySelector('.yt-status');
-    btn.addEventListener('click', async function() {{
-      btn.disabled = true;
-      status.textContent = '업로드 중... (영상 크기에 따라 시간이 걸릴 수 있어요)';
-      try {{
-        var res = await fetch('/video/{{{{ video_id }}}}/clip/' + box.dataset.idx + '/upload', {{ method: 'POST' }});
-        var data = await res.json();
-        if (!res.ok) throw new Error(data.error || '업로드 실패');
-        status.textContent = '';
-        box.innerHTML = '<a class="yt-link" href="' + data.url + '" target="_blank" rel="noopener">▶ YouTube에서 보기</a>' +
-          '<span class="yt-track">자동 성과 체크 예약됨 (매주, 최대 4주)</span>';
-      }} catch (e) {{
-        btn.disabled = false;
-        status.textContent = '실패: ' + e.message;
+  // YouTube 업로드: 카드마다 버튼을 두지 않고 우측 상단 하나로 통합했다(사용자 요청
+  // 2026-09-06 "가장 우측 상단에 하나만 있고 누르면 선택하게 해줘"). 눌러 업로드되면
+  // 이후 성과는 주 1회 최대 4주 자동으로 체크된다.
+  const ytModalBack = document.getElementById('ytModalBack');
+  const ytPickList = document.getElementById('ytPickList');
+  function renderYtPickList() {{
+    const renderedClips = CLIPS_SUMMARY.filter((c) => c.rendered);
+    if (!renderedClips.length) {{
+      ytPickList.innerHTML = '<p class="yt-empty">아직 만든 쇼츠가 없어요. 먼저 후보를 선택해 "만들기"를 눌러주세요.</p>';
+      return;
+    }}
+    ytPickList.innerHTML = renderedClips.map((c) => {{
+      if (c.youtube_id) {{
+        return '<div class="yt-pick-row done"><span class="name">' + c.title + '</span>' +
+          '<a class="yt-link" href="https://youtu.be/' + c.youtube_id + '" target="_blank" rel="noopener">▶ 이미 업로드됨</a></div>';
       }}
+      return '<div class="yt-pick-row" data-idx="' + c.idx + '"><span class="name">' + c.title + '</span>' +
+        '<button type="button" class="yt-pick-btn">업로드</button></div>';
+    }}).join('');
+    ytPickList.querySelectorAll('.yt-pick-btn').forEach((btn) => {{
+      btn.addEventListener('click', async () => {{
+        const row = btn.closest('.yt-pick-row');
+        btn.disabled = true; btn.textContent = '업로드 중…';
+        try {{
+          const res = await fetch('/video/{{{{ video_id }}}}/clip/' + row.dataset.idx + '/upload', {{ method: 'POST' }});
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '업로드 실패');
+          const c = CLIPS_SUMMARY.find((x) => String(x.idx) === row.dataset.idx);
+          if (c) c.youtube_id = data.youtube_id || data.url.split('/').pop();
+          row.className = 'yt-pick-row done';
+          row.innerHTML = '<span class="name">' + row.querySelector('.name').textContent + '</span>' +
+            '<a class="yt-link" href="' + data.url + '" target="_blank" rel="noopener">▶ 업로드 완료</a>';
+        }} catch (e) {{
+          btn.disabled = false; btn.textContent = '실패: ' + e.message;
+        }}
+      }});
     }});
+  }}
+  document.getElementById('ytUploadTop').addEventListener('click', () => {{
+    renderYtPickList();
+    ytModalBack.classList.add('show');
   }});
+  document.getElementById('ytModalClose').addEventListener('click', () => ytModalBack.classList.remove('show'));
+  ytModalBack.addEventListener('click', (e) => {{ if (e.target === ytModalBack) ytModalBack.classList.remove('show'); }});
   </script>
   {{% endif %}}
 
@@ -1120,6 +1104,18 @@ def video_detail(video_id: str):
     # (실신고). 실패 사유를 배너로 함께 보여준다.
     analyze_error = job.get("message") if job.get("status") == "error" else None
 
+    # YouTube 업로드 선택 모달용 요약 데이터(카드마다 있던 업로드 버튼을 우측 상단
+    # 하나로 통합하면서 필요해짐, 사용자 요청 2026-09-06).
+    clips_summary = [
+        {
+            "idx": i,
+            "title": c.title,
+            "rendered": bool(c.rendered),
+            "youtube_id": c.youtube_id or "",
+        }
+        for i, c in enumerate(clips)
+    ]
+
     return render_template_string(
         CANDIDATES_TEMPLATE,
         video_id=video_id,
@@ -1127,6 +1123,7 @@ def video_detail(video_id: str):
         status_message=job.get("message", "처리 중..."),
         pct=pct,
         clips=clips,
+        clips_summary_json=json.dumps(clips_summary, ensure_ascii=False),
         analyze_error=analyze_error,
         rendering=job.get("rendering", False),
         render_message=job.get("render_message", "렌더링 준비 중..."),
@@ -2293,10 +2290,11 @@ function updateOverlay() {
   // 있어 미리보기 자막이 실제보다 훨씬 아래(안전영역 하단 빨간선 근처)로 보였다.
   ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
   // 폭 넘침 자동 축소(실제 렌더의 한 줄 강제와 동일한 목적): 좌우 안전영역(우측 버튼 기둥
-  // 등)을 침범하지 않게, 사용 가능 폭(영상 폭의 78% — captions.py 좌우 11%씩과 동일)을
-  // 넘으면 그 폭에 맞춰 폰트를 줄인다. 렌더는 실측 글리프 폭으로 정확히 계산하지만
-  // 여기선 DOM 실측 폭으로 근사(충분히 정확) — 사용자 신고: "좌우로 빨간선 침범".
-  const usableW = v.clientWidth * 0.78;
+  // 등)을 침범하지 않게, 사용 가능 폭(영상 폭의 70% — captions.py 좌우 15%씩과 동일,
+  // 안전영역 폭 13%보다 넉넉히 잡아 침범 여지 자체를 없앤다)을 넘으면 그 폭에 맞춰
+  // 폰트를 줄인다. 렌더는 실측 글리프 폭으로 정확히 계산하지만 여기선 DOM 실측 폭으로
+  // 근사(충분히 정확) — 사용자 신고: "빨간선 침범하는데 지금".
+  const usableW = v.clientWidth * 0.70;
   const w = koEl.getBoundingClientRect().width;
   if (w > usableW && w > 0) {
     const fitted = Math.max(10, sz * usableW / w);
