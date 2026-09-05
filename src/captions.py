@@ -301,6 +301,35 @@ def chunk_words_into_lines(
     return lines
 
 
+def _hi_bare(s: str) -> str:
+    """하이라이트 매칭용 정규화: 앞뒤 문장부호·공백 제거 + 라틴 소문자화."""
+    return (s or "").strip().strip(" .,!?…·\"'()[]{}~-").lower()
+
+
+def _make_highlight_matcher(keywords: list[str] | None):
+    """자막 단어가 강조 대상인지 판정하는 함수를 만든다.
+
+    한국어 자막 단어는 조사가 붙어("사랑을","은혜가") 정식 키워드와 정확히 안 맞을 때가
+    많다. 그래서 '키워드가 단어에 포함' 또는 '단어가 키워드에 포함'이면 강조로 본다.
+    2글자 미만 키워드는 오탐이 커서 제외한다."""
+    bares = [b for b in (_hi_bare(k) for k in (keywords or [])) if len(b) >= 2]
+    if not bares:
+        return None
+
+    def _match(disp: str) -> bool:
+        low = _hi_bare(disp)
+        if len(low) < 2:
+            return False
+        return any(kw in low or low in kw for kw in bares)
+
+    return _match
+
+
+def _highlight_wrap(disp: str, hi_color: str) -> str:
+    r"""단어를 형광색+볼드로 감싼다. {\r}로 스타일 기본값(흰색/현재 볼드)으로 복귀."""
+    return f"{{\\c{hi_color}\\b1}}{disp}{{\\r}}"
+
+
 def _ass_time(sec: float) -> str:
     if sec < 0:
         sec = 0
@@ -311,11 +340,15 @@ def _ass_time(sec: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def _karaoke_text(words: list[Word]) -> str:
+def _karaoke_text(words: list[Word], hi_match=None, hi_color: str = "", base_color: str = "") -> str:
     r"""단어별 카라오케(\k) 강조 텍스트. 단어 사이의 '쉼(gap)'만큼 \k를 먼저 넣어,
     강조가 실제 목소리보다 앞서 달려나가지 않게 맞춘다(줄 시작 = 첫 단어 start 기준).
     이걸 안 하면 단어 사이 침묵이 무시돼 강조가 목소리를 앞질러 자막이 어긋난다
-    (특히 필러 제거로 단어가 빠지면 그 자리 침묵이 커져 더 심해짐)."""
+    (특히 필러 제거로 단어가 빠지면 그 자리 침묵이 커져 더 심해짐).
+
+    hi_match/hi_color가 주어지면 핵심 키워드는 리빌(sung) 색을 형광색으로 바꿔서(\1c) 그
+    단어만 형광으로 켜지게 한다 — \r을 쓰지 않아 카라오케 상태를 깨지 않고, 단어 뒤에서
+    base_color(원래 리빌색)로 되돌린다. 볼드(\b1/\b0)도 그 단어에만 적용."""
     if not words:
         return ""
     parts: list[str] = []
@@ -325,7 +358,11 @@ def _karaoke_text(words: list[Word]) -> str:
         if gap_cs > 0:
             parts.append(f"{{\\k{gap_cs}}}")  # 쉼: 아무것도 강조 안 하고 시간만 소비
         dur_cs = max(1, int(round((w.end - w.start) * 100)))
-        parts.append(f"{{\\k{dur_cs}}}{_display_text(w.text)} ")
+        disp = _display_text(w.text)
+        if hi_match and hi_color and hi_match(disp):
+            parts.append(f"{{\\1c{hi_color}\\b1\\k{dur_cs}}}{disp}{{\\1c{base_color}\\b0}} ")
+        else:
+            parts.append(f"{{\\k{dur_cs}}}{disp} ")
         prev_end = w.end
     return "".join(parts).strip()
 
@@ -487,6 +524,8 @@ def build_ass(
     voice_silences: list[tuple[float, float]] | None = None,
     sync_offset_sec: float = 0.0,
     hook_speedup: tuple[float, float] | None = None,
+    highlight_keywords: list[str] | None = None,
+    highlight_color: str = "",
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -582,6 +621,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # 같은 워프를 태워야 영상과 맞는다. 항등(None/factor<=1)이면 원래 시각 그대로.
     _wf, _wk = hook_speedup if hook_speedup else (0.0, 1.0)
 
+    # 자막 키워드 형광 강조(선택): highlight_color가 있고 강조어가 매칭될 때만 적용.
+    # 카라오케 템플릿은 이미 단어별로 색이 움직이므로 정적(비카라오케) 자막에만 칠한다.
+    _hi_match = _make_highlight_matcher(highlight_keywords) if highlight_color else None
+
     def _w(t: float) -> float:
         return warp_time(t, _wf, _wk)
 
@@ -613,9 +656,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_t = _ass_time(max(0.0, line.start + sync_offset_sec))
         end_t = _ass_time(max(0.0, line.end + sync_offset_sec))
         if template == "karaoke":
-            text = _karaoke_text(line.words)
+            text = _karaoke_text(line.words, _hi_match, highlight_color, cap_primary)
         else:
-            text = " ".join(_display_text(w.text) for w in line.words)
+            parts = []
+            for w in line.words:
+                disp = _display_text(w.text)
+                if _hi_match and _hi_match(disp):
+                    disp = _highlight_wrap(disp, highlight_color)
+                parts.append(disp)
+            text = " ".join(parts)
         events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
@@ -683,6 +732,7 @@ def build_ass_for_clip(
     font_style: dict | None = None,
     voice_silences: list[tuple[float, float]] | None = None,
     hook_speedup: tuple[float, float] | None = None,
+    highlight_keywords: list[str] | None = None,
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -730,4 +780,11 @@ def build_ass_for_clip(
         voice_silences=voice_silences,
         sync_offset_sec=float(config_captions.get("sync_offset_sec", 0.0) or 0.0),
         hook_speedup=hook_speedup,
+        highlight_keywords=(
+            highlight_keywords if config_captions.get("highlight_keywords_enabled", True) else None
+        ),
+        highlight_color=(
+            config_captions.get("highlight_color", "&H0000E5FF")
+            if config_captions.get("highlight_keywords_enabled", True) else ""
+        ),
     )

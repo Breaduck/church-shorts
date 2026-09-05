@@ -240,6 +240,11 @@ captions:
   # 이만큼 늦춘다. "자막이 아직도 빠르다" 싶으면 0.3~0.4로 올려볼 것.
   sync_offset_sec: 0.25
   karaoke_highlight_color: "&H00F68231"  # 강조 단어 색: 선명한 블루 #3182F6 (BGR 순서 주의)
+  # 자막 키워드 형광 강조(세련된 자막): 정적(비카라오케) 자막에서 핵심 단어를 형광색+볼드로
+  # 칠한다. 강조 대상은 clip.caption_highlights(정확도 교정 패스가 채움) 우선, 없으면 keywords.
+  # karaoke 템플릿에서는 이미 단어별로 색이 움직여서 적용 안 됨(비카라오케에서만).
+  highlight_keywords_enabled: true
+  highlight_color: "&H0000E5FF"          # 형광 노랑/앰버 #FFE500 (BGR 순서 주의)
   # 플랫폼 UI 안전 영역: pad/blur/crop 레거시 모드에서만 사용 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음)
   safe_area_bottom_pct: 0.20
   safe_area_top_pct: 0.10

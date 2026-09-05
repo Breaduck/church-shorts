@@ -108,6 +108,10 @@ class Clip:
     # 낼지 여부. 기본 False(정적인 흰 자막) — whisper 타이밍이 노래에서 부정확할 수 있어
     # 사용자가 "싱크 맞추기"로 직접 확인·저장한 클립에만 켠다(사용자 요청, 2026-09-05).
     caption_karaoke: bool = False
+    # 자막에서 형광(강조)으로 칠할 핵심 단어들. 비어 있으면 keywords로 폴백한다.
+    # 정확도 교정 패스(correct_sermon_captions)나 선정 단계가 채운다. 렌더에서
+    # 이 단어가 자막에 나오면 노란 형광+볼드로 강조한다(config captions.highlight_* 참고).
+    caption_highlights: list = field(default_factory=list)
 
 
 def build_prompt(

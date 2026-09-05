@@ -584,6 +584,11 @@ def render_clip(
         },
         voice_silences=voice_silences,
         hook_speedup=hook_speedup,
+        # 자막 형광 강조 대상: 클립의 명시적 강조어(caption_highlights)를 우선하고,
+        # 없으면 성경 고유명사(keywords)로 폴백한다. captions.highlight_keywords_enabled로 on/off.
+        highlight_keywords=(
+            (getattr(clip, "caption_highlights", None) or getattr(clip, "keywords", None) or [])
+        ),
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
