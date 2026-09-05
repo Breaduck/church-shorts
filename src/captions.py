@@ -664,7 +664,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{title_disp}"
         )
 
-    def _emit_line(line: CaptionLine, extra_text: str = "") -> None:
+    def _emit_line(line: CaptionLine, extra_text: str = "", prefix_text: str = "") -> None:
         # sync_offset_sec: 자막 표시를 오디오 대비 일괄 지연(+)/선행(-)하는 전역 노브.
         # 유튜브 자동자막 단어 시각이 전반적으로 0.2~0.5초 이른 '상시 리드'는 무음 교정
         # (긴 쉼만 잡음)으로는 안 잡혀서, 최종 이벤트 시각에서 통째로 민다. 카라오케 \k는
@@ -682,7 +682,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     disp = _highlight_wrap(disp, highlight_color, highlight_style)
                 parts.append(disp)
             text = " ".join(parts)
-        text = text + extra_text  # 이중언어(영어 번역 줄) 등, 이미 ASS 태그가 붙은 채로 온다.
+        text = prefix_text + text + extra_text  # prefix=줄별 폰트 축소(\fs), extra=영어 번역 줄 등
         if animate:
             # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
             text = "{\\fad(120,80)}" + text
@@ -709,13 +709,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 for ko, en in zip(ko_sorted, en_sorted)
             }
         lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
+        # 한 줄 강제(가급적 한 줄로 — 사용자 요청): 소절이 화면 폭을 넘으면 libass가 멋대로
+        # 2줄로 랩핑한다. 실제 폰트 글리프 폭(fonts.measure_text_width_px)으로 재서 넘치는
+        # 줄만 그 줄에 한해 폰트를 줄인다(\fs). 측정 불가 폰트면 그대로(랩핑 감수).
+        from src.fonts import measure_text_width_px
+
+        usable_px = width - caption_margin_l - caption_margin_r - 24
+
+        def _fit_fs(text: str, base_size: int) -> int | None:
+            """text가 base_size로 폭을 넘으면 들어가는 크기를, 아니면 None을 반환."""
+            w_px = measure_text_width_px(text, font_name, base_size)
+            if w_px and w_px > usable_px:
+                return max(28, int(base_size * usable_px / w_px))
+            return None
+
         for line in lines:
+            ko_text = " ".join(_display_text(w.text) for w in line.words)
+            fitted = _fit_fs(ko_text, caption_size)
+            prefix = f"{{\\fs{fitted}}}" if fitted else ""
             extra = ""
             en_text = en_by_start.get(round(line.start + clip_start, 2), "")
             if en_text:
-                en_size = max(16, int(caption_size * 0.6))
-                extra = f"\\N{{\\fs{en_size}\\c&HE6E6E6&\\i1}}{_display_text(en_text)}{{\\r}}"
-            _emit_line(line, extra_text=extra)
+                # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
+                # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
+                en_disp = _display_text(en_text)
+                en_size = max(16, int(caption_size * 0.45))
+                en_size = _fit_fs(en_disp, en_size) or en_size  # 영어도 한 줄 강제
+                extra = f"\\N{{\\fs{en_size}\\c&HE6E6E6&\\bord0}}{en_disp}{{\\r}}"
+            _emit_line(line, extra_text=extra, prefix_text=prefix)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
