@@ -1714,6 +1714,16 @@ def render_selected(
             pr_captions = dict(cfg["captions"])
             is_upload = video_dir.name.startswith("upload_")
             pr_segments = base_segments if is_upload else []
+            # 카라오케(파란/하늘색 강조, 목소리를 따라 색이 바뀜)는 업로드 여부와 무관하게
+            # 찬양 전체 기본 꺼짐(정적 흰 자막) — 사용자가 팝업의 '🎨 파란 강조'를 눌러
+            # 명시적으로 켠 클립만 예외. 예전엔 이 스위치가 아래 is_upload 블록 안에만
+            # 있어서, 유튜브 링크 찬양 클립(is_upload=False)에 caption_overrides가 생기면
+            # (가사 가져오기/AI 교정/번역 버튼은 업로드 여부를 안 가리고 동작함) 전역 설정
+            # (config 기본 template="karaoke", 설교용)이 그대로 새어 들어가 파란 강조가
+            # 켜지는 사고가 있었다(실신고 2026-09-05: "유튜브 링크 넣는 찬양도 파란색으로
+            # 변해. 그 기능 모두 꺼줘 디폴트로").
+            karaoke_on = bool(getattr(clip, "caption_karaoke", False))
+            pr_captions["template"] = "karaoke" if karaoke_on else "minimal"
             if is_upload:
                 # 직접 찍어 올린 영상은 원본 16:9를 그대로 유지하고(카드 세로 크롭 없음),
                 # 가사 자막은 영상 화면 위에 흰 글씨로 오버레이한다(사용자 요청, 2026-09-04).
@@ -1737,17 +1747,13 @@ def render_selected(
                     # 16:9에 붙여도 안 찌그러진다 — 강제 off를 풀고 체크박스(outro_enabled)를 따른다
                     # (실신고 2026-09-05: "끝에 로고 넣기 2초도 작동을 안 하네 찬양에선").
                 }
-                # 카라오케(단어별 발화 싱크에 맞춰 색이 바뀌는 효과)는 기본 끔 — whisper 노래
-                # 타이밍이 부정확할 수 있어, 사용자가 팝업에서 "싱크 맞추기"로 직접 확인·저장한
-                # 클립에만 켠다(clip.caption_karaoke, 사용자 요청 2026-09-05). 기본은 정적인
-                # 흰 자막 한 줄(template!="karaoke") — \k 단어 강조 없이 통째로 같은 색.
-                karaoke_on = bool(getattr(clip, "caption_karaoke", False))
+                # 카라오케 on/off는 위에서 이미 결정(업로드 여부 무관, 기본 꺼짐). 여기선
+                # 업로드 전용 레이아웃(흰 글씨 오버레이·확대·강조색)만 덧붙인다.
                 pr_captions = {
                     **pr_captions,
                     "position": "bottom",
                     # 1.35→1.28: "아주아주 조금만 줄여"(2026-09-05 미세조정, 97→92px 수준)
                     "font_size": int(pr_captions.get("font_size", 72) * 1.28),
-                    "template": "karaoke" if karaoke_on else "minimal",
                     "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
                     # 카라오케 켜졌을 때 강조색: 기존 진한 블루 대신 더 연한 하늘색(사용자 요청).
                     "karaoke_highlight_color": "&H00FACE87",  # 연한 하늘색(#87CEFA, ASS는 BGR)

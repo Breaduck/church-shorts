@@ -2113,9 +2113,12 @@ STUDIO_TEMPLATE = """
   .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
     position: relative; min-width: 0; }
   /* 세로 영상(9:16)이 넓은 화면에서 화면 전체를 압도하지 않도록 상한을 둔다
-     (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아" → 1차 축소 후에도 "좀만 더
-     줄여줘" 재신고 — 300px대로 한 번 더 축소). 실제 에디터의 미리보기 크기감. */
-  .vwrap { position: relative; max-width: min(70%, 290px); max-height: 52vh; }
+     (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아" → "안 줄인 것 같은데"까지
+     이어짐). 실제 원인: .stage가 flex 컨테이너라 flex 자식(.vwrap)의 기본
+     min-width/min-height가 'auto'(콘텐츠 = video의 원본 해상도) — max-width를 아무리
+     줘도 flex가 그 밑으로는 안 줄여서 실제로는 계속 원본 크기로 그려지고 있었다.
+     min-width:0 / min-height:0을 명시해야 flex가 max-width/max-height를 실제로 적용한다. */
+  .vwrap { position: relative; max-width: min(80%, 377px); max-height: 68vh; min-width: 0; min-height: 0; }
   .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
   .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
@@ -2243,8 +2246,11 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
   $('clipName').textContent = (C.title || ('클립 ' + (IDX + 1)));
   if (C.clip_type === 'praise') $('bLyrics').hidden = false;
+  // 복제 직후 클립이면 원본 영상 전체를 보여준다(팝업과 동일한 힌트).
   const basePad = Math.max((C.end - C.start) * 0.08, 3);
-  view = { a: Math.max(0, C.start - basePad), b: Math.min(dur, C.end + basePad) };
+  view = C.show_full_source_once
+    ? { a: 0, b: dur }
+    : { a: Math.max(0, C.start - basePad), b: Math.min(dur, C.end + basePad) };
   // 속성 초기값
   const defSize = Math.round((L.caption_font_size || 72));
   $('pSize').value = C.caption_size || defSize; $('pX').value = C.caption_offset_x || 0; $('pY').value = C.caption_offset_y || 0;
@@ -2271,7 +2277,8 @@ function updateOverlay() {
   const i = activeCapIdx(v.currentTime);
   if (i < 0) { ov.style.display = 'none'; return; }
   ov.style.display = 'block';
-  ov.querySelector('.ko').textContent = caps[i].text;
+  const koEl = ov.querySelector('.ko');
+  koEl.textContent = caps[i].text;
   const en = ($('pEn').checked && ens[i]) ? ens[i].text : '';
   const enEl = ov.querySelector('.en');
   enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
@@ -2282,7 +2289,20 @@ function updateOverlay() {
   ov.style.fontSize = sz + 'px';
   enEl.style.fontSize = (sz * 0.45) + 'px';
   ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
-  ov.style.bottom = 'calc(12% - ' + (parseFloat($('pY').value) * scale) + 'px)';
+  // 24%: 렌더의 safe_area_bottom_pct(config.yaml, 0.24)와 동일 — 예전엔 12%로 하드코딩돼
+  // 있어 미리보기 자막이 실제보다 훨씬 아래(안전영역 하단 빨간선 근처)로 보였다.
+  ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
+  // 폭 넘침 자동 축소(실제 렌더의 한 줄 강제와 동일한 목적): 좌우 안전영역(우측 버튼 기둥
+  // 등)을 침범하지 않게, 사용 가능 폭(영상 폭의 78% — captions.py 좌우 11%씩과 동일)을
+  // 넘으면 그 폭에 맞춰 폰트를 줄인다. 렌더는 실측 글리프 폭으로 정확히 계산하지만
+  // 여기선 DOM 실측 폭으로 근사(충분히 정확) — 사용자 신고: "좌우로 빨간선 침범".
+  const usableW = v.clientWidth * 0.78;
+  const w = koEl.getBoundingClientRect().width;
+  if (w > usableW && w > 0) {
+    const fitted = Math.max(10, sz * usableW / w);
+    ov.style.fontSize = fitted + 'px';
+    enEl.style.fontSize = (fitted * 0.45) + 'px';
+  }
 }
 
 // ── 재생 제어(클립 구간 안에서만) ──
@@ -2593,6 +2613,9 @@ def duplicate_clip(video_id: str, idx: int):
             return jsonify({"error": "잘못된 클립 번호"}), 400
         dup = copy.deepcopy(clips[idx])
         dup.title = (dup.title or "클립") + " (복제)"
+        # 편집창을 처음 열 때 잘라낸 구간이 아니라 원본 영상 전체가 보이게 하는 일회성
+        # 힌트(사용자 요청: "복제될 때는 원본 영상 전체가 편집창에서 보이게").
+        dup.show_full_source_once = True
         clips.append(dup)
         new_idx = len(clips) - 1
         save_clips_json(clips, clips_path)
@@ -2812,6 +2835,15 @@ def clip_preview_info(video_id: str, idx: int):
     if idx < 0 or idx >= len(clips):
         return jsonify({"error": "invalid index"}), 400
     clip = clips[idx]
+    # 복제 직후 힌트(원본 전체 보기)는 이 조회 한 번으로 소비한다 — 다음에 같은 클립을
+    # 열면 보통 클립처럼 트림된 구간 위주로 보이게(계속 전체로 열리면 오히려 불편함).
+    show_full_once = bool(getattr(clip, "show_full_source_once", False))
+    if show_full_once:
+        with CLIPS_LOCK:
+            fresh = load_clips_json(clips_path)
+            if idx < len(fresh):
+                fresh[idx].show_full_source_once = False
+                save_clips_json(fresh, clips_path)
 
     from src.fonts import get_font_registry
     from src.render import _probe_resolution
@@ -2865,6 +2897,7 @@ def clip_preview_info(video_id: str, idx: int):
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
             "playback_speed": float(getattr(clip, "playback_speed", 1.0) or 1.0),
+            "show_full_source_once": bool(getattr(clip, "show_full_source_once", False)),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -3159,9 +3192,13 @@ PREVIEW_MODAL_JS = r"""
     // 처음엔 클립 주변을 적당히 확대해서 보여준다: 16초짜리가 21분 전체 위에선 손톱만 해서
     // 좌우 핸들을 못 잡아 '늘리기/줄이기'가 안 됐다. 이제 조각이 화면의 30~40%를 차지하게 띄운다.
     // (Ctrl+휠 또는 − 축소로 설교 전체까지 볼 수 있다.)
+    // 단, 방금 '복제'한 클립이면 처음부터 원본 영상 전체를 보여준다(사용자 요청: 복제본은
+    // 같은 장면을 다듬기보다 다른 구간을 새로 고르는 용도로도 쓰이므로).
     const _cs = segs[0].s, _ce = segs[segs.length - 1].e;
     const _pad = Math.max((_ce - _cs) * 1.3, 12);
-    let view = { a: Math.max(0, _cs - _pad), b: Math.min(dur, _ce + _pad) };
+    let view = C.show_full_source_once
+      ? { a: 0, b: dur }
+      : { a: Math.max(0, _cs - _pad), b: Math.min(dur, _ce + _pad) };
     let activeSeg = 0;
 
     const fmt = (t) => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
