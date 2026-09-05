@@ -31,6 +31,8 @@ from src.highlights import (
     save_clips_json,
     _distribute_lines_by_chars,
     correct_praise_lyrics,
+    fetch_praise_lyrics_by_titles,
+    _build_praise_clips_from_titles,
     save_prompt_for_manual_mode,
     select_highlights_auto,
     select_praise_songs,
@@ -408,7 +410,7 @@ def reanalyze_clip_region(
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
     transcript_text: str = "", force: bool = False, model: str = "",
-    mode: str = "sermon",
+    mode: str = "sermon", song_titles: str = "",
 ) -> tuple[Path, list[Clip]]:
     """다운로드 -> 전사 -> 하이라이트 후보 선정까지만 수행하고 (렌더링 없음),
     video_dir와 배열 순서=바이럴 예상 순위인 클립 후보 목록을 반환한다.
@@ -488,6 +490,47 @@ def analyze(
             sp.set_fraction(1.0, "영상은 백그라운드로 받는 중 (분석은 계속 진행돼요)")
         video_dir = output_root / dl.video_id
         video_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── 업로드 찬양 + 곡 제목 직접 입력: 전사 없이 '정식 가사'로 자막 ─────────────
+        # whisper가 회중 찬양(노래)을 심하게 오인식하는 문제를 근본 우회한다(사용자 요청
+        # 2026-09-05: "전사 정확도가 너무 낮다. 곡 제목만 알면 정식 가사를 넣어달라").
+        # 유명 찬송가·CCM은 모델이 정식 가사를 이미 알아 크롤링이 필요 없다. 전사를 통째로
+        # 건너뛰므로 빠르고(노래 전사는 느리고 부정확), 자막 텍스트는 정확하다.
+        title_lines = (
+            [t.strip() for t in song_titles.splitlines() if t.strip()]
+            if (mode == "praise" and dl_local and song_titles.strip()) else []
+        )
+        if title_lines:
+            sp.advance("자막 준비 중...")
+            sp.set_fraction(1.0, "전사 건너뜀 — 입력한 곡 제목의 정식 가사 사용")
+            clips_path = video_dir / "clips.json"
+            if clips_path.exists() and not force:
+                sp.finish("완료: 기존 후보 재사용")
+                return video_dir, load_clips_json(clips_path)
+            sp.advance("입력한 곡 제목으로 정식 가사를 가져오는 중...")
+            p = cfg.get("praise", {}) or {}
+            lyrics_by_idx = fetch_praise_lyrics_by_titles(
+                title_lines, model=model or p.get("model", ""),
+                thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
+                on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+            )
+            clips = _build_praise_clips_from_titles(
+                title_lines, lyrics_by_idx, dl.duration_sec,
+            )
+            if not clips:
+                raise RuntimeError(
+                    "가사를 만들지 못했습니다. 곡 제목을 정확히 입력했는지 확인해 주세요."
+                )
+            missing = [
+                title_lines[i] for i in range(len(title_lines))
+                if not lyrics_by_idx.get(i)
+            ]
+            if missing:
+                print(f"[praise] 가사를 못 찾은 곡(자막 없음): {', '.join(missing)}")
+            with CLIPS_LOCK:
+                save_clips_json(clips, clips_path)
+            sp.finish(f"완료: 찬양 {len(clips)}곡 (입력 제목 기반 가사)")
+            return video_dir, clips
 
         # 2) 전사 --------------------------------------------------------------
         sp.advance("자막 준비 중...")

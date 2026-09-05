@@ -1019,6 +1019,111 @@ def _distribute_lines_by_chars(lines: list[str], start: float, end: float) -> li
     return out
 
 
+def fetch_praise_lyrics_by_titles(
+    titles: list[str],
+    model: str = "",
+    thinking_tokens: int = 2048,
+    timeout_sec: int = 600,
+    on_progress=None,
+) -> dict[int, list[str]]:
+    """곡 제목만으로 '정식 가사'를 가져온다(모델 지식 기반, 전사 불필요).
+
+    사용자 요청(2026-09-05): 직접 찍어 올린 찬양은 whisper 전사 정확도가 너무 낮다
+    ("금면류관"→"금멸 육아"). 곡 제목을 알면 전사를 통째로 건너뛰고, 유명 찬송가·CCM의
+    정식 가사(모델이 이미 앎)를 자막으로 넣는다. 인터넷 크롤링 없이 지식 기반으로 충분하다는
+    것이 앞선 실측 결론(project_praise_mode 메모).
+
+    titles: 사용자가 입력한 곡 제목들(입력 순서 = 영상 재생 순서로 가정).
+    반환: {index: [자막 한 줄, ...]}  — 모델이 모르는 곡은 결과에서 빠진다.
+    """
+    songs = [
+        {"index": i, "title": t.strip()}
+        for i, t in enumerate(titles)
+        if t and t.strip()
+    ]
+    if not songs:
+        return {}
+    payload = json.dumps(songs, ensure_ascii=False, indent=1)
+    prompt = f"""너는 한국 교회 찬송가·CCM(복음성가) 가사 전문가다. 아래 곡 제목들의 '정식 가사'를 써라.
+
+## 규칙 (모두 중요)
+- 각 곡의 널리 불리는 정식 가사를 그대로 쓴다(찬송가 번호로 주어지면 그 장 가사).
+- 회중이 실제로 부르는 분량(보통 1절 + 후렴 + 2절 정도)을 순서대로 쓴다. 절이 여러 개면
+  1절→후렴→2절→(후렴) 순으로, 실제 예배에서 부르는 흐름대로 이어서 써라.
+- 출력은 자막 한 줄에 어울리는 짧은 소절 단위로 줄바꿈(\\n)하라 — 한 줄은 대략 8~16자.
+- 제목만으로 곡을 특정할 수 없으면(동명이곡 등) 가장 널리 알려진 곡의 가사를 쓴다.
+- 정말 모르는 곡이면 그 곡의 lyrics는 빈 문자열("")로 둔다(지어내지 마라).
+
+입력(곡 제목):
+{payload}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만:
+[{{"index": 0, "lyrics": "첫 줄\\n둘째 줄\\n..."}}, ...]"""
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(songs),
+    )
+    out: dict[int, list[str]] = {}
+    for item in raw:
+        try:
+            idx = int(item["index"])
+            text = str(item.get("lyrics", "")).strip()
+        except (TypeError, ValueError):
+            continue
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if lines:
+            out[idx] = lines
+    return out
+
+
+def _build_praise_clips_from_titles(
+    titles: list[str],
+    lyrics_by_idx: dict[int, list[str]],
+    video_duration_sec: float,
+) -> list[Clip]:
+    """곡 제목 입력 기반으로 (전사 없이) 찬양 클립을 만든다.
+
+    - 영상을 곡 순서대로 나눈다. 여러 곡이면 각 곡의 가사 분량(글자 수)에 비례해 시간을
+      나눈다(대략치 — 사용자가 편집기에서 경계·시간을 조정할 수 있다).
+    - 각 곡의 가사 줄은 그 구간에 글자 수 비례로 배분한다(_distribute_lines_by_chars).
+      전사가 없어 단어별 발화 시각을 알 수 없으므로 '정식 가사(정확한 텍스트)'를 우선하고
+      싱크는 근사한다 — 사용자 결정: "그냥 흰색 자막이 쭉 떠 있으면 된다".
+    - caption_karaoke=False: 업로드 찬양은 파란색 단어 강조(카라오케) 없이 정적 흰 자막이
+      기본(사용자 요청 2026-09-05). 전사가 없어 단어 싱크 자체가 불가능하기도 하다."""
+    n = len(titles)
+    if n == 0 or video_duration_sec <= 0:
+        return []
+    lyrics = {i: lyrics_by_idx.get(i, []) for i in range(n)}
+    weights = [max(1, sum(len(ln) for ln in lyrics[i])) for i in range(n)]
+    total_w = sum(weights) or 1
+    clips: list[Clip] = []
+    cursor = 0.0
+    for i, title in enumerate(titles):
+        is_last = i == n - 1
+        span = video_duration_sec * (weights[i] / total_w)
+        start = cursor
+        end = video_duration_sec if is_last else min(video_duration_sec, cursor + span)
+        cursor = end
+        lines = lyrics[i]
+        overrides = _distribute_lines_by_chars(lines, start, end) if lines else []
+        clips.append(
+            Clip(
+                start=round(start, 2),
+                end=round(end, 2),
+                title=title.strip() or f"찬양 {i+1}",
+                caption="",
+                hashtags=[],
+                reason="[입력 제목] 곡 제목 기반 정식 가사 자막(전사 없음)",
+                appeal="다같이",
+                trimmed=True,
+                clip_type="praise",
+                caption_overrides=overrides,
+                caption_karaoke=False,
+            )
+        )
+    return clips
+
+
 def save_prompt_for_manual_mode(prompt: str, output_path: Path) -> None:
     """manual 모드: 프롬프트를 파일로 저장해두고, 사용자가 Claude Code 세션에서 직접 요청하도록 안내."""
     output_path.parent.mkdir(parents=True, exist_ok=True)

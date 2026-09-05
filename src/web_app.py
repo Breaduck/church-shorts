@@ -263,6 +263,10 @@ INDEX_TEMPLATE = f"""
         📁 <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="font-size:12.5px">
       </label>
       <p class="hint" style="margin-top:4px">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
+      <div id="songTitlesWrap" style="display:none;margin-top:10px">
+        <textarea id="songTitles" rows="3" placeholder="(찬양 · 파일 업로드 시 권장) 부른 찬양 제목을 한 줄에 하나씩, 부른 순서대로 적어주세요.&#10;예)&#10;주 은혜임을&#10;은혜 아니면"></textarea>
+        <p class="hint" style="margin-top:4px">제목을 넣으면 부정확한 음성인식 대신 <b>정식 가사</b>를 자막으로 넣어요 (전사를 건너뛰어 더 정확하고 빨라요). 비워두면 예전처럼 음성인식으로 가사를 뽑아요.</p>
+      </div>
       <details class="adv">
         <summary>고급 옵션 <span class="adv-sub">자막 붙여넣기 · 새로 분석</span></summary>
         <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다. 유튜브 '스크립트 표시' 복사 또는 SRT/VTT 권장."></textarea>
@@ -288,6 +292,14 @@ INDEX_TEMPLATE = f"""
 const f = document.getElementById('f');
 const statusEl = document.getElementById('status');
 const submitBtn = f.querySelector('button[type="submit"]');
+// 찬양 모드일 때만 '곡 제목' 입력란을 보여준다(제목 → 정식 가사 자막).
+const songTitlesWrap = document.getElementById('songTitlesWrap');
+function syncSongTitlesVisibility() {{
+  const mode = (f.querySelector('input[name="mode"]:checked') || {{}}).value || 'sermon';
+  songTitlesWrap.style.display = (mode === 'praise') ? 'block' : 'none';
+}}
+f.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener('change', syncSongTitlesVisibility));
+syncSongTitlesVisibility();
 f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   if (submitBtn.disabled) return;  // 중복 클릭 방지: 하이라이트 선정은 AI가 실제로 읽고 고르는
@@ -315,6 +327,7 @@ f.addEventListener('submit', async (e) => {{
       // 파일 업로드 경로: multipart로 보내고, 서버가 저장 후 whisper 직접 전사부터 시작한다.
       const fd = new FormData();
       fd.append('file', vfile); fd.append('mode', mode); fd.append('model', model);
+      if (mode === 'praise') fd.append('song_titles', document.getElementById('songTitles').value || '');
       res = await fetch('/analyze_upload', {{ method: 'POST', body: fd }});
     }} else {{
       res = await fetch('/analyze', {{
@@ -886,7 +899,7 @@ CANDIDATES_TEMPLATE = f"""
 
 def _run_analyze_job(
     video_id_holder: dict, url: str, transcript_text: str = "", force: bool = False,
-    model: str = "", mode: str = "sermon",
+    model: str = "", mode: str = "sermon", song_titles: str = "",
 ) -> None:
     try:
         video_dir, clips = analyze(
@@ -898,6 +911,7 @@ def _run_analyze_job(
             force=force,
             model=model,
             mode=mode,
+            song_titles=song_titles,
         )
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
@@ -974,6 +988,9 @@ def analyze_upload_route():
     model = (request.form.get("model") or "").strip()
     if model and model not in _ALLOWED_MODELS:
         model = ""
+    # 찬양 곡 제목(한 줄에 한 곡, 부른 순서). 입력하면 whisper 전사를 건너뛰고 정식 가사를
+    # 자막으로 쓴다(사용자 요청 2026-09-05: 노래 전사 정확도가 너무 낮음). sermon엔 무의미.
+    song_titles = (request.form.get("song_titles") or "").strip() if mode == "praise" else ""
 
     video_id = "upload_" + time.strftime("%Y%m%d_%H%M%S")
     video_dir = OUTPUT_ROOT / video_id
@@ -992,7 +1009,7 @@ def analyze_upload_route():
     holder = {"id": video_id}
     threading.Thread(
         target=_run_analyze_job,
-        args=(holder, f"local:{video_id}", "", False, model, mode),
+        args=(holder, f"local:{video_id}", "", False, model, mode, song_titles),
         daemon=True,
     ).start()
     return jsonify({"video_id": video_id})
@@ -2212,6 +2229,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_offset_y": clip.caption_offset_y,
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
             "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
+            "clip_type": getattr(clip, "clip_type", "") or "",
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -2442,6 +2460,7 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
+      '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
       '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
       '      <button type="button" class="pv-capcopyall" title="자막 내용 전체 복사">📋</button>' +
@@ -2932,8 +2951,27 @@ PREVIEW_MODAL_JS = r"""
     // 저장하면, (아직 정밀 재전사 전인 클립은) 부정확한 자동자막 초안이 그대로 굳어서
     // 렌더의 정밀 재전사(더 정확한 자막)가 영영 건너뛰어진다.
     let capsDirty = false;
-    // 업로드 찬양 클립의 카라오케(단어별 색 변경) 자막 토글 — "싱크 맞추기"를 눌러야 켜진다.
+    // 업로드 찬양 클립의 카라오케(단어별 색 변경, 파란 강조) 자막 토글.
+    // 기본은 꺼짐(정적 흰 자막이 쭉 떠 있음) — 사용자 요청 2026-09-05: "말 따라 파란색으로
+    // 가지 말고 그냥 흰 자막이 계속 떠 있게". 켜고 싶으면 아래 '파란 강조' 버튼으로만 켠다
+    // (예전엔 '싱크 맞추기'가 자동으로 켰는데, 그게 원치 않는 파란색의 원인이었다).
     let capKaraoke = !!C.caption_karaoke;
+    const karaokeBtn = $('.pv-karaoke-toggle');
+    // 파란 강조는 업로드 찬양 렌더에서만 의미가 있다 — 그 경우에만 버튼을 보여준다.
+    const isUploadPraise = (C.clip_type === 'praise') && VIDEO_ID.indexOf('upload_') === 0;
+    function renderKaraokeBtn() {{
+      karaokeBtn.textContent = capKaraoke ? '🎨 파란 강조: 켬' : '🎨 파란 강조: 끔';
+      karaokeBtn.classList.toggle('on', capKaraoke);
+    }}
+    if (isUploadPraise) {{
+      karaokeBtn.hidden = false;
+      renderKaraokeBtn();
+      karaokeBtn.addEventListener('click', () => {{
+        capKaraoke = !capKaraoke;
+        capsDirty = true;  // 저장 시 caption_karaoke가 반영되도록
+        renderKaraokeBtn();
+      }});
+    }}
     capRowsBox.addEventListener('input', () => { capsDirty = true; });
     $('.pv-capedit-btn').addEventListener('click', () => capSec.classList.toggle('hidden'));
     $('.pv-capadd').addEventListener('click', () => {
@@ -3048,7 +3086,8 @@ PREVIEW_MODAL_JS = r"""
         rows[i].querySelector('.pv-cap-end').value = (ln.end - C.start).toFixed(1);
       });
       capsDirty = true;
-      capKaraoke = true;  // 싱크를 직접 맞춘 클립만 단어별 색이 바뀌는 카라오케 효과를 켠다.
+      // 싱크 맞추기는 '줄의 시작·끝 시간'만 다시 맞춘다 — 파란 강조(카라오케)는 켜지 않는다.
+      // (사용자 요청 2026-09-05: 흰 자막이 그대로 떠 있어야 하고, 파란색은 '파란 강조' 버튼으로만.)
       capSec.classList.remove('hidden');
       syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
       setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
