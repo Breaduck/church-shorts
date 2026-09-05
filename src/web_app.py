@@ -2969,8 +2969,7 @@ PREVIEW_MODAL_JS = r"""
     display: flex; align-items: center; justify-content: center; padding: 16px;
     animation: pvFade .18s ease; }
   @keyframes pvFade { from { opacity: 0; } to { opacity: 1; } }
-  .pv-card { background: rgba(255,255,255,.78); -webkit-backdrop-filter: blur(34px) saturate(180%);
-    backdrop-filter: blur(34px) saturate(180%); border: 1px solid var(--glass-border, rgba(255,255,255,.55));
+  .pv-card { background: #fff; border: 1px solid var(--glass-border, rgba(255,255,255,.55));
     border-radius: 26px; box-shadow: 0 24px 80px rgba(15,23,42,.3);
     width: min(600px, 94vw); max-height: 94vh; overflow-y: auto; padding: 18px 18px 16px;
     animation: pvUp .22s cubic-bezier(.22,.61,.36,1); }
