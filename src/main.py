@@ -1200,6 +1200,7 @@ def render_selected(
     motion_enabled: bool | None = None,
     caption_preset: str = "",
     caption_lang: str = "",
+    facetrack_enabled: bool | None = None,
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
@@ -1222,6 +1223,8 @@ def render_selected(
             **cfg["render"],
             "sfx": {**cfg["render"].get("sfx", {}), "enabled": sfx_enabled},
         }
+    if facetrack_enabled is not None:
+        cfg["render"] = {**cfg["render"], "facetrack": facetrack_enabled}
     if motion_enabled is not None:
         # 모션그래픽(제목 팝 + 자막 페이드): captions.animate로 전달(렌더의 pr_captions도 상속).
         cfg["captions"] = {**cfg["captions"], "animate": motion_enabled}

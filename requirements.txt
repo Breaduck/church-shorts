@@ -10,3 +10,6 @@ python-dotenv>=1.0.0
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
+# 얼굴 추적 리프레이밍(facetrack): Haar 캐스케이드 얼굴 검출. 4.x는 캐스케이드 XML을
+# 번들하지만, 리포에도 assets/facetrack에 복사해 버전 독립적으로 로드한다.
+opencv-python-headless>=4.8,<5

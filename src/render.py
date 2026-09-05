@@ -381,22 +381,31 @@ def _add_sfx(output_path: Path, times: list[float], sfx_cfg: dict) -> None:
 SOURCE_CROP_BOTTOM_PCT_DEFAULT = 0.08
 
 
-def card_source_video_filter(card: dict, vbw: int, vbh: int) -> str:
+def card_source_video_filter(card: dict, vbw: int, vbh: int, pan_x_expr: str = "") -> str:
     """소스 프레임을 카드 영상 박스 크기로 만드는 crop+scale 필터 체인.
 
     실제 렌더(_build_card_filter_complex)와 편집 미리보기(web_app.clip_preview_frame)가
     이 함수 하나를 공유한다 — 각자 문자열을 복제하면 fill_mode/크롭 기본값이 조금만
-    어긋나도 '편집 화면에서 본 프레임 ≠ 결과물'이 된다."""
+    어긋나도 '편집 화면에서 본 프레임 ≠ 결과물'이 된다.
+
+    pan_x_expr가 주어지면(cover 모드) 중앙 고정 크롭 대신 그 x 표현식으로 크롭을 움직여
+    화자 얼굴을 따라간다(facetrack). 미리보기는 pan_x_expr 없이 호출해 중앙 크롭을 보인다."""
     parts = []
     pct = card.get("source_crop_bottom_pct", SOURCE_CROP_BOTTOM_PCT_DEFAULT)
     if pct > 0:
         parts.append(f"crop=iw:ih*{1 - pct}:0:0")
     if card.get("fill_mode", "cover") == "cover":
-        # 박스를 꽉 채우도록 확대 후 중앙을 박스 크기로 잘라낸다 (좌우 빈 배경만 트리밍,
-        # 설교자는 중앙이라 안 잘림). 이렇게 해야 영상이 커져 화면이 유튜브 쇼츠처럼 꽉 찬다.
-        parts.append(
-            f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
-        )
+        # 박스를 꽉 채우도록 확대 후 박스 크기로 잘라낸다. 기본은 중앙(좌우 빈 배경만 트리밍),
+        # facetrack이 있으면 x를 시간에 따라 움직여 화자를 따라간다.
+        if pan_x_expr:
+            parts.append(
+                f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,"
+                f"crop={vbw}:{vbh}:x='{pan_x_expr}':y=0"
+            )
+        else:
+            parts.append(
+                f"scale={vbw}:{vbh}:force_original_aspect_ratio=increase:flags=lanczos,crop={vbw}:{vbh}"
+            )
     else:
         # fit: 원본 가로세로 비율 그대로(옆을 안 자름). vbh가 이미 그 비율로 계산됨.
         parts.append(f"scale={vbw}:{vbh}:flags=lanczos")
@@ -447,6 +456,7 @@ def _build_card_filter_complex(
     vbh: int,
     vby: int,
     speedup: tuple[float, float] | None = None,
+    pan_x_expr: str = "",
 ) -> tuple[str, str]:
     """카드형 레이아웃(흰 배경 + 둥근 모서리 영상 박스): filter_complex 문자열과
     최종 비디오 출력 라벨을 반환한다.
@@ -475,7 +485,7 @@ def _build_card_filter_complex(
         # 온다(warp는 keep_segments 없을 때만 활성). captions.warp_time과 동일한 식이어야 함.
         f, k = speedup
         video_parts.append(f"setpts='(if(lt(T,{f}),T/{k},{f}/{k}+(T-{f})))/TB'")
-    video_parts.append(card_source_video_filter(card, vbw, vbh))
+    video_parts.append(card_source_video_filter(card, vbw, vbh, pan_x_expr))
     video_chain = ",".join(video_parts)
 
     filter_complex = (
@@ -549,6 +559,10 @@ def render_clip(
     clip_fill = getattr(clip, "fill_mode", "") or ""
     if clip_fill:
         _card = {**render_cfg.get("card_layout", {}), "fill_mode": clip_fill}
+        render_cfg = {**render_cfg, "card_layout": _card}
+    # 얼굴 추적 리프레이밍은 cover 크롭에서만 의미가 있다(fit은 옆을 안 자름) → 켜지면 cover 강제.
+    if render_cfg.get("facetrack"):
+        _card = {**render_cfg.get("card_layout", {}), "fill_mode": "cover"}
         render_cfg = {**render_cfg, "card_layout": _card}
 
     silences: list[tuple[float, float]] = []
@@ -679,6 +693,29 @@ def render_clip(
         return ["-af", chain] if chain else []
 
     source_fps = _probe_fps(video_path)
+    # 얼굴 추적 팬 표현식(cover 크롭용): 켜져 있고 cover일 때만 계산한다. 실패/저검출이면
+    # 빈 문자열 → 중앙 크롭 폴백(기존 동작). select(무음 제거)로 시간축이 바뀌면 팬 시각이
+    # 어긋나므로 keep_segments가 있으면 적용하지 않는다(안전).
+    pan_x_expr = ""
+    if is_card and render_cfg.get("facetrack") and card_layout.get("fill_mode", "cover") == "cover" \
+            and not keep_segments and not warp_active:
+        try:
+            from src.facetrack import compute_face_centers, build_crop_x_expr
+
+            src_w, src_h = source_resolution
+            bottom_pct = card_layout.get("source_crop_bottom_pct", SOURCE_CROP_BOTTOM_PCT_DEFAULT)
+            eff_h = src_h * (1 - bottom_pct)
+            vbw_ = card_layout["video_box_width"]
+            vbh_ = card_layout["video_box_height"]
+            factor = max(vbw_ / src_w, vbh_ / max(1.0, eff_h))
+            scaled_w = src_w * factor
+            max_x = scaled_w - vbw_
+            if max_x > 2:
+                centers = compute_face_centers(video_path, clip.start, clip.end)
+                pan_x_expr = build_crop_x_expr(centers, scaled_w, vbw_, max_x)
+        except Exception:  # noqa: BLE001 - 얼굴 추적 실패는 치명적이지 않음(중앙 크롭 폴백)
+            traceback.print_exc()
+            pan_x_expr = ""
     if is_card:
         mask_path = _get_or_create_rounded_mask(
             card_layout["video_box_width"], card_layout["video_box_height"], card_layout["corner_radius"]
@@ -688,7 +725,7 @@ def render_clip(
         filter_complex, vout_label = _build_card_filter_complex(
             render_cfg, captions_cfg, resolution, warped_dur, select_expr, ass_path_ff, font_dir,
             source_fps, card_layout["video_box_height"], card_layout["video_box_y"],
-            speedup=hook_speedup,
+            speedup=hook_speedup, pan_x_expr=pan_x_expr,
         )
         if vpad_vf:
             filter_complex += f";{vout_label}{vpad_vf}[vpad]"
