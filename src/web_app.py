@@ -2131,7 +2131,7 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     if "captions" in body:
         # 시간순으로 정렬해 저장한다. 편집기에서 시간을 고치거나 줄을 끼워 넣어 행 순서가
         # 시간순과 어긋나도, 렌더/편집기 어디서든 항상 시간순으로 일관되게 다뤄지도록.
-        clip.caption_overrides = sorted(
+        _new_caps = sorted(
             (
                 {"start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip()}
                 for c in body["captions"]
@@ -2139,6 +2139,15 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
             ),
             key=lambda o: o["start"],
         )
+        # 데이터 소실 방지(찬양): 찬양 클립은 재전사 폴백이 없어, 빈 captions로 덮어쓰면
+        # 자막이 영구 소실되고 렌더에 아무 자막도 안 나간다(실사고 2026-09-05 — 팝업의
+        # '구간 변경 시 자막 비우기'가 찬양에도 적용돼 저장 자막이 증발). 찬양에서 비어있는
+        # captions는 무시하고 기존 자막을 지킨다(정말 지우려면 편집기에서 줄을 지우는 게
+        # 아니라 텍스트를 남겨야 하는 구조라, 전량 삭제 의도는 사실상 없다).
+        if not _new_caps and getattr(clip, "clip_type", "") == "praise" and clip.caption_overrides:
+            print(f"[save] praise 클립 {idx}: 빈 captions 저장 무시(기존 {len(clip.caption_overrides)}줄 유지)")
+        else:
+            clip.caption_overrides = _new_caps
     # 업로드 찬양 클립의 카라오케 자막 토글(사용자가 "싱크 맞추기"를 눌러 확인한 경우만 켬).
     if "caption_karaoke" in body:
         clip.caption_karaoke = bool(body.get("caption_karaoke"))
@@ -3326,8 +3335,11 @@ PREVIEW_MODAL_JS = r"""
       if (changed) {
         payload.clip_start = outS; payload.clip_end = outE;
         payload.keep_ranges = segs.map((sg) => [sg.s, sg.e]);
-        // 구간을 바꾸면 이전에 저장된 자막 타임스탬프는 무효 → 비워서 렌더 때 재전사 유도.
-        payload.captions = [];
+        // 구간을 바꾸면 저장된 자막 타임스탬프가 무효 → 설교는 비워서 렌더 때 재전사를
+        // 유도한다. 단 업로드 찬양은 재전사 폴백이 없어(전사본 없음) 비우는 순간 자막이
+        // 영구 소실되고 영상에 아무 자막도 안 구워진다(실사고 2026-09-05: "저장해둔 자막이
+        // 사라져") — 찬양은 자막을 유지한다(시각은 절대초라 트림과 무관하게 유효).
+        if (!isUploadPraise) payload.captions = [];
       }
       return { payload, outS, outE };
     }
