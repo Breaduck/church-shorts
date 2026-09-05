@@ -597,10 +597,11 @@ CANDIDATES_TEMPLATE = f"""
       <input type="checkbox" id="boldCapChk" style="vertical-align:middle;margin-right:6px"> 레퍼런스 자막(볼드·형광펜)
     </label>
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="englishChk" style="vertical-align:middle;margin-right:6px"> 영어 자막(번역본)
-    </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="bilingualChk" style="vertical-align:middle;margin-right:6px"> 한글+영어 2줄(한글 아래 영어)
+      자막 언어
+      <select id="capLangSel" style="vertical-align:middle;margin-left:6px;font-size:13px;font-family:inherit;border:1px solid var(--border,#f0f1f3);border-radius:7px;padding:4px 6px">
+        <option value="bilingual" selected>한글+영어 2줄 (기본)</option>
+        <option value="ko">한글만</option>
+      </select>
     </label>
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
       <input type="checkbox" id="facetrackChk" style="vertical-align:middle;margin-right:6px"> 얼굴 추적(화면 확대·화자 따라감)
@@ -638,13 +639,12 @@ CANDIDATES_TEMPLATE = f"""
     const sfxChk = document.getElementById('sfxChk');
     const motionChk = document.getElementById('motionChk');
     const boldCapChk = document.getElementById('boldCapChk');
-    const englishChk = document.getElementById('englishChk');
-    const bilingualChk = document.getElementById('bilingualChk');
+    const capLangSel = document.getElementById('capLangSel');
     const facetrackChk = document.getElementById('facetrackChk');
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, english: englishChk ? englishChk.checked : false, bilingual: bilingualChk ? bilingualChk.checked : false, facetrack: facetrackChk ? facetrackChk.checked : false}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, caption_lang: capLangSel ? capLangSel.value : 'bilingual', facetrack: facetrackChk ? facetrackChk.checked : false}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1136,9 +1136,17 @@ def render_route(video_id: str):
     sfx_enabled = bool(body.get("sfx", False))
     motion_enabled = bool(body.get("motion", False))
     caption_preset = "bold_yellow" if body.get("bold_caption") else ""
-    # 한글+영어 2줄은 기본 켬(사용자 요청 2026-09-05 "디폴트로") — 영어 트랙이 있는 클립만
-    # 실제로 2줄이 되므로(en 없으면 한국어만) 설교/영어 미번역 클립엔 아무 영향 없다.
-    caption_lang = "en" if body.get("english") else ("bilingual" if body.get("bilingual", True) else "")
+    # 자막 언어: 명시적 caption_lang("bilingual"/"ko"/"en")을 우선한다. 기본은 한글+영어
+    # 2줄(사용자 요청 "디폴트로") — 영어 트랙이 있는 클립만 실제 2줄이 되므로 무해.
+    # 예전 체크박스 2개(english/bilingual)는 '둘 다 체크하면 영어만'이 되는 혼란이 있었다
+    # (실신고 2026-09-05) — 셀렉트 하나로 교체, 구 클라이언트 값은 bilingual 우선으로 해석.
+    _cl = str(body.get("caption_lang") or "").strip()
+    if _cl in ("en", "bilingual"):
+        caption_lang = _cl
+    elif _cl == "ko":
+        caption_lang = ""
+    else:  # 구 체크박스/스튜디오(미전송) 하위호환
+        caption_lang = "bilingual" if body.get("bilingual", True) else ("en" if body.get("english") else "")
     facetrack_enabled = bool(body.get("facetrack", False))
 
     video_dir = OUTPUT_ROOT / video_id
