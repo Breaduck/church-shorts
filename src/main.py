@@ -743,16 +743,43 @@ def map_lines_to_voice_times(
     # 또 어긋나면 이 상수 대신 실측 재조정 — 편집기 '전체 밀기'(±0.1초)로 미세 보정도 가능.
     starts = [max(clip_start, s + 0.7) for s in starts]
 
+    # ── 안 부른 소절 드랍 ────────────────────────────────────────────────────
+    # 영상이 항상 곡 처음부터 시작하지는 않는다(후렴부터 찍었거나, 끝까지 안 부르고 끊김).
+    # 그런데 정식 가사는 1절부터 끝까지 전부라, 안 부른 앞/뒤 소절들이 첫 앵커 앞·마지막
+    # 앵커 뒤의 좁은 공백에 욱여넣어져 '부르지도 않은 가사'가 떴다(실신고 2026-09-06:
+    # "영상이 항상 처음부터 시작하지는 않아 — 유도리 있게 날릴 건 날려야지").
+    # 판정: 첫 앵커 앞 공백이 그 앞 미앵커 소절들을 실제로 부르기에 물리적으로 부족하면
+    # (소절당 MIN_SEC_PER_LINE=1.5초 기준) 공백에 안 들어가는 만큼 앞에서부터 버린다.
+    # 꼬리도 동일. 앵커가 하나도 없으면(전사 뭉개짐) 판단 근거가 없으니 그대로 둔다.
+    dropped: set[int] = set()
+    if anchors:
+        first_a = min(anchors.keys())
+        head_gap = anchors[first_a][2] - clip_start
+        if first_a > 0 and head_gap < first_a * MIN_SEC_PER_LINE:
+            n_fit = max(0, int(head_gap // MIN_SEC_PER_LINE))
+            dropped.update(range(0, first_a - n_fit))
+        last_a = max(anchors.keys())
+        tail_lines = len(texts) - 1 - last_a
+        tail_gap = clip_end - anchors[last_a][3]
+        if tail_lines > 0 and tail_gap < tail_lines * MIN_SEC_PER_LINE:
+            n_fit = max(0, int(tail_gap // MIN_SEC_PER_LINE))
+            dropped.update(range(last_a + 1 + n_fit, len(texts)))
+    keep = [i for i in range(len(texts)) if i not in dropped]
+    if dropped:
+        print(f"[praise-sync] 안 부른 소절 {len(dropped)}개 드랍 (영상이 곡 중간부터 시작/중간에 끝)")
+    if not keep:
+        return None
+
     # 첫 소절 스냅: 찬양 클립은 이미 '노래 시작' 기준으로 잘려 있다(제목 기반 업로드는
     # 0초=노래 시작, 자동 감지 곡도 전주 패딩 ~4초뿐). whisper는 노래의 여린 도입부를
     # 몇 초 놓치고 첫 단어를 늦게 찍는 버릇이 있어, 첫 소절이 4~5초 늦게 뜨는 신고가
-    # 났다("0초부터 노래 나오는데 왜 4초부터로 나오지"). 첫 소절 시작이 클립 시작에서
-    # 6초 이내면 인식 지연으로 보고 클립 시작으로 당긴다(진짜 긴 전주면 그대로 둠).
-    if starts and (starts[0] - clip_start) <= 6.0:
-        starts[0] = clip_start
+    # 났다("0초부터 노래 나오는데 왜 4초부터로 나오지"). (드랍 후 남은) 첫 소절 시작이
+    # 클립 시작에서 6초 이내면 인식 지연으로 보고 클립 시작으로 당긴다(진짜 긴 전주면 그대로 둠).
+    if (starts[keep[0]] - clip_start) <= 6.0:
+        starts[keep[0]] = clip_start
 
     out: list[dict] = [
-        {"start": round(s, 2), "end": 0.0, "text": t} for s, t in zip(starts, texts)
+        {"start": round(starts[i], 2), "end": 0.0, "text": texts[i]} for i in keep
     ]
     # 단조 증가 보정.
     for i in range(len(out)):
@@ -767,11 +794,12 @@ def map_lines_to_voice_times(
     # 단, 다음 소절이 그보다 먼저 시작하면 거기서 끊는다(연속 가창은 기존처럼 이어짐).
     # 상한을 넘는 나머지 구간(간주)엔 자막이 꺼진다 — 노래 없는데 가사가 떠 있지 않게.
     for i in range(len(out)):
+        oi = keep[i]  # 드랍 이후 out 위치 → 원래 소절 인덱스(anchors/texts 키)
         nxt = out[i + 1]["start"] if i + 1 < len(out) else clip_end
-        if i in anchors:
-            cap = anchors[i][3] + 2.0
+        if oi in anchors:
+            cap = anchors[oi][3] + 2.0
         else:
-            cap = out[i]["start"] + max(5.0, len(texts[i]) * 1.0 + 3.0)
+            cap = out[i]["start"] + max(5.0, len(texts[oi]) * 1.0 + 3.0)
         out[i]["end"] = round(max(out[i]["start"] + 0.5, min(nxt, cap)), 2)
 
     # 최소 노출 보장(사용자 최우선 요구: "자막 누락 없는 게 제일 중요"): 후렴 반복 오탐 등으로
