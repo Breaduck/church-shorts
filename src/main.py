@@ -1383,6 +1383,11 @@ def render_selected(
         }
     if facetrack_enabled is not None:
         cfg["render"] = {**cfg["render"], "facetrack": facetrack_enabled}
+    if caption_lang == "bilingual":
+        # 이중언어(한글 아래 영어): 한국어는 그대로 유지하고, 렌더 시 영어 번역 트랙을 같은
+        # 줄에 작게 이어붙인다(render.render_clip이 이 플래그를 읽어 bilingual_overrides
+        # 전달). caption_lang=="en"(영어로 완전 대체)와는 다른 옵션 — 둘 다 켜지면 en이 우선.
+        cfg["render"] = {**cfg["render"], "caption_bilingual": True}
     if motion_enabled is not None:
         # 모션그래픽(제목 팝 + 자막 페이드): captions.animate로 전달(렌더의 pr_captions도 상속).
         cfg["captions"] = {**cfg["captions"], "animate": motion_enabled}

@@ -600,6 +600,9 @@ CANDIDATES_TEMPLATE = f"""
       <input type="checkbox" id="englishChk" style="vertical-align:middle;margin-right:6px"> 영어 자막(번역본)
     </label>
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
+      <input type="checkbox" id="bilingualChk" style="vertical-align:middle;margin-right:6px"> 한글+영어 2줄(한글 아래 영어)
+    </label>
+    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
       <input type="checkbox" id="facetrackChk" style="vertical-align:middle;margin-right:6px"> 얼굴 추적(화면 확대·화자 따라감)
     </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
@@ -636,11 +639,12 @@ CANDIDATES_TEMPLATE = f"""
     const motionChk = document.getElementById('motionChk');
     const boldCapChk = document.getElementById('boldCapChk');
     const englishChk = document.getElementById('englishChk');
+    const bilingualChk = document.getElementById('bilingualChk');
     const facetrackChk = document.getElementById('facetrackChk');
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, english: englishChk ? englishChk.checked : false, facetrack: facetrackChk ? facetrackChk.checked : false}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, english: englishChk ? englishChk.checked : false, bilingual: bilingualChk ? bilingualChk.checked : false, facetrack: facetrackChk ? facetrackChk.checked : false}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1132,7 +1136,7 @@ def render_route(video_id: str):
     sfx_enabled = bool(body.get("sfx", False))
     motion_enabled = bool(body.get("motion", False))
     caption_preset = "bold_yellow" if body.get("bold_caption") else ""
-    caption_lang = "en" if body.get("english") else ""
+    caption_lang = "en" if body.get("english") else ("bilingual" if body.get("bilingual") else "")
     facetrack_enabled = bool(body.get("facetrack", False))
 
     video_dir = OUTPUT_ROOT / video_id

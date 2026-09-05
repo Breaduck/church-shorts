@@ -649,6 +649,11 @@ def render_clip(
         highlight_keywords=(
             (getattr(clip, "caption_highlights", None) or getattr(clip, "keywords", None) or [])
         ),
+        # 이중언어(한글 아래 영어): render_selected(caption_lang="bilingual")일 때만 켜진다.
+        # 한국어(caption_overrides)는 그대로 두고 영어 번역 트랙을 같은 줄에 작게 이어붙인다.
+        bilingual_overrides=(
+            getattr(clip, "caption_overrides_en", None) if render_cfg.get("caption_bilingual") else None
+        ),
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 

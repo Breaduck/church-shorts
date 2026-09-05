@@ -534,6 +534,7 @@ def build_ass(
     highlight_color: str = "",
     animate: bool = False,
     highlight_style: str = "fill",
+    bilingual_overrides: list | None = None,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -663,7 +664,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{title_disp}"
         )
 
-    def _emit_line(line: CaptionLine) -> None:
+    def _emit_line(line: CaptionLine, extra_text: str = "") -> None:
         # sync_offset_sec: 자막 표시를 오디오 대비 일괄 지연(+)/선행(-)하는 전역 노브.
         # 유튜브 자동자막 단어 시각이 전반적으로 0.2~0.5초 이른 '상시 리드'는 무음 교정
         # (긴 쉼만 잡음)으로는 안 잡혀서, 최종 이벤트 시각에서 통째로 민다. 카라오케 \k는
@@ -681,6 +682,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     disp = _highlight_wrap(disp, highlight_color, highlight_style)
                 parts.append(disp)
             text = " ".join(parts)
+        text = text + extra_text  # 이중언어(영어 번역 줄) 등, 이미 ASS 태그가 붙은 채로 온다.
         if animate:
             # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
             text = "{\\fad(120,80)}" + text
@@ -695,9 +697,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 더하면 전체가 미세하게 늦어진다("전체적으로 미세하게 안 맞는다" 실신고 원인).
         # 전체를 밀고 싶으면 편집기의 '전체 밀기' 버튼으로 명시적으로 조절한다.
         sync_offset_sec = 0.0
+        # 이중언어(한글 아래 영어): bilingual_overrides가 caption_overrides와 같은 개수면
+        # start 기준으로 짝지어, 같은 줄에 영어 번역을 작게 이어붙인다(사용자 요청 2026-09-05
+        # "한글 아래 영어"). 개수가 안 맞으면(번역 누락 등) 안전하게 한국어만 낸다.
+        en_by_start: dict[float, str] = {}
+        if bilingual_overrides and len(bilingual_overrides) == len(caption_overrides):
+            ko_sorted = sorted(caption_overrides, key=lambda o: float(o.get("start", 0)))
+            en_sorted = sorted(bilingual_overrides, key=lambda o: float(o.get("start", 0)))
+            en_by_start = {
+                round(float(ko.get("start", 0)), 2): str(en.get("text", "")).strip()
+                for ko, en in zip(ko_sorted, en_sorted)
+            }
         lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
         for line in lines:
-            _emit_line(line)
+            extra = ""
+            en_text = en_by_start.get(round(line.start + clip_start, 2), "")
+            if en_text:
+                en_size = max(16, int(caption_size * 0.6))
+                extra = f"\\N{{\\fs{en_size}\\c&HE6E6E6&\\i1}}{_display_text(en_text)}{{\\r}}"
+            _emit_line(line, extra_text=extra)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
@@ -752,6 +770,7 @@ def build_ass_for_clip(
     voice_silences: list[tuple[float, float]] | None = None,
     hook_speedup: tuple[float, float] | None = None,
     highlight_keywords: list[str] | None = None,
+    bilingual_overrides: list | None = None,
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -808,4 +827,5 @@ def build_ass_for_clip(
         ),
         animate=bool(config_captions.get("animate", False)),
         highlight_style=str(config_captions.get("highlight_style", "fill") or "fill"),
+        bilingual_overrides=bilingual_overrides,
     )
