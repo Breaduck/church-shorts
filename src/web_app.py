@@ -2561,7 +2561,7 @@ PREVIEW_MODAL_JS = r"""
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
-      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
+      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다 (토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
       '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">✨ AI 자막 교정</button>' +
       '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">🌐 영어 자막 만들기</button>' +
       '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
@@ -3180,16 +3180,22 @@ PREVIEW_MODAL_JS = r"""
     });
 
     // ── 싱크 맞추기: 자막 내용·분할은 그대로, 각 줄의 시작·끝만 실제 발화 시각에 재정렬 ──
+    // 두 번째 이상 누르면 fresh=true — 캐시 재사용이 아니라 최고 정밀 모델(large-v3)로
+    // 처음부터 다시 전사해 다시 맞춘다("계속 눌러도 결과가 똑같다" 신고 대응).
     const syncBtn = $('.pv-syncbtn');
+    let syncPresses = 0;
     syncBtn.addEventListener('click', async () => {
       const caps = collectCaptions();
       if (!caps.length) { alert('맞출 자막이 없습니다'); return; }
-      syncBtn.disabled = true; syncBtn.textContent = '맞추는 중…';
+      const fresh = syncPresses > 0;
+      syncPresses += 1;
+      syncBtn.disabled = true;
+      syncBtn.textContent = fresh ? '정밀 재분석 중… (1~3분)' : '맞추는 중…';
       let r = null;
       try {
         r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/sync_captions', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ captions: caps }),
+          body: JSON.stringify({ captions: caps, fresh: fresh }),
         });
       } catch (e) { r = null; }
       const j = r && r.ok ? await r.json().catch(() => null) : null;
@@ -3542,19 +3548,24 @@ def retranscribe_status(video_id: str, idx: int):
     return jsonify(j)
 
 
-def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list) -> "Response":
-    """노래(찬양) 자막 싱크: 클립을 온디맨드 전사해 '가창 단어 시각'을 얻고, 가사 줄들을
-    글자 수 비례로 그 단어 시각에 매핑한다(내용이 틀려도 타이밍은 맞음). 결과는 캐시.
+def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list, fresh: bool = False) -> "Response":
+    """노래(찬양) 자막 싱크: 클립을 온디맨드 전사해 '가창 단어 시각'을 얻고, 가사 소절을
+    퍼지 앵커링으로 그 위치에 매핑한다(내용이 틀려도 타이밍은 맞음). 결과는 캐시.
 
-    - 텍스트 매칭이 아니라 '단어 시각 진행'에 매핑하므로 노래 오인식에 강하다.
-    - 전사에 단어가 거의 없으면(간주만 등) 원래 시각을 유지한다."""
+    fresh=True(같은 팝업에서 두 번째 이상 누름): 캐시 재사용이 아니라 최고 정밀 모델
+    (whisper.precise_model_size, 기본 large-v3)로 다시 전사해 다시 맞춘다 — "계속 눌러도
+    결과가 똑같다" 신고 대응. 같은 모델 결과는 결정적이라 세 번째부터는 large-v3 캐시를
+    재사용한다(더 좋아질 여지가 없음)."""
     cfg = _load_config()
     from src.main import map_lines_to_voice_times
 
+    w = cfg["whisper"]
+    model_override = (w.get("precise_model_size") or "large-v3") if fresh else ""
     texts = [str(l.get("text", "")).strip() for l in in_lines]
     mapped = map_lines_to_voice_times(
         video_dir / "source.mp4", clip.start, clip.end, texts,
-        cfg["whisper"], cache_dir=video_dir / "precise_cache",
+        w, cache_dir=video_dir / "precise_cache",
+        model_override=model_override,
     )
     if not mapped:
         # 가창 단어가 거의 안 잡혔다 → 매핑 불가, 원래 시각 유지.
@@ -3565,8 +3576,8 @@ def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list) -> "Response"
         ]
         return jsonify({"lines": lines, "matched": 0, "total": len(lines),
                         "source": "전사 단어 부족 — 원래 시각 유지"})
-    return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped),
-                    "source": "가창 단어 시각 기준(노래 싱크)"})
+    src = "최고 정밀(large-v3) 재분석" if fresh else "가창 단어 시각 기준(노래 싱크)"
+    return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped), "source": src})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/sync_captions", methods=["POST"])
@@ -3596,7 +3607,9 @@ def sync_captions_route(video_id: str, idx: int):
     # 인트로/간주를 건너뛰고 가사가 노래에 붙는다.
     if getattr(clip, "clip_type", "") == "praise" or not (video_dir / "transcript.json").exists():
         try:
-            return _sync_captions_by_voice(video_dir, clip, in_lines)
+            return _sync_captions_by_voice(
+                video_dir, clip, in_lines, fresh=bool(body.get("fresh")),
+            )
         except Exception as e:  # noqa: BLE001
             return jsonify({"error": f"싱크 맞추기 실패(전사): {e}"}), 500
 

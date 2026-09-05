@@ -498,6 +498,7 @@ def map_lines_to_voice_times(
     texts: list[str],
     whisper_cfg: dict,
     cache_dir: Path | None = None,
+    model_override: str = "",
 ) -> list[dict] | None:
     """가사 줄(texts)을 클립의 실제 '가창 단어 시각'에 비례로 매핑해 caption_overrides를 만든다.
 
@@ -515,8 +516,12 @@ def map_lines_to_voice_times(
     texts = [str(t).strip() for t in texts if str(t).strip()]
     if not texts:
         return None
-    model = whisper_cfg.get("praise_model_size") or whisper_cfg.get("model_size", "medium")
-    sig = "praisesync2"  # v1(small 모델) 캐시와 섞이지 않게 시그니처 분리
+    model = (
+        model_override
+        or whisper_cfg.get("praise_model_size")
+        or whisper_cfg.get("model_size", "medium")
+    )
+    sig = "praisesync2"  # v1(small 모델) 캐시와 섞이지 않게 시그니처 분리(모델명은 파일명에 포함됨)
     segs = None
     if cache_dir is not None:
         segs = _precise_cache_find(cache_dir, model, sig, clip_start, clip_end)
@@ -624,6 +629,14 @@ def map_lines_to_voice_times(
             starts[li] = times[min(n - 1, int(cum / total_chars * n))]
             cum += max(1, len(t))
         print("[praise-sync] 퍼지 앵커 0개 → 글자수 비례 폴백")
+
+    # 첫 소절 스냅: 찬양 클립은 이미 '노래 시작' 기준으로 잘려 있다(제목 기반 업로드는
+    # 0초=노래 시작, 자동 감지 곡도 전주 패딩 ~4초뿐). whisper는 노래의 여린 도입부를
+    # 몇 초 놓치고 첫 단어를 늦게 찍는 버릇이 있어, 첫 소절이 4~5초 늦게 뜨는 신고가
+    # 났다("0초부터 노래 나오는데 왜 4초부터로 나오지"). 첫 소절 시작이 클립 시작에서
+    # 6초 이내면 인식 지연으로 보고 클립 시작으로 당긴다(진짜 긴 전주면 그대로 둠).
+    if starts and (starts[0] - clip_start) <= 6.0:
+        starts[0] = clip_start
 
     out: list[dict] = [
         {"start": round(s, 2), "end": 0.0, "text": t} for s, t in zip(starts, texts)

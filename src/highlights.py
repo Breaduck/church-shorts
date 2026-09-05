@@ -590,11 +590,16 @@ def _invoke_claude_json(
     timeout_sec: int = 900,
     on_progress=None,
     max_clips: int = 6,
+    allowed_tools: str = "",
 ) -> list[dict]:
     """`claude -p`에 프롬프트를 보내 JSON 배열 응답을 받아 파싱한다.
 
     select_highlights_auto(설교)와 select_praise_songs(찬양)가 공유하는 실행부 —
-    스트리밍 진행률/워치독/한도 감지/JSON 추출까지 동일하게 처리한다."""
+    스트리밍 진행률/워치독/한도 감지/JSON 추출까지 동일하게 처리한다.
+
+    allowed_tools: 빈 문자열(기본)이면 도구를 전부 끈다(단발 텍스트 분석 최적화).
+    "WebSearch"처럼 지정하면 그 도구만 허용·자동승인한다 — 가사 확인처럼 모델 기억만으론
+    부족해 실제 인터넷 검색이 필요한 경우용(사용자 요청 2026-09-05)."""
     claude_path = shutil.which("claude")
     if not claude_path:
         raise RuntimeError("claude CLI를 PATH에서 찾을 수 없습니다 (claude --version으로 설치 확인)")
@@ -612,11 +617,17 @@ def _invoke_claude_json(
         # (실측: 동일 미니 호출이 37k → 21.6k 토큰).
         "--system-prompt", "너는 교회 쇼츠 편집 전문가다. 지시받은 형식대로만 출력한다.",
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    ]
+    if allowed_tools:
+        # 지정한 도구만 허용 + 자동 승인(-p 모드는 대화형 승인 불가). WebSearch면 모델이
+        # 실제 인터넷 검색으로 사실 확인(정식 가사 등)을 하고 답한다 — 턴이 몇 번 늘지만
+        # 기억 기반 오답(비슷한 다른 곡 가사 등)을 크게 줄인다.
+        cmd += ["--tools", allowed_tools, "--allowedTools", allowed_tools]
+    else:
         # 이 작업은 단발 텍스트 분석이라 도구가 전혀 필요 없다. 도구 정의를 아예 빼면
         # (1) 프롬프트가 더 가벼워지고 (2) 모델이 중간에 검색/파일읽기 같은 도구를 쓰며
         # 여러 턴을 도는 경로가 원천 차단된다(선정이 수 분씩 걸린 원인 후보).
-        "--tools", "",
-    ]
+        cmd += ["--tools", ""]
     if model:
         cmd += ["--model", model]  # 비우면 CLI 기본 모델(비쌀 수 있음). config에서 4.5로 고정.
     # 생각(thinking) 상한은 속도↔선정 품질의 트레이드오프. 실측(2026-09-01): 선정 199초의
@@ -1043,6 +1054,10 @@ def fetch_praise_lyrics_by_titles(
 
     titles: 사용자가 입력한 곡 제목들(입력 순서 = 영상 재생 순서로 가정).
     반환: {index: [자막 한 줄, ...]}  — 모델이 모르는 곡은 결과에서 빠진다.
+
+    2026-09-05: WebSearch를 허용해 모델이 '기억'이 아니라 실제 인터넷 검색으로 정식
+    가사를 확인하게 했다(사용자 요청: "인터넷에 검색해서 가져와" — 기억 기반은 비슷한
+    다른 곡/절 혼동 오답이 있었음). 검색 실패 시엔 기억 기반으로라도 쓰게 프롬프트에 명시.
     """
     songs = [
         {"index": i, "title": t.strip()}
@@ -1053,6 +1068,11 @@ def fetch_praise_lyrics_by_titles(
         return {}
     payload = json.dumps(songs, ensure_ascii=False, indent=1)
     prompt = f"""너는 한국 교회 찬송가·CCM(복음성가) 가사 전문가다. 아래 곡 제목들의 '정식 가사'를 써라.
+
+## 먼저 할 일: 인터넷 검색으로 확인 (중요)
+각 곡마다 WebSearch로 "<곡 제목> 가사"를 검색해 실제 정식 가사를 확인하고 그걸 기준으로 써라.
+기억에 의존하면 비슷한 다른 곡이나 다른 절과 혼동할 수 있다 — 검색 결과로 반드시 검증하라.
+검색이 실패하거나 결과가 없으면 그때만 알고 있는 가사를 쓰되, 그래도 확신이 없으면 빈 문자열로 두라.
 
 ## 규칙 (모두 중요)
 - 각 곡의 널리 불리는 정식 가사를 그대로 쓴다(찬송가 번호로 주어지면 그 장 가사).
@@ -1076,6 +1096,7 @@ def fetch_praise_lyrics_by_titles(
     raw = _invoke_claude_json(
         prompt, model=model, thinking_tokens=thinking_tokens,
         timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(songs),
+        allowed_tools="WebSearch",  # 기억이 아니라 실제 인터넷 검색으로 가사 확인
     )
     out: dict[int, list[str]] = {}
     for item in raw:
