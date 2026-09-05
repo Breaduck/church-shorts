@@ -116,6 +116,9 @@ class Clip:
     # '영어 자막' 버튼으로 번역해 채우고, 렌더 옵션(caption_lang="en")이면 이걸 쓴다.
     # 한국어(caption_overrides)는 그대로 보존 — "현재 것도 유지, 영어로도" 요청.
     caption_overrides_en: list = field(default_factory=list)
+    # 재생 배속(1.0~2.0). 팝업에서 선택. 렌더는 자막까지 구운 완성본에 후처리로 적용
+    # (setpts+atempo, 음정 유지)하므로 자막 싱크가 자동으로 함께 배속된다.
+    playback_speed: float = 1.0
 
 
 def build_prompt(

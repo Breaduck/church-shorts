@@ -2601,6 +2601,13 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
             print(f"[save] praise 클립 {idx}: 빈 captions 저장 무시(기존 {len(clip.caption_overrides)}줄 유지)")
         else:
             clip.caption_overrides = _new_caps
+    # 재생 배속(1.0~2.0, 팝업에서 선택). 렌더가 완성본에 후처리로 적용한다.
+    if "playback_speed" in body:
+        try:
+            _spd = float(body.get("playback_speed") or 1.0)
+        except (TypeError, ValueError):
+            _spd = 1.0
+        clip.playback_speed = min(2.0, max(1.0, _spd))
     # 업로드 찬양 클립의 카라오케 자막 토글(사용자가 "싱크 맞추기"를 눌러 확인한 경우만 켬).
     if "caption_karaoke" in body:
         clip.caption_karaoke = bool(body.get("caption_karaoke"))
@@ -2792,6 +2799,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
+            "playback_speed": float(getattr(clip, "playback_speed", 1.0) or 1.0),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -2890,6 +2898,10 @@ PREVIEW_MODAL_JS = r"""
     font-variant-numeric: tabular-nums; margin-top: 8px; }
   .pv-times b { color: #191f28; }
   .pv-tools { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .pv-speedlbl { margin-left: auto; font-size: 12.5px; font-weight: 700; color: #6b7684; }
+  .pv-speed { font-size: 12.5px; font-family: inherit; border: 1.5px solid #f0f1f3; border-radius: 8px;
+    padding: 5px 7px; background: #fafbfc; color: #191f28; cursor: pointer; }
+  .pv-speed:hover { border-color: #3182f6; }
   .pv-tool { padding: 7px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit;
     border: 1.5px solid #f0f1f3; background: #fafbfc; color: #191f28; border-radius: 9px; cursor: pointer; }
   .pv-tool:hover { border-color: #3182f6; color: #3182f6; }
@@ -3021,6 +3033,10 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-tool pv-split">✂ 재생 위치서 분할</button>' +
       '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
       '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
+      '      <label class="pv-speedlbl" title="영상·소리 배속(음정 유지). 자막도 함께 배속돼 싱크가 유지됩니다.">배속 ' +
+      '        <select class="pv-speed"><option value="1">1.0×</option><option value="1.1">1.1×</option>' +
+      '        <option value="1.2">1.2×</option><option value="1.3">1.3×</option><option value="1.5">1.5×</option>' +
+      '        <option value="1.75">1.75×</option><option value="2">2.0×</option></select></label>' +
       '    </div>' +
       '  </div>' +
       '  <div class="pv-capsec hidden">' +
@@ -3459,6 +3475,15 @@ PREVIEW_MODAL_JS = r"""
     // 찬양 클립은 자막(가사)이 핵심이라 자막 영역을 처음부터 펼쳐 둔다 — 🎼 가사 가져오기·
     // ⏱ 싱크 같은 도구가 '✎ 자막 수정'을 눌러야만 보여서 못 찾는 문제(실신고) 방지.
     if (C.clip_type === 'praise') capSec.classList.remove('hidden');
+
+    // ── 배속(1.0~2.0): 미리보기도 즉시 그 배속으로 재생, 저장 시 렌더에 반영 ──
+    const speedSel = $('.pv-speed');
+    speedSel.value = String(C.playback_speed || 1);
+    if (![...speedSel.options].some(o => o.value === speedSel.value)) speedSel.value = '1';
+    video.playbackRate = parseFloat(speedSel.value) || 1;
+    speedSel.addEventListener('change', () => {
+      video.playbackRate = parseFloat(speedSel.value) || 1;
+    });
     // ── 자막 글꼴 선택 ──
     const capFontSel = $('.pv-capfont');
     let chosenCaptionFont = (info.caption_font && info.caption_font.family) || '';
@@ -3822,6 +3847,7 @@ PREVIEW_MODAL_JS = r"""
       payload.caption_karaoke = capKaraoke;
       payload.caption_highlights = capHighlights;
       payload.caption_overrides_en = capOverridesEn;
+      payload.playback_speed = parseFloat(speedSel.value) || 1;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
       if (changed) {

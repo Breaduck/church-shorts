@@ -336,6 +336,42 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
         tmp_path.unlink(missing_ok=True)  # replace 성공 시 이미 없음; 실패 시 잔여물 정리
 
 
+def _apply_speed(output_path: Path, speed: float, encoder: str, fps: float) -> None:
+    """완성본(자막 포함)에 배속을 후처리로 적용한다(영상 setpts + 오디오 atempo, 음정 유지).
+
+    자막이 이미 프레임에 구워진 뒤라 영상과 함께 자연히 배속된다 — 자막 시각을 따로
+    계산할 필요가 없어 싱크가 어긋날 수 없다. fps 필터로 CFR을 유지해 이후의 아웃트로
+    concat(-c copy, 파라미터 일치 필수)도 안전하다."""
+    speed = min(2.0, max(1.0, float(speed)))
+    if abs(speed - 1.0) < 0.01:
+        return
+    tmp = output_path.with_suffix(".spd.mp4")
+    video_args = (
+        ["-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]
+        if encoder == "h264_qsv"
+        else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    )
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(output_path),
+        "-vf", f"setpts=PTS/{speed:.4f},fps={fps}",
+        "-af", f"atempo={speed:.4f}",
+        *video_args,
+        "-c:a", "aac", "-b:a", "192k",
+        str(tmp),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 and encoder == "h264_qsv":
+            cmd = cmd[: cmd.index("-c:v")] + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + cmd[cmd.index("-c:a") :]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not tmp.exists():
+            raise RuntimeError(f"배속 적용 실패:\n{proc.stderr[-2000:]}")
+        tmp.replace(output_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _add_sfx(output_path: Path, times: list[float], sfx_cfg: dict) -> None:
     """효과음(whoosh)을 지정 시각에 합성해 본 클립 오디오 아래로 믹싱한다(외부 파일 없음).
 
@@ -798,6 +834,16 @@ def render_clip(
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 렌더링 실패:\n{proc.stderr[-3000:]}")
 
+    # 배속(선택, 팝업에서 1.0~2.0): 자막까지 구워진 완성본에 후처리로 적용 — 자막도
+    # 프레임과 함께 배속되므로 싱크 재계산이 필요 없다. 아웃트로/효과음보다 먼저.
+    playback_speed = min(2.0, max(1.0, float(getattr(clip, "playback_speed", 1.0) or 1.0)))
+    if abs(playback_speed - 1.0) >= 0.01:
+        try:
+            _apply_speed(output_path, playback_speed, used_encoder, source_fps)
+        except Exception:  # noqa: BLE001 - 배속 실패 시 원속 결과물 유지(로그만)
+            traceback.print_exc()
+            playback_speed = 1.0
+
     # 효과음(선택): 본편 완성 후·아웃트로 이전에 whoosh를 합성해 믹싱한다. 도입부(0초)에
     # 하나, 무음 제거로 생긴 컷 경계마다 하나(전환음). 배속 구간이 있으면 컷 시각이 어긋날
     # 수 있어 컷 전환음은 배속이 없을 때만 넣는다. 실패해도 본 렌더는 유지(로그만).
@@ -808,7 +854,7 @@ def render_clip(
             acc = 0.0
             for s, e in keep_segments[:-1]:
                 acc += (e - s)
-                sfx_times.append(round(acc, 2))
+                sfx_times.append(round(acc / playback_speed, 2))  # 배속 후 시간축 보정
         try:
             _add_sfx(output_path, sfx_times, sfx_cfg)
         except Exception:  # noqa: BLE001 - 효과음 실패는 치명적이지 않음
