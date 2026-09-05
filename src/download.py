@@ -216,6 +216,70 @@ def download_video(
     )
 
 
+def download_video_hd(
+    video_dir: Path, on_progress: Optional[Callable[[float], None]] = None
+) -> Path | None:
+    """가로 원본 렌더용 고화질(1080p 상한) 원본을 source_hd.mp4로 받는다.
+
+    기본 source.mp4는 720p 상한이다 — 세로 쇼츠는 영상 박스가 1000px 폭이라 충분하지만,
+    가로 원본 잘라내기(찬양 곡별 업로드)는 화면 전체가 1:1로 보여 720p 저비트레이트가
+    그대로 드러난다(실신고 2026-09-06: "화질이 왜이래"). 렌더는 백그라운드라 다운로드
+    시간이 크리티컬 패스를 안 잡으므로, 이 경로만 1080p를 따로 받는다.
+
+    실패하면 None(호출자가 기존 source.mp4로 폴백 — 화질은 낮아도 결과는 나온다)."""
+    target = video_dir / "source_hd.mp4"
+    if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
+        return target
+    url = f"https://www.youtube.com/watch?v={video_dir.name}"
+    _max_pct = [0.0]
+
+    def _hook(d: dict) -> None:
+        if on_progress is None or d.get("status") != "downloading":
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        downloaded = d.get("downloaded_bytes")
+        if total and downloaded:
+            pct = min(100.0, downloaded / total * 100)
+            if pct > _max_pct[0]:
+                _max_pct[0] = pct
+                on_progress(pct)
+
+    try:
+        with yt_dlp.YoutubeDL({
+            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "format_sort": ["res", "tbr"],  # 해상도 → 비트레이트 우선(저비트레이트 AV1 회피)
+            "outtmpl": str(target.with_suffix("")) + ".%(ext)s",
+            "merge_output_format": "mp4",
+            "retries": 5,
+            "fragment_retries": 10,
+            "continuedl": True,
+            "quiet": True,
+            "noprogress": True,
+            "progress_hooks": [_hook] if on_progress else [],
+        }) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception:  # noqa: BLE001 - 고화질 확보 실패는 치명적이지 않음(720p 폴백)
+        import traceback
+
+        traceback.print_exc()
+        return None
+    if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
+        return target
+    # 병합 결과가 mp4가 아닌 단일 파일(webm 등)로 남았으면 mp4로 remux.
+    singles = [p for p in video_dir.glob("source_hd.*") if p.suffix != ".mp4" and not _is_partial(p.name)]
+    if singles:
+        import subprocess
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+             "-i", str(singles[0]), "-c", "copy", str(target)],
+            capture_output=True, text=True,
+        )
+        if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
+            return target
+    return None
+
+
 if __name__ == "__main__":
     import sys
 

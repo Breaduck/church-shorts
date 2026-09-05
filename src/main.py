@@ -1753,7 +1753,26 @@ def render_selected(
             # 자막·제목 전부 없이 곡 구간만 잘라낸다(곡별 개별 업로드용 — 사용자 요청
             # 2026-09-06 "그냥 자르기 용도임. 자막도 필요없어").
             if horizontal_indices and idx in horizontal_indices:
-                src_w, src_h = _probe_display_resolution(video_path)
+                # 기본 source.mp4는 720p 상한(다운로드 시간 절약)이라 가로 풀프레임에선
+                # 화질 저하가 그대로 보인다(실신고 2026-09-06) — 이 클립만 1080p 원본을
+                # 따로 받아 쓴다(이미 받았으면 재사용, 실패하면 720p 폴백).
+                hd_path = video_path
+                if not video_dir.name.startswith("upload_"):
+                    progress(f"[{i+1}/{total}] 고화질 원본 받는 중...", base)
+                    from src.download import download_video_hd
+
+                    _hd = download_video_hd(
+                        video_dir,
+                        on_progress=lambda p: progress(
+                            f"[{i+1}/{total}] 고화질 원본 받는 중... {p:.0f}%",
+                            base + step * 0.2 * (p / 100),
+                        ),
+                    )
+                    if _hd is not None:
+                        hd_path = _hd
+                    else:
+                        print("[render] 고화질 원본 확보 실패 — 기존 720p 원본으로 폴백")
+                src_w, src_h = _probe_display_resolution(hd_path)
                 if src_w > 1920:  # 인코딩 시간/용량 절약, 비율 유지
                     src_h = int(src_h * (1920 / src_w))
                     src_w = 1920
@@ -1771,7 +1790,7 @@ def render_selected(
                 clip.caption_overrides = []
                 clip.caption_overrides_en = []
                 _run_with_progress_ticker(
-                    lambda: render_clip(video_path, [], clip, out_path, pr_render, dict(cfg["captions"])),
+                    lambda: render_clip(hd_path, [], clip, out_path, pr_render, dict(cfg["captions"])),
                     start_pct=base, end_pct=base + step, progress=progress,
                     message=f"[{i+1}/{total}] 찬양 가로 원본 렌더링 중: {clip.title}",
                     est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
