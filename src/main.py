@@ -1198,6 +1198,7 @@ def render_selected(
     outro_enabled: bool | None = None,
     sfx_enabled: bool | None = None,
     motion_enabled: bool | None = None,
+    caption_preset: str = "",
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
@@ -1223,6 +1224,20 @@ def render_selected(
     if motion_enabled is not None:
         # 모션그래픽(제목 팝 + 자막 페이드): captions.animate로 전달(렌더의 pr_captions도 상속).
         cfg["captions"] = {**cfg["captions"], "animate": motion_enabled}
+    if caption_preset == "bold_yellow":
+        # 인스타 레퍼런스 스타일: 정적(비카라오케) 큰 볼드 흰 글자 + 두꺼운 검정 외곽선,
+        # 핵심어는 '형광펜(marker)' 강조. 현재 스타일은 그대로 두고 '이 스타일도' 선택 가능.
+        _cap = cfg["captions"]
+        cfg["captions"] = {
+            **_cap,
+            "template": "minimal",
+            "highlight_style": "marker",
+            "highlight_keywords_enabled": True,
+            "primary_color": "&H00FFFFFF",           # 흰 글자
+            "outline_color": "&H00000000",           # 검정 외곽선
+            "outline_width": max(4, int(_cap.get("outline_width", 0) or 0)),
+            "font_size": int(int(_cap.get("font_size", 72)) * 1.15),
+        }
     with CLIPS_LOCK:
         clips = load_clips_json(video_dir / "clips.json")
     # 렌더는 몇 분씩 걸리고 그 사이 사용자가 편집기에서 clips.json을 고칠 수 있다. 렌더가

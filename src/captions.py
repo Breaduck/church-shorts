@@ -325,8 +325,14 @@ def _make_highlight_matcher(keywords: list[str] | None):
     return _match
 
 
-def _highlight_wrap(disp: str, hi_color: str) -> str:
-    r"""단어를 형광색+볼드로 감싼다. {\r}로 스타일 기본값(흰색/현재 볼드)으로 복귀."""
+def _highlight_wrap(disp: str, hi_color: str, style: str = "fill") -> str:
+    r"""핵심 단어를 강조로 감싼다. {\r}로 스타일 기본값으로 복귀.
+
+    - "fill"(기본): 글자 자체를 형광색+볼드(우리 기존 강조).
+    - "marker": 어두운 글자 + 두꺼운 형광 외곽선 → 인스타 레퍼런스의 '형광펜' 느낌.
+      (ASS 외곽선은 글리프를 따라가 사각형 박스는 아니지만 형광 하이라이트로 읽힌다.)"""
+    if style == "marker":
+        return f"{{\\1c&H00202020&\\3c{hi_color}\\bord10\\b1}}{disp}{{\\r}}"
     return f"{{\\c{hi_color}\\b1}}{disp}{{\\r}}"
 
 
@@ -527,6 +533,7 @@ def build_ass(
     highlight_keywords: list[str] | None = None,
     highlight_color: str = "",
     animate: bool = False,
+    highlight_style: str = "fill",
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -671,7 +678,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for w in line.words:
                 disp = _display_text(w.text)
                 if _hi_match and _hi_match(disp):
-                    disp = _highlight_wrap(disp, highlight_color)
+                    disp = _highlight_wrap(disp, highlight_color, highlight_style)
                 parts.append(disp)
             text = " ".join(parts)
         if animate:
@@ -800,4 +807,5 @@ def build_ass_for_clip(
             if config_captions.get("highlight_keywords_enabled", True) else ""
         ),
         animate=bool(config_captions.get("animate", False)),
+        highlight_style=str(config_captions.get("highlight_style", "fill") or "fill"),
     )
