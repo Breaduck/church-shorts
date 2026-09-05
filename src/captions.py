@@ -526,6 +526,7 @@ def build_ass(
     hook_speedup: tuple[float, float] | None = None,
     highlight_keywords: list[str] | None = None,
     highlight_color: str = "",
+    animate: bool = False,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -643,6 +644,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 안 타서 모델이 붙인 마침표가 그대로 나갈 수 있었다("자막 끝마다 점" 원인 중 하나).
         # 사용자가 팝업에서 Enter로 넣은 줄바꿈(\n)은 ASS의 강제 줄바꿈(\N)으로 변환한다.
         title_disp = "\\N".join(_display_text(ln) for ln in (hook_text or "").split("\n"))
+        if animate:
+            # 제목 등장 '팝': 살짝 작게+투명하게 시작해 살짝 오버슈트했다가 제자리로(스케일)
+            # + 페이드인. 모션그래픽 옵션(사용자 요청, 인스타 레퍼런스의 타이틀 애니메이션).
+            title_disp = (
+                "{\\fad(180,0)\\fscx78\\fscy78"
+                "\\t(0,220,\\fscx106\\fscy106)\\t(220,320,\\fscx100\\fscy100)}"
+                + title_disp
+            )
         events.append(
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{title_disp}"
         )
@@ -665,6 +674,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     disp = _highlight_wrap(disp, highlight_color)
                 parts.append(disp)
             text = " ".join(parts)
+        if animate:
+            # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
+            text = "{\\fad(120,80)}" + text
         events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
@@ -787,4 +799,5 @@ def build_ass_for_clip(
             config_captions.get("highlight_color", "&H0000E5FF")
             if config_captions.get("highlight_keywords_enabled", True) else ""
         ),
+        animate=bool(config_captions.get("animate", False)),
     )
