@@ -2394,13 +2394,18 @@ PREVIEW_MODAL_JS = r"""
   .pv-capcopyall { flex: 0 0 auto; margin-left: auto; padding: 6px 9px; font-size: 13px;
     border: 1.5px solid #f0f1f3; background: #fafbfc; border-radius: 8px; cursor: pointer; }
   .pv-capcopyall:hover { border-color: #3182f6; background: #f0f6ff; }
-  .pv-retrans, .pv-syncbtn, .pv-shiftm, .pv-shiftp { flex: 0 0 auto; padding: 6px 10px;
+  .pv-retrans, .pv-syncbtn, .pv-shiftm, .pv-shiftp,
+  .pv-correctbtn, .pv-translatebtn, .pv-karaoke-toggle { flex: 0 0 auto; padding: 6px 10px;
     font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
     background: #fafbfc; color: #3182f6; border-radius: 8px; cursor: pointer; white-space: nowrap; }
-  .pv-retrans:hover, .pv-syncbtn:hover, .pv-shiftm:hover, .pv-shiftp:hover {
+  .pv-retrans:hover, .pv-syncbtn:hover, .pv-shiftm:hover, .pv-shiftp:hover,
+  .pv-correctbtn:hover, .pv-translatebtn:hover, .pv-karaoke-toggle:hover {
     border-color: #3182f6; background: #f0f6ff; }
-  .pv-retrans:disabled, .pv-syncbtn:disabled { opacity: .6; cursor: default; }
+  .pv-retrans:disabled, .pv-syncbtn:disabled,
+  .pv-correctbtn:disabled, .pv-translatebtn:disabled { opacity: .6; cursor: default; }
   .pv-shiftm, .pv-shiftp { color: #191f28; }
+  .pv-karaoke-toggle.on { background: #3182f6; color: #fff; border-color: #3182f6; }
+  .pv-karaoke-toggle.on:hover { background: #2b74d9; }
   .pv-capfont-row { flex-wrap: wrap; }
   .pv-savebtn { flex: 0 0 auto; padding: 13px 18px; border: 1.5px solid #3182f6; border-radius: 12px;
     background: #fff; color: #3182f6; font-weight: 700; font-size: 14px; font-family: inherit; cursor: pointer; }
