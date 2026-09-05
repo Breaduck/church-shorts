@@ -411,11 +411,13 @@ def reanalyze_clip_region(
 def _title_based_praise_clips(
     dl: "DownloadResult", video_dir: Path, title_lines: list[str], cfg: dict, model: str, sp,
 ) -> list[Clip]:
-    """곡 제목(들)으로 정식 가사를 가져와 클립을 만들고, 영상의 노래 속도에 맞춰 싱크한다.
+    """곡 제목(들)으로 정식 가사를 가져와 클립을 만든다(글자 수 균등 분배 자막, 즉시 반환).
 
     title_lines가 사용자가 직접 입력한 것이든(analyze의 title_lines 분기), 짧은 스니펫으로
     자동 추정된 것이든(_quick_guess_praise_title) 동일하게 처리한다 — 두 경로가 결과를
-    합치는 지점. 가사를 하나도 못 찾으면 빈 리스트를 반환해 호출자가 폴백하게 한다."""
+    합치는 지점. 가사를 하나도 못 찾으면 빈 리스트를 반환해 호출자가 폴백하게 한다.
+    노래 속도에 맞춘 정밀 싱크는 여기서 하지 않는다 — 호출자가 clips.json을 저장한 뒤
+    _sync_praise_clips_bg로 백그라운드 정밀 매핑을 시작해야 한다."""
     p = cfg.get("praise", {}) or {}
     lyrics_by_idx = fetch_praise_lyrics_by_titles(
         title_lines, model=model or p.get("model", ""),
@@ -428,31 +430,12 @@ def _title_based_praise_clips(
     missing = [title_lines[i] for i in range(len(title_lines)) if not lyrics_by_idx.get(i)]
     if missing:
         print(f"[praise] 가사를 못 찾은 곡(자막 없음): {', '.join(missing)}")
-    # '우리 영상의 노래 속도'에 맞춰 가사를 띄운다(사용자 요청): 전사는 타이밍 전용으로만
-    # 쓰고(가사 텍스트는 정식 가사 유지), 각 소절을 실제 가창 시각에 매핑한다. 실패하면
-    # 글자 수 균등 분배(기존)로 폴백 — 자막은 어떻게든 나온다.
-    # 처음부터 정밀 모델(large-v3)로 전사한다(사용자 요구: "싱크 분석 처음부터 잘하면
-    # 안 되냐" — medium은 노래 인식 밀도가 낮아 앵커가 부족했고, 버튼의 정밀 재분석은
-    # 매번 몇 분씩 걸렸다). 여기서 한 번 전사해 캐시하면 이후 싱크 맞추기 버튼은
-    # 전사 없이 즉시 같은 정밀 결과를 쓴다. 분석 진행바 안이라 기다림도 자연스럽다.
-    sp.set_fraction(0.4, "가사를 노래 속도에 정밀하게 맞추는 중 (곡 길이에 따라 몇 분)...")
-    _precise_model = cfg["whisper"].get("precise_model_size", "large-v3")
-    for ci, c in enumerate(clips):
-        texts = [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
-        if not texts:
-            continue
-        try:
-            mapped = map_lines_to_voice_times(
-                dl.video_path, c.start, c.end, texts,
-                cfg["whisper"], cache_dir=video_dir / "precise_cache",
-                model_override=_precise_model,
-            )
-            if mapped:
-                c.caption_overrides = mapped
-            else:
-                print(f"[praise] 곡 {ci} 노래 속도 매핑 실패(단어 부족) → 균등 분배 유지")
-        except Exception:  # noqa: BLE001 - 타이밍 매핑 실패해도 자막은 유지
-            traceback.print_exc()
+    # '우리 영상의 노래 속도'에 맞춰 가사를 띄우는 정밀 매핑(전사는 타이밍 전용, 가사
+    # 텍스트는 정식 가사 유지)은 large-v3를 CPU로 돌려 곡 길이만큼(몇 분) 걸린다 — 이걸
+    # 분석 진행바 안에서 기다리게 했더니 "링크든 파일이든 너무 오래 걸린다"는 재신고를
+    # 받았다(2026-09-06). 지금 반환하는 clips는 이미 글자 수 균등 분배 자막을 갖고 있어
+    # (_build_praise_clips_from_titles) 그대로 써도 자막은 나온다 — 정밀 매핑은
+    # 백그라운드로 미뤄 완료되는 대로 clips.json만 갱신한다(호출자가 저장한 뒤 시작).
     return clips
 
 
@@ -524,6 +507,57 @@ def _prewarm_praise_sync_cache(video_path: Path, video_dir: Path, clips: list[Cl
                 print(f"[praise-sync] 예열 캐시 저장: {c.start:.0f}~{c.end:.0f}초")
             except Exception:  # noqa: BLE001 - 예열 실패는 치명적이지 않음
                 traceback.print_exc()
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], cfg: dict) -> None:
+    """제목 기반 찬양 클립의 '노래 속도 정밀 싱크'를 백그라운드에서 계산해 clips.json에 반영한다.
+
+    _title_based_praise_clips가 반환하는 clips는 이미 글자 수 균등 분배 자막을 갖고 있어
+    바로 써도 되지만(자막은 나온다), 노래 속도에 정확히 맞추려면 large-v3 정밀 전사가
+    필요하고 CPU에서 곡 길이만큼(몇 분) 걸린다. 이걸 analyze()가 기다리게 했더니 "링크든
+    파일이든 너무 오래 걸린다"는 재신고를 받았다(2026-09-06) — 그래서 저장은 먼저 하고
+    정밀 매핑은 여기서 완료되는 대로 clips.json만 갱신한다.
+
+    갱신 시 (start,end) 서명으로 대상 클립을 다시 찾는다 — 그 사이 사용자가 편집기에서
+    클립 경계를 바꿨으면(서명 불일치) 그 클립은 건드리지 않아, 편집 중인 내용을 백그라운드
+    결과가 덮어쓰는 경합을 피한다."""
+    clips_path = video_dir / "clips.json"
+    sigs = [(round(c.start, 2), round(c.end, 2)) for c in clips]
+    texts_by_sig = {
+        sig: [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
+        for sig, c in zip(sigs, clips)
+    }
+
+    def _run():
+        precise_model = cfg["whisper"].get("precise_model_size", "large-v3")
+        for sig in sigs:
+            texts = texts_by_sig.get(sig)
+            if not texts:
+                continue
+            start, end = sig
+            try:
+                mapped = map_lines_to_voice_times(
+                    video_path, start, end, texts,
+                    cfg["whisper"], cache_dir=video_dir / "precise_cache",
+                    model_override=precise_model,
+                )
+            except Exception:  # noqa: BLE001 - 백그라운드 싱크 실패해도 균등 분배 자막은 유지
+                traceback.print_exc()
+                continue
+            if not mapped:
+                print(f"[praise-sync] 곡 {start:.0f}~{end:.0f}초 노래 속도 매핑 실패(단어 부족) → 균등 분배 유지")
+                continue
+            with CLIPS_LOCK:
+                if not clips_path.exists():
+                    continue
+                cur = load_clips_json(clips_path)
+                for cc in cur:
+                    if (round(cc.start, 2), round(cc.end, 2)) == sig:
+                        cc.caption_overrides = mapped
+                        save_clips_json(cur, clips_path)
+                        print(f"[praise-sync] 곡 {start:.0f}~{end:.0f}초 정밀 싱크 반영")
+                        break
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -863,7 +897,8 @@ def analyze(
                 )
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
-            sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크)")
+            _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg)
+            sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크는 백그라운드에서 계속돼요)")
             return video_dir, clips
 
         # ── 업로드 찬양 + 곡 제목 미입력: 전체 전사 대신 짧은 구간만 훑어 제목 자동 추정 ──
@@ -884,7 +919,8 @@ def analyze(
                 if clips:
                     with CLIPS_LOCK:
                         save_clips_json(clips, clips_path)
-                    sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크)")
+                    _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg)
+                    sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크는 백그라운드에서 계속돼요)")
                     return video_dir, clips
                 sp.message(f"'{guessed}' 가사를 찾지 못해 정밀 분석으로 진행합니다...")
             else:
