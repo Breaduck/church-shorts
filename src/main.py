@@ -431,7 +431,12 @@ def _title_based_praise_clips(
     # '우리 영상의 노래 속도'에 맞춰 가사를 띄운다(사용자 요청): 전사는 타이밍 전용으로만
     # 쓰고(가사 텍스트는 정식 가사 유지), 각 소절을 실제 가창 시각에 매핑한다. 실패하면
     # 글자 수 균등 분배(기존)로 폴백 — 자막은 어떻게든 나온다.
-    sp.set_fraction(0.4, "가사를 영상의 노래 속도에 맞추는 중...")
+    # 처음부터 정밀 모델(large-v3)로 전사한다(사용자 요구: "싱크 분석 처음부터 잘하면
+    # 안 되냐" — medium은 노래 인식 밀도가 낮아 앵커가 부족했고, 버튼의 정밀 재분석은
+    # 매번 몇 분씩 걸렸다). 여기서 한 번 전사해 캐시하면 이후 싱크 맞추기 버튼은
+    # 전사 없이 즉시 같은 정밀 결과를 쓴다. 분석 진행바 안이라 기다림도 자연스럽다.
+    sp.set_fraction(0.4, "가사를 노래 속도에 정밀하게 맞추는 중 (곡 길이에 따라 몇 분)...")
+    _precise_model = cfg["whisper"].get("precise_model_size", "large-v3")
     for ci, c in enumerate(clips):
         texts = [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
         if not texts:
@@ -440,6 +445,7 @@ def _title_based_praise_clips(
             mapped = map_lines_to_voice_times(
                 dl.video_path, c.start, c.end, texts,
                 cfg["whisper"], cache_dir=video_dir / "precise_cache",
+                model_override=_precise_model,
             )
             if mapped:
                 c.caption_overrides = mapped
@@ -524,7 +530,14 @@ def map_lines_to_voice_times(
     sig = "praisesync2"  # v1(small 모델) 캐시와 섞이지 않게 시그니처 분리(모델명은 파일명에 포함됨)
     segs = None
     if cache_dir is not None:
-        segs = _precise_cache_find(cache_dir, model, sig, clip_start, clip_end)
+        # 정밀 모델(large-v3) 캐시가 이미 있으면 무조건 그걸 쓴다 — 분석 단계에서 미리
+        # 정밀 전사를 돌려두므로(아래 _title_based_praise_clips), 싱크 맞추기 버튼은
+        # 전사 없이 즉시+최고 정확도로 동작한다("정밀 재분석은 너무 오래 걸림" 해결).
+        precise = whisper_cfg.get("precise_model_size", "large-v3")
+        if precise != model:
+            segs = _precise_cache_find(cache_dir, precise, sig, clip_start, clip_end)
+        if segs is None:
+            segs = _precise_cache_find(cache_dir, model, sig, clip_start, clip_end)
     if segs is None:
         segs = transcribe_clip_precise(
             video_path, clip_start, clip_end,
@@ -641,15 +654,25 @@ def map_lines_to_voice_times(
     out: list[dict] = [
         {"start": round(s, 2), "end": 0.0, "text": t} for s, t in zip(starts, texts)
     ]
-    # 단조 증가 보정 + 끝 시각 = 다음 줄 시작(연속 표시), 마지막은 클립 끝.
+    # 단조 증가 보정.
     for i in range(len(out)):
         if out[i]["start"] < clip_start:
             out[i]["start"] = round(clip_start, 2)
         if i > 0 and out[i]["start"] <= out[i - 1]["start"]:
             out[i]["start"] = round(out[i - 1]["start"] + 0.3, 2)
-    for i in range(len(out) - 1):
-        out[i]["end"] = round(max(out[i]["start"] + 0.3, out[i + 1]["start"]), 2)
-    out[-1]["end"] = round(max(out[-1]["start"] + 0.5, clip_end), 2)
+    # 끝 시각: 예전 '무조건 다음 소절 시작까지'는 간주(다음 소절까지 30~40초 공백)에서
+    # 한 소절이 40초씩 떠 있는 사고를 냈다("한 소절이 8초부터 48초야" 실신고). 이제
+    #   - 앵커된 소절: 실제로 부른 끝(anchor end) + 2초 여유까지만.
+    #   - 미앵커 소절: 글자 수 기반 최대 노출(초당 1자 + 3초, 최소 5초)까지만.
+    # 단, 다음 소절이 그보다 먼저 시작하면 거기서 끊는다(연속 가창은 기존처럼 이어짐).
+    # 상한을 넘는 나머지 구간(간주)엔 자막이 꺼진다 — 노래 없는데 가사가 떠 있지 않게.
+    for i in range(len(out)):
+        nxt = out[i + 1]["start"] if i + 1 < len(out) else clip_end
+        if i in anchors:
+            cap = anchors[i][1] + 2.0
+        else:
+            cap = out[i]["start"] + max(5.0, len(texts[i]) * 1.0 + 3.0)
+        out[i]["end"] = round(max(out[i]["start"] + 0.5, min(nxt, cap)), 2)
     return out
 
 
