@@ -252,8 +252,10 @@ captions:
   # karaoke 템플릿에서는 이미 단어별로 색이 움직여서 적용 안 됨(비카라오케에서만).
   highlight_keywords_enabled: true
   highlight_color: "&H0000E5FF"          # 형광 노랑/앰버 #FFE500 (BGR 순서 주의)
-  # 플랫폼 UI 안전 영역: pad/blur/crop 레거시 모드에서만 사용 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음)
-  safe_area_bottom_pct: 0.20
+  # 플랫폼 UI 안전 영역: pad/blur/crop 레거시(오버레이) 모드에서만 사용 — 업로드 찬양 자막이
+  # 이 경로를 탄다 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음).
+  # 0.20→0.24: "자막 y축 조금만 더 위로"(사용자 요청 2026-09-05) + 폰 하단 UI와 여유 확보.
+  safe_area_bottom_pct: 0.24
   safe_area_top_pct: 0.10
   # 전사 오인식 확정 교정 사전(부분 문자열 치환). hotwords 편향으로도 새는, 반복 실측된
   # 오탈자만 넣는다 — 성경 용어처럼 "절대 틀리면 안 되는" 단어의 최종 안전망.

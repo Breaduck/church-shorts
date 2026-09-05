@@ -609,7 +609,12 @@ def map_lines_to_voice_times(
     n = len(words)
 
     def _best_window(target: str, lo: int, hi: int) -> tuple[float, int, int] | None:
-        """단어 [lo, hi) 범위에서 target과 가장 비슷한 연속 단어 창을 찾는다."""
+        """단어 [lo, hi) 범위에서 target과 가장 비슷한 연속 단어 창을 찾는다.
+
+        후렴 반복곡 대응: 같은 소절이 여러 번 나오면 점수가 비슷한 후보가 여럿 생기는데,
+        순차 매칭에서 '뒤쪽 반복'을 고르면 그 사이 소절들이 뒤로 밀리며 꼬리가 뭉개진다
+        (실측: 마지막 소절들이 0.5~1.6초로 압축, 중간 15초 공백 — "자막이 안 나온다" 신고).
+        나중 후보는 기존 최고보다 '의미 있게'(+0.03) 좋아야만 교체 — 앞선 위치 우선."""
         best = None
         for i in range(lo, min(hi, n)):
             acc = ""
@@ -618,7 +623,7 @@ def map_lines_to_voice_times(
                 if len(acc) > len(target) * 2 + 10:
                     break
                 score = difflib.SequenceMatcher(None, acc, target).ratio()
-                if best is None or score > best[0]:
+                if best is None or score > best[0] + 0.03:
                     best = (score, i, j)
         return best
 
@@ -636,10 +641,11 @@ def map_lines_to_voice_times(
             wi = j + 1
 
     # 앵커 밀집 정리: 두 앵커 사이 실제 시간 간격이 그 사이 미앵커 소절 수가 최소한으로
-    # 필요한 시간(줄당 0.6초)보다 좁으면, 그 구간은 인식 자체가 부실해 우연히 맞은
-    # 오탐 앵커일 가능성이 크다(실측: 4소절이 1.2초 안에 욱여넣어짐 — "싱크가 헛돈다"
-    # 재신고 원인). 뒤쪽 앵커를 버리고 더 넓은 범위로 다시 보간하게 한다.
-    MIN_SEC_PER_LINE = 0.6
+    # 필요한 시간보다 좁으면, 그 구간은 인식 부실/후렴 반복 오탐일 가능성이 크다
+    # (실측1: 4소절이 1.2초 안에 욱여넣어짐. 실측2: 후렴 반복곡에서 마지막 두 소절이
+    # 1.4~1.6초로 뭉개짐 — "자막이 안 나온다" 체감 신고). 노래에서 한 소절이 1.5초
+    # 미만일 수는 사실상 없으므로 기준을 1.5초로 둔다. 좁으면 뒤 앵커를 버리고 재보간.
+    MIN_SEC_PER_LINE = 1.5
     idxs = sorted(anchors.keys())
     k = 1
     while k < len(idxs):
@@ -744,6 +750,20 @@ def map_lines_to_voice_times(
         else:
             cap = out[i]["start"] + max(5.0, len(texts[i]) * 1.0 + 3.0)
         out[i]["end"] = round(max(out[i]["start"] + 0.5, min(nxt, cap)), 2)
+
+    # 최소 노출 보장(사용자 최우선 요구: "자막 누락 없는 게 제일 중요"): 후렴 반복 오탐 등으로
+    # 소절들이 꼬리에 0.5~1.6초로 뭉개지면 사실상 안 보인다. 뒤에서부터 각 소절에 최소
+    # 2.5초를 보장하고, 모자라면 앞 소절 시간/앞쪽 공백에서 연쇄적으로 당겨온다 — 어떤
+    # 소절도 스쳐 지나가듯 사라지지 않는다(클립이 물리적으로 짧으면 가능한 만큼).
+    MIN_SHOW = 2.5
+    for i in range(len(out) - 1, -1, -1):
+        if out[i]["end"] - out[i]["start"] < MIN_SHOW:
+            out[i]["start"] = round(max(clip_start, out[i]["end"] - MIN_SHOW), 2)
+        if i > 0 and out[i - 1]["end"] > out[i]["start"]:
+            out[i - 1]["end"] = out[i]["start"]  # 겹침 제거 → 다음 반복에서 i-1도 최소 노출 확보
+    for i in range(len(out)):  # 안전망: 역전/0길이 정리
+        if out[i]["end"] <= out[i]["start"]:
+            out[i]["end"] = round(out[i]["start"] + 0.3, 2)
     return out
 
 
@@ -1737,7 +1757,8 @@ def render_selected(
                 pr_captions = {
                     **pr_captions,
                     "position": "bottom",
-                    "font_size": int(pr_captions.get("font_size", 72) * 1.35),  # "자막 좀 더 키워주고"
+                    # 1.35→1.28: "아주아주 조금만 줄여"(2026-09-05 미세조정, 97→92px 수준)
+                    "font_size": int(pr_captions.get("font_size", 72) * 1.28),
                     "template": "karaoke" if karaoke_on else "minimal",
                     "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
                     # 카라오케 켜졌을 때 강조색: 기존 진한 블루 대신 더 연한 하늘색(사용자 요청).

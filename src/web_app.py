@@ -1369,7 +1369,7 @@ def _compute_layout(
             src_h = int(src_h * (1920 / src_w))
             src_w = 1920
         res_w, res_h = src_w - src_w % 2, src_h - src_h % 2
-        caption_size = int(captions_cfg.get("font_size", 72) * 1.35)  # 렌더의 업로드 찬양 확대와 동일
+        caption_size = int(captions_cfg.get("font_size", 72) * 1.28)  # 렌더의 업로드 찬양 확대와 동일(1.28)
         scale = PREVIEW_CANVAS_WIDTH / res_w
         caption_font_name = getattr(clip, "caption_font", "") or captions_cfg.get("font_family", "")
         # 자막은 하단 안전영역 위(bottom 정렬). 미리보기 요소는 top 기준이라 폰트 높이만큼 위로.
@@ -2083,7 +2083,7 @@ STUDIO_TEMPLATE = """
     position: relative; min-width: 0; }
   .vwrap { position: relative; max-width: 96%; max-height: 94%; }
   .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
-  .cap-ov { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); text-align: center;
+  .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
     text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.7);
     line-height: 1.25; white-space: nowrap; }

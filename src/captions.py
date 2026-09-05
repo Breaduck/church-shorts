@@ -570,7 +570,11 @@ def build_ass(
     # 위치 편집 웹 UI에서 사용자가 드래그로 조정한 픽셀 오프셋. MarginV는 커질수록 텍스트가
     # 아래로 내려가므로(상단 기준 정렬), offset_y를 그대로 더하면 된다. 좌우는 중앙 정렬
     # 기준 MarginL/MarginR을 반대 방향으로 움직여서 중심을 offset_x만큼 이동시킨다.
-    base_margin_lr = 40
+    # 오버레이 모드(card 없음 = 업로드 찬양 등)는 세로 쇼츠에서 우측 버튼 기둥(좋아요/댓글,
+    # 화면 우측 ~13%)과 겹치지 않게 좌우 여백을 화면 폭의 11%씩 준다(자막 최대 폭 ~78%,
+    # 사용자 우려 2026-09-05 "백퍼 겹칠 것 같은데") — 한 줄 강제(_fit_fs)가 이 폭에 맞춰
+    # 폰트를 줄여주므로 넘치지 않는다. 카드 레이아웃은 영상 밖 캡션 영역이라 기존 40px 유지.
+    base_margin_lr = 40 if card_layout else max(40, int(width * 0.11))
     title_margin_l = max(0, base_margin_lr + title_offset_x)
     title_margin_r = max(0, base_margin_lr - title_offset_x)
     caption_margin_l = max(0, base_margin_lr + caption_offset_x)
@@ -735,7 +739,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 en_disp = _display_text(en_text)
                 en_size = max(16, int(caption_size * 0.45))
                 en_size = _fit_fs(en_disp, en_size) or en_size  # 영어도 한 줄 강제
-                extra = f"\\N{{\\fs{en_size}\\c&HE6E6E6&\\bord0}}{en_disp}{{\\r}}"
+                # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
+                extra = f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}{en_disp}{{\\r}}"
             _emit_line(line, extra_text=extra, prefix_text=prefix)
         return header + "\n".join(events) + "\n"
 
