@@ -596,6 +596,9 @@ CANDIDATES_TEMPLATE = f"""
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
       <input type="checkbox" id="boldCapChk" style="vertical-align:middle;margin-right:6px"> 레퍼런스 자막(볼드·형광펜)
     </label>
+    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
+      <input type="checkbox" id="englishChk" style="vertical-align:middle;margin-right:6px"> 영어 자막(번역본)
+    </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
   </form>
@@ -629,10 +632,11 @@ CANDIDATES_TEMPLATE = f"""
     const sfxChk = document.getElementById('sfxChk');
     const motionChk = document.getElementById('motionChk');
     const boldCapChk = document.getElementById('boldCapChk');
+    const englishChk = document.getElementById('englishChk');
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, english: englishChk ? englishChk.checked : false}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1124,6 +1128,7 @@ def render_route(video_id: str):
     sfx_enabled = bool(body.get("sfx", False))
     motion_enabled = bool(body.get("motion", False))
     caption_preset = "bold_yellow" if body.get("bold_caption") else ""
+    caption_lang = "en" if body.get("english") else ""
 
     video_dir = OUTPUT_ROOT / video_id
     # 같은 영상 렌더가 이미 도는 중이면 새 스레드를 또 띄우지 않는다(분석과 동일한 가드).
@@ -1150,6 +1155,7 @@ def render_route(video_id: str):
                 sfx_enabled=sfx_enabled,
                 motion_enabled=motion_enabled,
                 caption_preset=caption_preset,
+                caption_lang=caption_lang,
             )
         except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
             _update_job(video_id, render_error=str(e))
@@ -2088,6 +2094,16 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         clip.caption_highlights = [
             str(h).strip() for h in (body.get("caption_highlights") or []) if str(h).strip()
         ]
+    # 영어 자막 트랙(번역). 한국어는 그대로 두고 별도 저장 → 렌더 옵션으로 전환.
+    if "caption_overrides_en" in body:
+        clip.caption_overrides_en = sorted(
+            (
+                {"start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip()}
+                for c in (body.get("caption_overrides_en") or [])
+                if str(c.get("text", "")).strip()
+            ),
+            key=lambda o: o["start"],
+        )
     # 화면모드 + 제목/자막 글꼴 스타일(편집기에서 선택). 빈 값이면 config 기본값 사용.
     if "fill_mode" in body:
         clip.fill_mode = str(body.get("fill_mode", "") or "")
@@ -2253,6 +2269,7 @@ def clip_preview_info(video_id: str, idx: int):
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
             "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
             "caption_highlights": (getattr(clip, "caption_highlights", None) or []),
+            "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
         },
         "caption_preview": _preview_caption_text(video_id, clip),
@@ -2485,6 +2502,7 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다 (몇 초, 토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
       '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">✨ AI 자막 교정</button>' +
+      '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">🌐 영어 자막 만들기</button>' +
       '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
       '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
@@ -2983,6 +3001,8 @@ PREVIEW_MODAL_JS = r"""
     let capKaraoke = !!C.caption_karaoke;
     // AI 자막 교정이 뽑은 형광 강조어. 저장 시 caption_highlights로 넘어가 렌더가 강조한다.
     let capHighlights = Array.isArray(C.caption_highlights) ? C.caption_highlights.slice() : [];
+    // 영어 자막 트랙(번역). 저장 시 caption_overrides_en으로 넘어간다. 한국어는 그대로 유지.
+    let capOverridesEn = Array.isArray(C.caption_overrides_en) ? C.caption_overrides_en.slice() : [];
     const karaokeBtn = $('.pv-karaoke-toggle');
     // 파란 강조는 업로드 찬양 렌더에서만 의미가 있다 — 그 경우에만 버튼을 보여준다.
     const isUploadPraise = (C.clip_type === 'praise') && VIDEO_ID.indexOf('upload_') === 0;
@@ -3149,6 +3169,31 @@ PREVIEW_MODAL_JS = r"""
       setTimeout(() => { correctBtn.textContent = '✨ AI 자막 교정'; }, 5000);
     });
 
+    // ── 영어 자막 만들기: 현재 자막을 영어로 번역해 영어 트랙에 저장(한국어 유지) ──
+    const translateBtn = $('.pv-translatebtn');
+    translateBtn.addEventListener('click', async () => {
+      const caps = collectCaptions();
+      if (!caps.length) { alert('번역할 자막이 없습니다'); return; }
+      translateBtn.disabled = true; translateBtn.textContent = '번역 중… (10~30초)';
+      let r = null;
+      try {
+        r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/translate_captions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ captions: caps, model: '' }),
+        });
+      } catch (e) { r = null; }
+      const j = r && r.ok ? await r.json().catch(() => null) : null;
+      translateBtn.disabled = false;
+      if (!j || !j.lines) {
+        translateBtn.textContent = '🌐 영어 자막 만들기';
+        alert('영어 번역 실패' + (j && j.error ? ': ' + j.error : '')); return;
+      }
+      capOverridesEn = j.lines;   // 시간은 현재 자막과 동일, 텍스트만 영어
+      capsDirty = true;           // 저장 시 caption_overrides_en 반영
+      translateBtn.textContent = '✓ 영어 ' + j.lines.length + '줄 (저장 후 \'영어 자막\'으로 만들기)';
+      setTimeout(() => { translateBtn.textContent = '🌐 영어 자막 만들기'; }, 6000);
+    });
+
     // ── 전체 밀기: 모든 자막 줄의 시작·끝을 한 번에 ±0.1초 이동(귀로 미세 조정용) ──
     function shiftAll(delta) {
       capRowsBox.querySelectorAll('.pv-caprow').forEach((r) => {
@@ -3196,6 +3241,7 @@ PREVIEW_MODAL_JS = r"""
       if (capsDirty) payload.captions = collectCaptions();
       payload.caption_karaoke = capKaraoke;
       payload.caption_highlights = capHighlights;
+      payload.caption_overrides_en = capOverridesEn;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
       if (changed) {
@@ -3637,6 +3683,44 @@ def correct_captions_route(video_id: str, idx: int):
         })
     changed = sum(1 for i, ln in enumerate(in_lines) if out[i]["text"].strip() != str(ln.get("text", "")).strip())
     return jsonify({"lines": out, "highlights": highlights, "changed": changed, "total": len(out)})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/translate_captions", methods=["POST"])
+def translate_captions_route(video_id: str, idx: int):
+    """'영어 자막': 현재 자막 줄을 영어로 번역한다(줄 수·시간 유지). 한국어는 그대로 두고
+    영어 트랙(caption_overrides_en)으로 저장 → 렌더 시 '영어 자막' 옵션으로 전환 가능."""
+    video_dir = OUTPUT_ROOT / video_id
+    clips_path = video_dir / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "잘못된 클립 번호"}), 400
+    clip = clips[idx]
+    body = request.get_json() or {}
+    in_lines = body.get("captions") or []
+    if not in_lines:
+        return jsonify({"error": "번역할 자막이 없습니다"}), 400
+    model = (body.get("model") or "").strip()
+    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
+    if model and model not in _ALLOWED_MODELS:
+        model = ""
+
+    from src.highlights import translate_captions_to_english
+
+    texts = [str(ln.get("text", "")) for ln in in_lines]
+    try:
+        en = translate_captions_to_english(texts, context=clip.title or "", model=model)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"번역 실패: {e}"}), 500
+    out = []
+    for i, ln in enumerate(in_lines):
+        out.append({
+            "start": float(ln.get("start", 0)),
+            "end": float(ln.get("end", 0)),
+            "text": en[i] if i < len(en) else str(ln.get("text", "")),
+        })
+    return jsonify({"lines": out, "total": len(out)})
 
 
 def _tracking_scheduler_loop() -> None:

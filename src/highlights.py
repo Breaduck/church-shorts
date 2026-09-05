@@ -112,6 +112,10 @@ class Clip:
     # 정확도 교정 패스(correct_sermon_captions)나 선정 단계가 채운다. 렌더에서
     # 이 단어가 자막에 나오면 노란 형광+볼드로 강조한다(config captions.highlight_* 참고).
     caption_highlights: list = field(default_factory=list)
+    # 영어 자막 트랙(caption_overrides와 같은 {start,end,text} 구조, 텍스트만 영어).
+    # '영어 자막' 버튼으로 번역해 채우고, 렌더 옵션(caption_lang="en")이면 이걸 쓴다.
+    # 한국어(caption_overrides)는 그대로 보존 — "현재 것도 유지, 영어로도" 요청.
+    caption_overrides_en: list = field(default_factory=list)
 
 
 def build_prompt(
@@ -1148,6 +1152,57 @@ def correct_sermon_captions(
                 seen.add(hs.lower())
                 highlights.append(hs)
     return corrected, highlights
+
+
+def translate_captions_to_english(
+    lines: list[str],
+    context: str = "",
+    model: str = "",
+    thinking_tokens: int = 1024,
+    timeout_sec: int = 600,
+    on_progress=None,
+) -> list[str]:
+    """자막 줄들을 영어로 번역한다(줄 수·순서 1:1 유지, 시간축 그대로 매핑).
+
+    사용자 요청(2026-09-05): "영어로도 버튼 누르면 나오면 좋겠다". 쇼츠 자막이므로
+    직역보다 짧고 자연스러운 영어(구어체)로, 각 줄 길이를 원문과 비슷하게 유지한다.
+    설교/찬양 맥락이라 성경 용어는 통용 영어 표기(grace, cross, salvation 등)를 쓴다."""
+    lines = [str(l or "") for l in lines]
+    if not lines:
+        return []
+    numbered = [{"i": i, "text": t} for i, t in enumerate(lines)]
+    payload = json.dumps(numbered, ensure_ascii=False, indent=1)
+    ctx = f"\n맥락(참고): {context}\n" if context.strip() else ""
+    prompt = f"""너는 한국 교회 설교/찬양 자막을 영어로 옮기는 전문 번역가다. 아래 자막 줄들을
+영어로 번역하라(쇼츠 자막용).
+{ctx}
+## 규칙
+- 줄 수와 순서를 입력과 정확히 똑같이 유지하라(합치기·나누기·삭제 금지). i를 그대로 붙여라.
+- 직역이 아니라 짧고 자연스러운 구어체 영어로. 각 줄은 화면 한 줄에 맞게 간결하게.
+- 성경/신앙 용어는 통용 영어(grace, the cross, salvation, faith, the Lord 등)로.
+- 문장부호는 최소화(자막이라). 각 줄은 대략 원문과 비슷한 분량으로.
+
+입력:
+{payload}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만:
+[{{"i": 0, "text": "English line"}}, ...]"""
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress, max_clips=1,
+    )
+    out = list(lines)
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item["i"])
+            txt = str(item.get("text", "")).strip()
+        except (TypeError, ValueError, KeyError):
+            continue
+        if 0 <= idx < len(out) and txt:
+            out[idx] = txt
+    return out
 
 
 def _build_praise_clips_from_titles(

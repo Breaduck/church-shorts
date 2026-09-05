@@ -1199,6 +1199,7 @@ def render_selected(
     sfx_enabled: bool | None = None,
     motion_enabled: bool | None = None,
     caption_preset: str = "",
+    caption_lang: str = "",
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
@@ -1317,6 +1318,12 @@ def render_selected(
     for i, idx in enumerate(clip_indices):
         clip = clips[idx]
         base = i * step
+
+        # 영어 자막 옵션: 렌더 시점에만 한국어(caption_overrides) 대신 영어 트랙으로 바꿔
+        # 굽는다(디스크의 한국어는 그대로 — 병합 저장은 start/end만 반영). 영어 번역이 없는
+        # 클립은 그대로 한국어로 나간다.
+        if caption_lang == "en" and getattr(clip, "caption_overrides_en", None):
+            clip.caption_overrides = clip.caption_overrides_en
 
         # 찬양 곡 통편집: 정밀 재전사·문장 스냅·훅 배속을 모두 건너뛰고
         # 곡 구간 그대로 + 상단 제목(곡 제목)을 넣어 렌더한다. 노래에 문장 스냅은
