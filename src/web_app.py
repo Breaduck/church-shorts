@@ -74,21 +74,31 @@ BASE_STYLE = """
 <link rel="stylesheet" as="style" crossorigin
   href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
 <style>
+  /* 애플 리퀴드 글래스: 반투명 유리 표면(blur+saturate) + 얇은 하이라이트 테두리 +
+     넓고 부드러운 다층 그림자. 배경에 은은한 그라디언트를 깔아야 블러가 실제로
+     보인다(평면 단색 위에서는 유리 느낌이 안 남) — CLAUDE.md 지침(애플 스타일) 반영. */
   :root {
-    --bg: #f7f8fa;
+    --bg: #eef1f6;
     --card: #ffffff;
-    --text: #191f28;
-    --text-muted: #6b7684;
-    --text-faint: #8b95a1;
-    --accent: #3182f6;
-    --accent-hover: #1b64da;
-    --border: #f0f1f3;
-    --shadow: 0 2px 8px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.03);
+    --glass-bg: rgba(255, 255, 255, 0.68);
+    --glass-border: rgba(255, 255, 255, 0.55);
+    --text: #1d1d1f;
+    --text-muted: #6e7175;
+    --text-faint: #98999d;
+    --accent: #0a84ff;
+    --accent-hover: #0071e3;
+    --border: rgba(60, 60, 67, 0.1);
+    --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.07);
+    --radius: 20px;
   }
   * { box-sizing: border-box; }
   body {
     font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
-    background: var(--bg);
+    background:
+      radial-gradient(1100px 700px at 12% -10%, rgba(10, 132, 255, 0.10), transparent 60%),
+      radial-gradient(900px 600px at 100% 0%, rgba(191, 90, 242, 0.08), transparent 55%),
+      var(--bg);
+    background-attachment: fixed;
     color: var(--text);
     margin: 0;
     padding: 56px 20px 100px;
@@ -104,12 +114,14 @@ BASE_STYLE = """
   h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
   .subtitle { color: var(--text-muted); font-size: 15px; margin: 0 0 32px; }
   .card {
-    background: var(--card); border-radius: 20px; box-shadow: var(--shadow);
+    background: var(--glass-bg); -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--glass-border); border-radius: var(--radius); box-shadow: var(--shadow);
     padding: 28px; margin-bottom: 16px;
   }
   input[type=text] {
     width: 100%; padding: 16px 18px; font-size: 15px; font-family: inherit;
-    border: 1.5px solid var(--border); border-radius: 14px; background: #fafbfc;
+    border: 1px solid var(--border); border-radius: 14px; background: rgba(120,120,128,0.08);
     transition: border-color .15s, background .15s; margin-top: 14px;
   }
   input[type=text]:focus {
@@ -117,14 +129,14 @@ BASE_STYLE = """
   }
   textarea {
     width: 100%; padding: 14px 16px; font-size: 14px; font-family: inherit; line-height: 1.5;
-    border: 1.5px solid var(--border); border-radius: 14px; background: #fafbfc;
+    border: 1px solid var(--border); border-radius: 14px; background: rgba(120,120,128,0.08);
     transition: border-color .15s, background .15s; margin-top: 12px; resize: vertical;
   }
   textarea:focus { outline: none; border-color: var(--accent); background: #fff; }
   .hint { color: var(--text-faint); font-size: 12.5px; margin: 10px 2px 0; }
   input[type=number] {
     padding: 9px 11px; font-size: 13px; font-family: inherit; width: 100%;
-    border: 1.5px solid var(--border); border-radius: 10px; background: #fafbfc;
+    border: 1px solid var(--border); border-radius: 10px; background: rgba(120,120,128,0.08);
   }
   input[type=number]:focus { outline: none; border-color: var(--accent); background: #fff; }
   /* 점수 세부축 막대 */
@@ -133,6 +145,20 @@ BASE_STYLE = """
   .subscore b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 700; }
   .sbar { width: 46px; height: 5px; border-radius: 999px; background: var(--border); overflow: hidden; }
   .sbar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+  /* 렌더 옵션 유리 칩(체크박스/셀렉트 라벨). 예전엔 카드마다 같은 인라인 스타일을
+     복붙해 유지보수가 어려웠다 — 클래스 하나로 통일(애플 리퀴드 글래스 톤). */
+  .opt-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted);
+    margin: 0 8px 10px 0; user-select: none; cursor: pointer;
+    background: var(--glass-bg); -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%); border: 1px solid var(--glass-border);
+    border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); transition: box-shadow .15s;
+  }
+  .opt-chip:hover { box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 10px 26px rgba(15,23,42,.09); }
+  .opt-chip select {
+    font-size: 13px; font-family: inherit; border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 6px; background: rgba(255,255,255,.7); color: var(--text);
+  }
   /* YouTube 업로드 */
   .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .yt-upload-top { flex: 0 0 auto; padding: 10px 16px; font-size: 13.5px; font-weight: 700; font-family: inherit;
@@ -140,11 +166,14 @@ BASE_STYLE = """
     box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08); transition: background .15s, box-shadow .15s; }
   .yt-upload-top:hover { background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }
   .yt-upload-top:active { transform: scale(0.98); }
-  .yt-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none;
+  .yt-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.32);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); display: none;
     align-items: center; justify-content: center; z-index: 60; }
   .yt-modal-back.show { display: flex; }
-  .yt-modal { background: var(--card, #fff); border-radius: 16px; padding: 22px; width: 420px; max-width: 92vw;
-    max-height: 80vh; overflow-y: auto; }
+  .yt-modal { background: rgba(255,255,255,.78); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    backdrop-filter: blur(30px) saturate(180%); border: 1px solid var(--glass-border);
+    border-radius: 22px; padding: 22px; width: 420px; max-width: 92vw;
+    max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(15,23,42,.25); }
   .yt-modal h2 { font-size: 16px; margin-bottom: 4px; }
   .yt-modal .sub { font-size: 12.5px; color: var(--text-muted); margin-bottom: 14px; }
   .yt-pick-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -166,13 +195,18 @@ BASE_STYLE = """
   .yt-track { font-size: 12px; color: var(--text-faint); }
   button.primary {
     width: 100%; margin-top: 16px; padding: 16px; font-size: 15px; font-weight: 600;
-    font-family: inherit; color: #fff; background: var(--accent); border: none;
-    border-radius: 14px; cursor: pointer; transition: background .15s;
+    font-family: inherit; color: #fff;
+    background: linear-gradient(180deg, #2a9bff, var(--accent));
+    border: none; border-radius: 980px; cursor: pointer;
+    box-shadow: 0 1px 1px rgba(255,255,255,.35) inset, 0 6px 16px rgba(10,132,255,.32);
+    transition: background .15s, box-shadow .15s, transform .1s;
   }
-  button.primary:hover { background: var(--accent-hover); }
-  button.primary:active { transform: scale(0.99); }
+  button.primary:hover { background: linear-gradient(180deg, #1f92ff, var(--accent-hover)); }
+  button.primary:active { transform: scale(0.98); box-shadow: 0 1px 1px rgba(255,255,255,.3) inset, 0 3px 8px rgba(10,132,255,.28); }
   .status-box {
-    padding: 20px 24px; background: var(--card); border-radius: 16px; box-shadow: var(--shadow);
+    padding: 20px 24px; background: var(--glass-bg); -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%); border: 1px solid var(--glass-border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
     white-space: pre-line; color: var(--text-muted); font-size: 14px;
   }
   .spinner {
@@ -239,14 +273,16 @@ INDEX_TEMPLATE = f"""
   /* 모델 선택(소넷/오푸스) 세그먼트 버튼 */
   .model-pick {{ margin: 14px 0 4px; }}
   .model-pick-lbl {{ font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 7px; }}
-  .seg {{ display: flex; gap: 6px; background: var(--border); padding: 4px; border-radius: 12px; }}
+  .seg {{ display: flex; gap: 2px; background: rgba(120,120,128,0.12); -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px); padding: 3px; border-radius: 12px; }}
   .seg label {{
     flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 9px 8px;
-    font-size: 13.5px; font-weight: 700; color: var(--text-muted); transition: background .15s, color .15s, box-shadow .15s;
+    font-size: 13.5px; font-weight: 700; color: var(--text-muted); transition: background .2s, color .2s, box-shadow .2s;
   }}
   .seg label .seg-sub {{ display: block; font-size: 11px; font-weight: 500; color: var(--text-faint); margin-top: 2px; }}
   .seg input {{ position: absolute; opacity: 0; pointer-events: none; }}
-  .seg label:has(input:checked) {{ background: var(--card); color: var(--accent); box-shadow: 0 1px 4px rgba(15,23,42,.12); }}
+  .seg label:has(input:checked) {{ background: #fff; color: var(--accent);
+    box-shadow: 0 1px 1px rgba(0,0,0,.04), 0 3px 8px rgba(15,23,42,.10); }}
   .seg label:has(input:checked) .seg-sub {{ color: var(--text-muted); }}
 </style>
 </head>
@@ -264,7 +300,7 @@ INDEX_TEMPLATE = f"""
       </div>
       <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." autofocus>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
-        📁 <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="font-size:12.5px">
+        <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="font-size:12.5px">
       </label>
       <p class="hint" style="margin-top:4px">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
       <div id="songTitlesWrap" style="display:none;margin-top:10px">
@@ -474,12 +510,12 @@ CANDIDATES_TEMPLATE = f"""
       <h1>하이라이트 후보</h1>
       <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
     </div>
-    <button type="button" class="yt-upload-top" id="ytUploadTop">📤 YouTube 업로드</button>
+    <button type="button" class="yt-upload-top" id="ytUploadTop">YouTube 업로드</button>
   </div>
   {{% endif %}}
   {{% if analyze_error %}}
   <div class="status-box error-box" style="margin-bottom:16px">
-    ⚠️ 새로 분석 실패 — {{{{ analyze_error }}}}<br>
+    새로 분석 실패 — {{{{ analyze_error }}}}<br>
     <span style="font-size:12.5px;color:var(--text-muted)">아래 목록은 <b>이전 분석 결과</b>입니다. 잠시 후 첫 화면에서 다시 시도하세요.</span>
   </div>
   {{% endif %}}
@@ -524,21 +560,21 @@ CANDIDATES_TEMPLATE = f"""
     <div class="cand-foot">
       <button type="button" class="reason-toggle" aria-expanded="false">상세 보기 <span class="chev">▾</span></button>
       <span class="cand-foot-actions">
-        <button type="button" class="dup-btn" data-idx="{{{{ loop.index0 }}}}" title="이 후보를 통째로 복제합니다(자막·제목·배속 등 그대로) — 다른 설정으로 한 번 더 만들 때 유용">⧉ 복제</button>
+        <button type="button" class="dup-btn" data-idx="{{{{ loop.index0 }}}}" title="이 후보를 통째로 복제합니다(자막·제목·배속 등 그대로) — 다른 설정으로 한 번 더 만들 때 유용">복제</button>
         <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
       </span>
     </div>
     <div class="reason" hidden>
       {{% if c.appeal or c.hook_line %}}
-      <p class="reason-hashtags">{{% if c.appeal %}}🎯 {{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}{{% if c.payoff_line %}} · 끝 문장: “{{{{ c.payoff_line }}}}”{{% endif %}}</p>
+      <p class="reason-hashtags">{{% if c.appeal %}}{{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}{{% if c.payoff_line %}} · 끝 문장: “{{{{ c.payoff_line }}}}”{{% endif %}}</p>
       {{% endif %}}
       {{% if c.insight %}}
-      <p class="reason-hashtags">💡 {{{{ c.insight }}}}</p>
+      <p class="reason-hashtags">{{{{ c.insight }}}}</p>
       {{% endif %}}
       {{# 업로드용 캡션: 제목+캡션+해시태그를 붙여넣기 좋은 형태로 조립, 한 번에 복사. #}}
       <div class="capcopy">
         <div class="capcopy-head">
-          <span>📝 업로드 캡션</span>
+          <span>업로드 캡션</span>
           <button type="button" class="capcopy-btn">복사</button>
           <span class="capcopy-done" hidden>복사됨 ✓</span>
         </div>
@@ -546,7 +582,7 @@ CANDIDATES_TEMPLATE = f"""
 
 {{{{ c.caption }}}}
 
-🔗 풀 설교 보기 👉 https://youtu.be/{{{{ video_id }}}}
+풀 설교 보기: https://youtu.be/{{{{ video_id }}}}
 
 {{{{ c.hashtags|join(' ') }}}} #shorts</textarea>
       </div>
@@ -558,7 +594,7 @@ CANDIDATES_TEMPLATE = f"""
       <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4" download>⬇ 영상 저장</a>
     {{% endif %}}
     </div>
-    {{# 업로드 버튼은 카드마다 두지 않고 우측 상단 '📤 YouTube 업로드' 하나로 통합했다
+    {{# 업로드 버튼은 카드마다 두지 않고 우측 상단 'YouTube 업로드' 하나로 통합했다
        (사용자 요청 2026-09-06). 이미 업로드된 것의 링크·성과체크 상태만 카드에 남긴다. #}}
     {{% if c.rendered and c.youtube_id %}}
     <div class="yt-upload" data-idx="{{{{ loop.index0 }}}}">
@@ -573,28 +609,17 @@ CANDIDATES_TEMPLATE = f"""
   </div>
   {{% endfor %}}
   <div class="actions">
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 2초 넣기
-    </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="sfxChk" style="vertical-align:middle;margin-right:6px"> 효과음(전환 whoosh) 넣기
-    </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="motionChk" style="vertical-align:middle;margin-right:6px"> 모션(제목 팝·자막 페이드)
-    </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="boldCapChk" style="vertical-align:middle;margin-right:6px"> 레퍼런스 자막(볼드·형광펜)
-    </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      자막 언어
-      <select id="capLangSel" style="vertical-align:middle;margin-left:6px;font-size:13px;font-family:inherit;border:1px solid var(--border,#f0f1f3);border-radius:7px;padding:4px 6px">
+    <label class="opt-chip"><input type="checkbox" id="outroChk" checked> 끝에 로고 2초 넣기</label>
+    <label class="opt-chip"><input type="checkbox" id="sfxChk"> 효과음(전환 whoosh) 넣기</label>
+    <label class="opt-chip"><input type="checkbox" id="motionChk"> 모션(제목 팝·자막 페이드)</label>
+    <label class="opt-chip"><input type="checkbox" id="boldCapChk"> 레퍼런스 자막(볼드·형광펜)</label>
+    <label class="opt-chip">자막 언어
+      <select id="capLangSel">
         <option value="bilingual" selected>한글+영어 2줄 (기본)</option>
         <option value="ko">한글만</option>
       </select>
     </label>
-    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
-      <input type="checkbox" id="facetrackChk" style="vertical-align:middle;margin-right:6px"> 얼굴 추적(화면 확대·화자 따라감)
-    </label>
+    <label class="opt-chip"><input type="checkbox" id="facetrackChk"> 얼굴 추적(화면 확대·화자 따라감)</label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
   </form>
@@ -872,7 +897,7 @@ CANDIDATES_TEMPLATE = f"""
     }}
     function showDone(indices) {{
       box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display = 'none';
-      msg.innerHTML = '✅ 쇼츠 완성! 영상은 자동 저장됐어요';
+      msg.innerHTML = '쇼츠 완성! 영상은 자동 저장됐어요';
       eta.textContent = '';
       actions.hidden = false;
       actions.innerHTML = '';
@@ -898,7 +923,7 @@ CANDIDATES_TEMPLATE = f"""
     }}
     function showReanalyzeDone(ok, errMsg) {{
       box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display = 'none';
-      msg.innerHTML = ok ? '✅ 구간 재분석 완료 — 후보 목록 맨 아래 추가됨' : ('⚠️ 재분석 실패: ' + errMsg);
+      msg.innerHTML = ok ? '구간 재분석 완료 — 후보 목록 맨 아래 추가됨' : ('재분석 실패: ' + errMsg);
       eta.textContent = '';
       actions.hidden = false; actions.innerHTML = '';
       var b = document.createElement('button');
@@ -914,7 +939,7 @@ CANDIDATES_TEMPLATE = f"""
     }}
     function poll() {{
       fetch(statusUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
-        if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '⚠️ 오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
+        if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
         if (j.rendering) {{ wasRendering = true; showProg(j.render_pct, j.render_message || '쇼츠 렌더링 중…', j.render_eta_seconds); }}
         else if (wasRendering) {{ wasRendering = false; onRenderDone(); }}
         else if (!j.ready && j.status !== 'error') {{ showProg(j.pct, j.message || '분석 중…', j.eta_seconds); }}
@@ -2092,21 +2117,29 @@ STUDIO_TEMPLATE = """
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
-  body { background: #1e1e1e; color: #d4d4d4; font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif;
+  body {
+    background:
+      radial-gradient(1000px 600px at 10% -10%, rgba(10,132,255,.14), transparent 60%),
+      radial-gradient(900px 600px at 100% 0%, rgba(191,90,242,.10), transparent 55%),
+      #161618;
+    color: #d4d4d4; font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif;
     display: flex; flex-direction: column; overflow: hidden; }
-  /* ── 상단 툴바 ── */
-  .top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #252526;
-    border-bottom: 1px solid #333; flex: 0 0 auto; }
+  /* ── 상단 툴바(다크 리퀴드 글래스: 반투명+blur+얇은 밝은 하이라이트 테두리) ── */
+  .top { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: rgba(40,40,42,.6); -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%);
+    border-bottom: 1px solid rgba(255,255,255,.08); flex: 0 0 auto; }
   .top a { color: #9aa0a6; text-decoration: none; font-size: 13px; margin-right: 6px; }
   .top a:hover { color: #fff; }
   .top .name { font-weight: 700; font-size: 14px; color: #e8eaed; margin-right: auto;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tbtn { padding: 6px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 7px;
-    border: 1px solid #3c3c3c; background: #2d2d30; color: #6cb2ff; cursor: pointer; white-space: nowrap; }
-  .tbtn:hover { background: #37373d; border-color: #6cb2ff; }
+  .tbtn { padding: 6px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px;
+    border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); color: #6cb2ff;
+    cursor: pointer; white-space: nowrap; transition: background .15s; }
+  .tbtn:hover { background: rgba(108,178,255,.16); border-color: rgba(108,178,255,.4); }
   .tbtn:disabled { opacity: .5; cursor: default; }
-  .tbtn.primary { background: #0e639c; border-color: #0e639c; color: #fff; }
-  .tbtn.primary:hover { background: #1177bb; }
+  .tbtn.primary { background: linear-gradient(180deg, #2a9bff, #0a84ff); border-color: transparent; color: #fff; }
+  .tbtn.primary:hover { background: linear-gradient(180deg, #1f92ff, #0071e3); }
   /* ── 중앙: 미리보기 + 속성 ── */
   .mid { flex: 1 1 auto; display: flex; min-height: 0; }
   .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
@@ -2132,7 +2165,8 @@ STUDIO_TEMPLATE = """
     border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; font-size: 24px; cursor: pointer; }
   .playbig.hidden { display: none; }
   /* ── 속성 패널 ── */
-  .props { flex: 0 0 250px; background: #252526; border-left: 1px solid #333; padding: 14px;
+  .props { flex: 0 0 250px; background: rgba(40,40,42,.55); -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%); border-left: 1px solid rgba(255,255,255,.08); padding: 14px;
     overflow-y: auto; font-size: 12.5px; }
   .props h3 { font-size: 12px; color: #9aa0a6; text-transform: none; margin: 14px 0 8px; font-weight: 700; }
   .props h3:first-child { margin-top: 0; }
@@ -2145,7 +2179,9 @@ STUDIO_TEMPLATE = """
   .prow input[type=checkbox] { accent-color: #6cb2ff; }
   .hintp { color: #777; font-size: 11.5px; line-height: 1.5; margin-top: 4px; }
   /* ── 타임라인 ── */
-  .tl { flex: 0 0 auto; background: #1b1b1c; border-top: 1px solid #333; padding: 8px 12px 12px; user-select: none; }
+  .tl { flex: 0 0 auto; background: rgba(28,28,30,.6); -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%); border-top: 1px solid rgba(255,255,255,.08);
+    padding: 8px 12px 12px; user-select: none; }
   .tl-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #9aa0a6; margin-bottom: 6px; }
   .tl-head .time { font-variant-numeric: tabular-nums; color: #e8eaed; font-weight: 700; }
   .tl-body { position: relative; }
@@ -2183,10 +2219,10 @@ STUDIO_TEMPLATE = """
 <div class="top">
   <a href="/video/{{ video_id }}">← 후보 목록</a>
   <span class="name" id="clipName">클립 {{ idx + 1 }}</span>
-  <button class="tbtn" id="bLyrics" hidden>🎼 가사 가져오기</button>
-  <button class="tbtn" id="bSync">⏱ 싱크 맞추기</button>
-  <button class="tbtn" id="bCorrect">✨ AI 교정</button>
-  <button class="tbtn" id="bTranslate">🌐 영어 번역</button>
+  <button class="tbtn" id="bLyrics" hidden>가사 가져오기</button>
+  <button class="tbtn" id="bSync">싱크 맞추기</button>
+  <button class="tbtn" id="bCorrect">AI 교정</button>
+  <button class="tbtn" id="bTranslate">영어 번역</button>
   <button class="tbtn" id="bSave">저장</button>
   <button class="tbtn primary" id="bRender">만들기</button>
 </div>
@@ -2928,11 +2964,14 @@ PREVIEW_MODAL_JS = r"""
   };
 
   const CSS = `
-  .pv-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.55); z-index: 1000;
+  .pv-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.38);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); z-index: 1000;
     display: flex; align-items: center; justify-content: center; padding: 16px;
     animation: pvFade .18s ease; }
   @keyframes pvFade { from { opacity: 0; } to { opacity: 1; } }
-  .pv-card { background: var(--card, #fff); border-radius: 22px; box-shadow: 0 24px 80px rgba(15,23,42,.35);
+  .pv-card { background: rgba(255,255,255,.78); -webkit-backdrop-filter: blur(34px) saturate(180%);
+    backdrop-filter: blur(34px) saturate(180%); border: 1px solid var(--glass-border, rgba(255,255,255,.55));
+    border-radius: 26px; box-shadow: 0 24px 80px rgba(15,23,42,.3);
     width: min(600px, 94vw); max-height: 94vh; overflow-y: auto; padding: 18px 18px 16px;
     animation: pvUp .22s cubic-bezier(.22,.61,.36,1); }
   @keyframes pvUp { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
@@ -2940,9 +2979,9 @@ PREVIEW_MODAL_JS = r"""
   .pv-head b { font-size: 16px; letter-spacing: -0.01em; }
   .pv-x { cursor: pointer; border: none; background: none; font-size: 22px; color: #8b95a1; line-height: 1; padding: 2px 6px; }
   .pv-head-r { display: flex; align-items: center; gap: 6px; }
-  .pv-reanalyze { cursor: pointer; border: 1.5px solid #f0f1f3; background: #fafbfc; color: #3182f6;
+  .pv-reanalyze { cursor: pointer; border: none; background: rgba(120,120,128,.12); color: #0a84ff;
     font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px; padding: 6px 10px; white-space: nowrap; }
-  .pv-reanalyze:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-reanalyze:hover { background: rgba(10,132,255,.14); }
   .pv-reanalyze:disabled { opacity: .6; cursor: default; }
   .pv-sub { font-size: 12.5px; color: #8b95a1; margin: 0 0 10px; }
   .pv-canvas-wrap { display: flex; justify-content: center; }
@@ -3109,8 +3148,8 @@ PREVIEW_MODAL_JS = r"""
       '<div class="pv-card">' +
       '  <div class="pv-head"><b>만들기 전 확인' + (total > 1 ? ' (' + seq + '/' + total + ')' : '') + '</b>' +
       '    <div class="pv-head-r">' +
-      '      <button type="button" class="pv-capedit-btn">✎ 자막 수정</button>' +
-      '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">↻ 구간 재분석</button>' +
+      '      <button type="button" class="pv-capedit-btn">자막 수정</button>' +
+      '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">구간 재분석</button>' +
       '      <button class="pv-x" title="취소">&times;</button>' +
       '    </div></div>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
@@ -3128,7 +3167,7 @@ PREVIEW_MODAL_JS = r"""
       '    </div>' +
       '    <div class="pv-times"><span>시작 <b class="pv-t0"></b></span><span class="pv-dur"></span><span>끝 <b class="pv-t1"></b></span></div>' +
       '    <div class="pv-tools">' +
-      '      <button type="button" class="pv-tool pv-split">✂ 재생 위치서 분할</button>' +
+      '      <button type="button" class="pv-tool pv-split">재생 위치서 분할</button>' +
       '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
       '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
       '      <label class="pv-speedlbl" title="영상·소리 배속(음정 유지). 자막도 함께 배속돼 싱크가 유지됩니다.">배속 ' +
@@ -3139,16 +3178,16 @@ PREVIEW_MODAL_JS = r"""
       '  </div>' +
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
-      '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
-      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다 (토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
-      '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">✨ AI 자막 교정</button>' +
-      '      <button type="button" class="pv-lyricsbtn" hidden title="곡 제목으로 정식 가사를 인터넷에서 검색해 가져오고, 이 영상의 노래 속도에 맞춰 자막을 채웁니다 (토큰 사용)">🎼 가사 자동 가져오기</button>' +
-      '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">🌐 영어 자막 만들기</button>' +
-      '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
+      '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">꼼꼼 재분석</button>' +
+      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다 (토큰 비용 없음)">싱크 맞추기</button>' +
+      '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">AI 자막 교정</button>' +
+      '      <button type="button" class="pv-lyricsbtn" hidden title="곡 제목으로 정식 가사를 인터넷에서 검색해 가져오고, 이 영상의 노래 속도에 맞춰 자막을 채웁니다 (토큰 사용)">가사 자동 가져오기</button>' +
+      '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">영어 자막 만들기</button>' +
+      '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">파란 강조: 끔</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
       '      <button type="button" class="pv-shiftp" title="자막 전체를 0.1초 뒤로(늦게)">0.1s ▶</button>' +
-      '      <button type="button" class="pv-capcopyall" title="자막 내용 전체 복사">📋</button>' +
-      '      <button type="button" class="pv-capsel-toggle">☑ 선택하기</button>' +
+      '      <button type="button" class="pv-capcopyall" title="자막 내용 전체 복사">복사</button>' +
+      '      <button type="button" class="pv-capsel-toggle">선택하기</button>' +
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
       '    </div>' +
@@ -3157,7 +3196,7 @@ PREVIEW_MODAL_JS = r"""
       '  </div>' +
       '  <div class="pv-cands"></div>' +
       '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
-      '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio">🎬 스튜디오(타임라인 편집) →</a>' +
+      '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio">스튜디오(타임라인 편집) →</a>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
       '</div>';
     document.body.appendChild(back);
@@ -3574,8 +3613,8 @@ PREVIEW_MODAL_JS = r"""
 
     // ── 자막 수정(접었다 폈다, 시작·끝·내용 편집) ──
     const capSec = $('.pv-capsec'), capRowsBox = $('.pv-caprows');
-    // 찬양 클립은 자막(가사)이 핵심이라 자막 영역을 처음부터 펼쳐 둔다 — 🎼 가사 가져오기·
-    // ⏱ 싱크 같은 도구가 '✎ 자막 수정'을 눌러야만 보여서 못 찾는 문제(실신고) 방지.
+    // 찬양 클립은 자막(가사)이 핵심이라 자막 영역을 처음부터 펼쳐 둔다 — 가사 가져오기·
+    // 싱크 같은 도구가 '자막 수정'을 눌러야만 보여서 못 찾는 문제(실신고) 방지.
     if (C.clip_type === 'praise') capSec.classList.remove('hidden');
 
     // ── 배속(1.0~2.0): 미리보기도 즉시 그 배속으로 재생, 저장 시 렌더에 반영 ──
@@ -3626,7 +3665,7 @@ PREVIEW_MODAL_JS = r"""
       selMode = !selMode;
       capRowsBox.classList.toggle('selmode', selMode);
       selToggle.classList.toggle('on', selMode);
-      selToggle.textContent = selMode ? '선택 취소' : '☑ 선택하기';
+      selToggle.textContent = selMode ? '선택 취소' : '선택하기';
       selMerge.hidden = selDel.hidden = !selMode;
       if (!selMode) capRowsBox.querySelectorAll('.pv-cap-sel').forEach((c) => { c.checked = false; });
     });
@@ -3677,7 +3716,7 @@ PREVIEW_MODAL_JS = r"""
     // 파란 강조는 업로드 찬양 렌더에서만 의미가 있다 — 그 경우에만 버튼을 보여준다.
     const isUploadPraise = (C.clip_type === 'praise') && VIDEO_ID.indexOf('upload_') === 0;
     function renderKaraokeBtn() {{
-      karaokeBtn.textContent = capKaraoke ? '🎨 파란 강조: 켬' : '🎨 파란 강조: 끔';
+      karaokeBtn.textContent = capKaraoke ? '파란 강조: 켬' : '파란 강조: 끔';
       karaokeBtn.classList.toggle('on', capKaraoke);
     }}
     if (isUploadPraise) {{
@@ -3725,14 +3764,14 @@ PREVIEW_MODAL_JS = r"""
       if (!started || !started.ok) {
         const d = started ? await started.json().catch(() => ({})) : {};
         alert('재분석 시작 실패: ' + (d.error || '네트워크 오류'));
-        reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; return;
+        reBtn.disabled = false; reBtn.textContent = '구간 재분석'; return;
       }
       const poll = () => {
         if (!back.isConnected) return;  // 팝업이 닫혔으면 여기선 멈추고 화면 아래 위젯에 맡긴다
         fetch('/video/' + VIDEO_ID + '/reanalyze_status').then((r) => r.json()).then((j) => {
           if (!back.isConnected) return;
           if (j.running) { reBtn.textContent = '재분석 중… ' + Math.round((j.pct || 0) * 100) + '%'; setTimeout(poll, 1000); return; }
-          if (j.error) { reBtn.disabled = false; reBtn.textContent = '↻ 구간 재분석'; alert('재분석 실패: ' + j.error); return; }
+          if (j.error) { reBtn.disabled = false; reBtn.textContent = '구간 재분석'; alert('재분석 실패: ' + j.error); return; }
           reBtn.textContent = '✓ 완료 (새로고침하면 후보에 추가됨)';
         }).catch(() => setTimeout(poll, 1500));
       };
@@ -3750,7 +3789,7 @@ PREVIEW_MODAL_JS = r"""
       catch (e) { started = null; }
       if (!started || !started.ok) {
         alert('재분석 시작 실패');
-        retransBtn.disabled = false; retransBtn.textContent = '🔍 꼼꼼 재분석'; return;
+        retransBtn.disabled = false; retransBtn.textContent = '꼼꼼 재분석'; return;
       }
       const poll = () => {
         if (!back.isConnected) return;  // 팝업 닫혔으면 중단(서버 작업은 계속 돌지만 결과 반영처가 없음)
@@ -3763,7 +3802,7 @@ PREVIEW_MODAL_JS = r"""
             }
             if (j.error || !j.lines) {
               alert('자막 재분석 실패: ' + (j.error || '결과 없음'));
-              retransBtn.disabled = false; retransBtn.textContent = '🔍 꼼꼼 재분석'; return;
+              retransBtn.disabled = false; retransBtn.textContent = '꼼꼼 재분석'; return;
             }
             // 편집 목록을 새 정밀 자막으로 교체하고, 확정 시 저장되도록 dirty 표시.
             capRowsBox.innerHTML = '';
@@ -3798,7 +3837,7 @@ PREVIEW_MODAL_JS = r"""
       const j = r && r.ok ? await r.json().catch(() => null) : null;
       syncBtn.disabled = false;
       if (!j || !j.lines) {
-        syncBtn.textContent = '⏱ 싱크 맞추기';
+        syncBtn.textContent = '싱크 맞추기';
         alert('싱크 맞추기 실패' + (j && j.error ? ': ' + j.error : '')); return;
       }
       // 행 순서는 그대로 두고 시간만 갱신(텍스트·분할 불변).
@@ -3813,7 +3852,7 @@ PREVIEW_MODAL_JS = r"""
       // (사용자 요청 2026-09-05: 흰 자막이 그대로 떠 있어야 하고, 파란색은 '파란 강조' 버튼으로만.)
       capSec.classList.remove('hidden');
       syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
-      setTimeout(() => { syncBtn.textContent = '⏱ 싱크 맞추기'; }, 4000);
+      setTimeout(() => { syncBtn.textContent = '싱크 맞추기'; }, 4000);
     });
 
     // ── AI 자막 교정: 문맥·성경지식으로 오타 교정 + 핵심어 형광 강조(줄 수·시간 유지) ──
@@ -3832,7 +3871,7 @@ PREVIEW_MODAL_JS = r"""
       const j = r && r.ok ? await r.json().catch(() => null) : null;
       correctBtn.disabled = false;
       if (!j || !j.lines) {
-        correctBtn.textContent = '✨ AI 자막 교정';
+        correctBtn.textContent = 'AI 자막 교정';
         alert('AI 자막 교정 실패' + (j && j.error ? ': ' + j.error : '')); return;
       }
       // 텍스트만 교체(시간·행 순서 유지). 강조어 저장.
@@ -3842,7 +3881,7 @@ PREVIEW_MODAL_JS = r"""
       capsDirty = true;
       capSec.classList.remove('hidden');
       correctBtn.textContent = '✓ ' + (j.changed || 0) + '줄 교정 · 강조 ' + capHighlights.length + '개 (저장 필요)';
-      setTimeout(() => { correctBtn.textContent = '✨ AI 자막 교정'; }, 5000);
+      setTimeout(() => { correctBtn.textContent = 'AI 자막 교정'; }, 5000);
     });
 
     // ── 가사 자동 가져오기(찬양): 곡 제목으로 인터넷 검색 → 정식 가사 + 노래 속도 싱크 ──
@@ -3863,7 +3902,7 @@ PREVIEW_MODAL_JS = r"""
         const j = r && r.ok ? await r.json().catch(() => null) : null;
         lyricsBtn.disabled = false;
         if (!j || !j.lines) {
-          lyricsBtn.textContent = '🎼 가사 자동 가져오기';
+          lyricsBtn.textContent = '가사 자동 가져오기';
           const d = r && !r.ok ? await r.json().catch(() => ({})) : {};
           alert('가사 가져오기 실패' + (d.error ? ': ' + d.error : (j && j.error ? ': ' + j.error : ''))); return;
         }
@@ -3872,7 +3911,7 @@ PREVIEW_MODAL_JS = r"""
         capsDirty = true;
         capSec.classList.remove('hidden');
         lyricsBtn.textContent = '✓ ' + j.lines.length + '소절 (저장 필요)';
-        setTimeout(() => { lyricsBtn.textContent = '🎼 가사 자동 가져오기'; }, 5000);
+        setTimeout(() => { lyricsBtn.textContent = '가사 자동 가져오기'; }, 5000);
       });
     }
 
@@ -3892,13 +3931,13 @@ PREVIEW_MODAL_JS = r"""
       const j = r && r.ok ? await r.json().catch(() => null) : null;
       translateBtn.disabled = false;
       if (!j || !j.lines) {
-        translateBtn.textContent = '🌐 영어 자막 만들기';
+        translateBtn.textContent = '영어 자막 만들기';
         alert('영어 번역 실패' + (j && j.error ? ': ' + j.error : '')); return;
       }
       capOverridesEn = j.lines;   // 시간은 현재 자막과 동일, 텍스트만 영어
       capsDirty = true;           // 저장 시 caption_overrides_en 반영
       translateBtn.textContent = '✓ 영어 ' + j.lines.length + '줄 (저장 후 \'영어 자막\'으로 만들기)';
-      setTimeout(() => { translateBtn.textContent = '🌐 영어 자막 만들기'; }, 6000);
+      setTimeout(() => { translateBtn.textContent = '영어 자막 만들기'; }, 6000);
     });
 
     // ── 전체 밀기: 모든 자막 줄의 시작·끝을 한 번에 ±0.1초 이동(귀로 미세 조정용) ──
@@ -3920,7 +3959,7 @@ PREVIEW_MODAL_JS = r"""
       const txt = [...capRowsBox.querySelectorAll('.pv-cap-text')]
         .map((el) => el.value.trim()).filter(Boolean).join('\n');
       if (!txt) { alert('복사할 자막이 없습니다'); return; }
-      const done = () => { capCopyAll.textContent = '✓'; setTimeout(() => { capCopyAll.textContent = '📋'; }, 1500); };
+      const done = () => { capCopyAll.textContent = '복사됨'; setTimeout(() => { capCopyAll.textContent = '복사'; }, 1500); };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(txt).then(done, () => {
           const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta);
