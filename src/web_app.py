@@ -2042,6 +2042,442 @@ document.getElementById('renderBtn').addEventListener('click', async () => {
 """.replace("__BASE_STYLE__", BASE_STYLE)
 
 
+STUDIO_TEMPLATE = """
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스튜디오 - 클립 {{ idx + 1 }}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: #1e1e1e; color: #d4d4d4; font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif;
+    display: flex; flex-direction: column; overflow: hidden; }
+  /* ── 상단 툴바 ── */
+  .top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #252526;
+    border-bottom: 1px solid #333; flex: 0 0 auto; }
+  .top a { color: #9aa0a6; text-decoration: none; font-size: 13px; margin-right: 6px; }
+  .top a:hover { color: #fff; }
+  .top .name { font-weight: 700; font-size: 14px; color: #e8eaed; margin-right: auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tbtn { padding: 6px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 7px;
+    border: 1px solid #3c3c3c; background: #2d2d30; color: #6cb2ff; cursor: pointer; white-space: nowrap; }
+  .tbtn:hover { background: #37373d; border-color: #6cb2ff; }
+  .tbtn:disabled { opacity: .5; cursor: default; }
+  .tbtn.primary { background: #0e639c; border-color: #0e639c; color: #fff; }
+  .tbtn.primary:hover { background: #1177bb; }
+  /* ── 중앙: 미리보기 + 속성 ── */
+  .mid { flex: 1 1 auto; display: flex; min-height: 0; }
+  .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
+    position: relative; min-width: 0; }
+  .vwrap { position: relative; max-width: 96%; max-height: 94%; }
+  .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
+  .cap-ov { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); text-align: center;
+    width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
+    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.7);
+    line-height: 1.25; white-space: nowrap; }
+  .cap-ov .en { display: block; font-weight: 600; color: #e6e6e6; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+  .safe { position: absolute; pointer-events: none; border: 1px dashed rgba(255,80,80,.45); display: none; }
+  .safe.right { top: 0; bottom: 0; right: 0; width: 13%; }
+  .safe.bottom { left: 0; right: 0; bottom: 0; height: 12%; }
+  .vwrap.showsafe .safe { display: block; }
+  .playbig { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 62px; height: 62px;
+    border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; font-size: 24px; cursor: pointer; }
+  .playbig.hidden { display: none; }
+  /* ── 속성 패널 ── */
+  .props { flex: 0 0 250px; background: #252526; border-left: 1px solid #333; padding: 14px;
+    overflow-y: auto; font-size: 12.5px; }
+  .props h3 { font-size: 12px; color: #9aa0a6; text-transform: none; margin: 14px 0 8px; font-weight: 700; }
+  .props h3:first-child { margin-top: 0; }
+  .prow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .prow label { flex: 0 0 62px; color: #bbb; }
+  .prow input[type=range] { flex: 1; accent-color: #6cb2ff; }
+  .prow .val { flex: 0 0 44px; text-align: right; color: #e8eaed; font-variant-numeric: tabular-nums; }
+  .prow select { flex: 1; background: #2d2d30; color: #d4d4d4; border: 1px solid #3c3c3c; border-radius: 6px;
+    padding: 5px 7px; font-family: inherit; font-size: 12.5px; }
+  .prow input[type=checkbox] { accent-color: #6cb2ff; }
+  .hintp { color: #777; font-size: 11.5px; line-height: 1.5; margin-top: 4px; }
+  /* ── 타임라인 ── */
+  .tl { flex: 0 0 auto; background: #1b1b1c; border-top: 1px solid #333; padding: 8px 12px 12px; user-select: none; }
+  .tl-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #9aa0a6; margin-bottom: 6px; }
+  .tl-head .time { font-variant-numeric: tabular-nums; color: #e8eaed; font-weight: 700; }
+  .tl-body { position: relative; }
+  .ruler { position: relative; height: 18px; cursor: pointer; }
+  .ruler .tick { position: absolute; top: 0; font-size: 10px; color: #777; border-left: 1px solid #444;
+    padding-left: 3px; height: 18px; line-height: 16px; }
+  .thumbs { position: relative; height: 44px; display: flex; overflow: hidden; border-radius: 4px;
+    background: #101010; cursor: pointer; }
+  .thumbs img { flex: 1 1 0; min-width: 0; object-fit: cover; opacity: .85; pointer-events: none; }
+  .track { position: relative; height: 46px; margin-top: 6px; background: #232324; border-radius: 4px; }
+  .track.en-track { height: 30px; opacity: .8; }
+  .track-label { position: absolute; left: 6px; top: 4px; font-size: 10px; color: #666; pointer-events: none; z-index: 1; }
+  .blk { position: absolute; top: 4px; bottom: 4px; background: #2f4f77; border: 1px solid #4a79b3;
+    border-radius: 5px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
+  .blk.sel { background: #38618f; border-color: #6cb2ff; box-shadow: 0 0 0 1px #6cb2ff; z-index: 2; }
+  .blk .txt { padding: 0 8px; font-size: 11.5px; color: #dce6f2; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; pointer-events: none; width: 100%; }
+  .blk .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+  .blk .h.l { left: 0; } .blk .h.r { right: 0; }
+  .blk .h:hover { background: rgba(108,178,255,.4); }
+  .en-track .blk { background: #34432f; border-color: #5b7a52; cursor: default; }
+  .en-track .blk .txt { color: #cfe0c8; font-size: 10.5px; }
+  .phead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff5252; z-index: 5; pointer-events: none; }
+  .blk-edit { position: absolute; z-index: 9; background: #2d2d30; border: 1px solid #6cb2ff; border-radius: 6px;
+    padding: 6px; display: flex; gap: 6px; align-items: center; }
+  .blk-edit input { width: 340px; background: #1e1e1e; color: #e8eaed; border: 1px solid #3c3c3c;
+    border-radius: 5px; padding: 6px 8px; font-family: inherit; font-size: 12.5px; }
+  .blk-edit button { padding: 5px 9px; font-size: 12px; border-radius: 5px; border: 1px solid #3c3c3c;
+    background: #37373d; color: #d4d4d4; cursor: pointer; }
+  .tl-tools { display: flex; gap: 8px; margin-top: 8px; align-items: center; font-size: 12px; color: #888; }
+  .status { margin-left: auto; font-size: 12px; color: #6cb2ff; }
+</style>
+</head>
+<body>
+<div class="top">
+  <a href="/video/{{ video_id }}">← 후보 목록</a>
+  <span class="name" id="clipName">클립 {{ idx + 1 }}</span>
+  <button class="tbtn" id="bLyrics" hidden>🎼 가사 가져오기</button>
+  <button class="tbtn" id="bSync">⏱ 싱크 맞추기</button>
+  <button class="tbtn" id="bCorrect">✨ AI 교정</button>
+  <button class="tbtn" id="bTranslate">🌐 영어 번역</button>
+  <button class="tbtn" id="bSave">저장</button>
+  <button class="tbtn primary" id="bRender">만들기</button>
+</div>
+<div class="mid">
+  <div class="stage">
+    <div class="vwrap" id="vwrap">
+      <video id="v" src="/media/{{ video_id }}/source.mp4" playsinline preload="auto"></video>
+      <div class="safe right"></div><div class="safe bottom"></div>
+      <div class="cap-ov" id="capOv" style="display:none"><span class="ko"></span><span class="en"></span></div>
+      <button class="playbig" id="playBig">▶</button>
+    </div>
+  </div>
+  <div class="props">
+    <h3>자막 속성</h3>
+    <div class="prow"><label>크기</label><input type="range" id="pSize" min="36" max="170" step="1"><span class="val" id="pSizeV"></span></div>
+    <div class="prow"><label>세로 위치</label><input type="range" id="pY" min="-400" max="400" step="2"><span class="val" id="pYV"></span></div>
+    <div class="prow"><label>가로 위치</label><input type="range" id="pX" min="-400" max="400" step="2"><span class="val" id="pXV"></span></div>
+    <div class="prow"><label>영어 표시</label><input type="checkbox" id="pEn" checked> <span style="color:#888">미리보기에 영어 함께</span></div>
+    <div class="prow"><label>안전영역</label><input type="checkbox" id="pSafe" checked> <span style="color:#888">폰 UI 가이드(우측·하단)</span></div>
+    <p class="hintp">타임라인: 블록 드래그=이동 · 가장자리=길이 · 더블클릭=텍스트 수정 · Delete=삭제 · 휠=확대/축소 · Space=재생</p>
+    <h3>도움말</h3>
+    <p class="hintp">빨간 점선 안쪽(우측·하단)은 휴대폰에서 좋아요·캡션 UI에 가려질 수 있는 영역이에요. 자막이 침범하지 않게 위치를 잡아주세요.</p>
+  </div>
+</div>
+<div class="tl">
+  <div class="tl-head"><span class="time" id="tCur">0:00.0</span><span id="tRange"></span>
+    <button class="tbtn" id="bAdd" style="padding:3px 8px;font-size:11.5px">+ 소절 추가</button>
+    <span class="status" id="status"></span></div>
+  <div class="tl-body">
+    <div class="ruler" id="ruler"></div>
+    <div class="thumbs" id="thumbs"></div>
+    <div class="track" id="koTrack"><span class="track-label">자막</span></div>
+    <div class="track en-track" id="enTrack" style="display:none"><span class="track-label">EN</span></div>
+    <div class="phead" id="phead" style="display:none"></div>
+  </div>
+</div>
+<script>
+const VIDEO_ID = {{ video_id | tojson }};
+const IDX = {{ idx }};
+const v = document.getElementById('v');
+const $ = (id) => document.getElementById(id);
+let C = null;              // preview_info.clip
+let L = null;              // preview_info.layout
+let caps = [];             // [{start,end,text}] 절대초 (한국어)
+let ens = [];              // 영어 트랙(인덱스로 한국어와 짝) — 시간은 저장 시 한국어와 동기화
+let selIdx = -1;
+let dirty = false;
+let view = { a: 0, b: 60 };
+let dur = 60;
+const fmt = (t) => Math.floor(t / 60) + ':' + (t % 60 < 10 ? '0' : '') + (t % 60).toFixed(1);
+
+fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json()).then(info => {
+  C = info.clip; L = info.layout;
+  dur = info.source_duration || (C.end + 10);
+  caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  $('clipName').textContent = (C.title || ('클립 ' + (IDX + 1)));
+  if (C.clip_type === 'praise') $('bLyrics').hidden = false;
+  const basePad = Math.max((C.end - C.start) * 0.08, 3);
+  view = { a: Math.max(0, C.start - basePad), b: Math.min(dur, C.end + basePad) };
+  // 속성 초기값
+  const defSize = Math.round((L.caption_font_size || 72));
+  $('pSize').value = C.caption_size || defSize; $('pX').value = C.caption_offset_x || 0; $('pY').value = C.caption_offset_y || 0;
+  syncPropLabels();
+  v.addEventListener('loadedmetadata', () => { v.currentTime = C.start; });
+  renderAll();
+});
+
+function syncPropLabels() {
+  $('pSizeV').textContent = $('pSize').value; $('pXV').textContent = $('pX').value; $('pYV').textContent = $('pY').value;
+}
+['pSize','pX','pY'].forEach(id => $(id).addEventListener('input', () => { syncPropLabels(); dirty = true; updateOverlay(); }));
+$('pEn').addEventListener('change', updateOverlay);
+$('pSafe').addEventListener('change', () => $('vwrap').classList.toggle('showsafe', $('pSafe').checked));
+$('vwrap').classList.add('showsafe');
+
+// ── 미리보기 자막 오버레이 ──
+function activeCapIdx(t) {
+  for (let i = 0; i < caps.length; i++) if (t >= caps[i].start && t < caps[i].end) return i;
+  return -1;
+}
+function updateOverlay() {
+  const ov = $('capOv');
+  const i = activeCapIdx(v.currentTime);
+  if (i < 0) { ov.style.display = 'none'; return; }
+  ov.style.display = 'block';
+  ov.querySelector('.ko').textContent = caps[i].text;
+  const en = ($('pEn').checked && ens[i]) ? ens[i].text : '';
+  const enEl = ov.querySelector('.en');
+  enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
+  // 크기: 렌더 해상도 px → 미리보기 px (영상 표시폭/해상도폭 비율), libass 계수 반영
+  const scale = v.clientWidth / (L.resolution ? L.resolution[0] : 1080);
+  const kc = L.caption_ass_coeff || 1;
+  const sz = parseFloat($('pSize').value) * kc * scale;
+  ov.style.fontSize = sz + 'px';
+  enEl.style.fontSize = (sz * 0.45) + 'px';
+  ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
+  ov.style.bottom = 'calc(12% - ' + (parseFloat($('pY').value) * scale) + 'px)';
+}
+
+// ── 재생 제어(클립 구간 안에서만) ──
+function playPause() {
+  if (v.paused) { if (v.currentTime >= C.end - 0.05 || v.currentTime < C.start) v.currentTime = C.start; v.play(); }
+  else v.pause();
+}
+$('playBig').addEventListener('click', playPause);
+v.addEventListener('click', playPause);
+v.addEventListener('play', () => $('playBig').classList.add('hidden'));
+v.addEventListener('pause', () => $('playBig').classList.remove('hidden'));
+v.addEventListener('timeupdate', () => {
+  if (v.currentTime >= C.end) { v.pause(); }
+  $('tCur').textContent = fmt(Math.max(0, v.currentTime));
+  updateOverlay(); renderPlayhead();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+  if (e.code === 'Space') { e.preventDefault(); playPause(); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selIdx >= 0 && e.target.tagName !== 'INPUT') {
+    caps.splice(selIdx, 1); if (ens.length > selIdx) ens.splice(selIdx, 1);
+    selIdx = -1; dirty = true; renderTracks();
+  }
+});
+
+// ── 타임라인 렌더 ──
+const tlBody = document.querySelector('.tl-body');
+const t2x = (t) => (t - view.a) / (view.b - view.a) * tlBody.clientWidth;
+const x2t = (px) => view.a + px / tlBody.clientWidth * (view.b - view.a);
+function renderRuler() {
+  const r = $('ruler'); r.innerHTML = '';
+  const span = view.b - view.a;
+  const step = span > 240 ? 60 : span > 90 ? 30 : span > 40 ? 10 : span > 12 ? 5 : 1;
+  for (let t = Math.ceil(view.a / step) * step; t <= view.b; t += step) {
+    const el = document.createElement('div'); el.className = 'tick';
+    el.style.left = t2x(t) + 'px'; el.textContent = fmt(t).replace('.0', '');
+    r.appendChild(el);
+  }
+}
+function renderThumbs() {
+  const box = $('thumbs'); box.innerHTML = '';
+  const N = Math.min(16, Math.max(8, Math.round(tlBody.clientWidth / 90)));
+  for (let k = 0; k < N; k++) {
+    const t = view.a + (view.b - view.a) * (k + 0.5) / N;
+    const img = document.createElement('img');
+    img.src = '/media/' + VIDEO_ID + '/thumb/' + Math.round(t) + '.jpg';
+    img.draggable = false; box.appendChild(img);
+  }
+}
+function renderPlayhead() {
+  const ph = $('phead');
+  const t = v.currentTime;
+  if (t >= view.a && t <= view.b) { ph.style.display = 'block'; ph.style.left = t2x(t) + 'px'; }
+  else ph.style.display = 'none';
+}
+function mkBlock(track, item, i, isEn) {
+  const x0 = t2x(item.start), x1 = t2x(item.end);
+  if (x1 < 0 || x0 > tlBody.clientWidth) return;
+  const b = document.createElement('div');
+  b.className = 'blk' + (!isEn && i === selIdx ? ' sel' : '');
+  b.style.left = Math.max(-2, x0) + 'px';
+  b.style.width = Math.max(10, Math.min(tlBody.clientWidth + 2, x1) - Math.max(-2, x0)) + 'px';
+  const s = document.createElement('span'); s.className = 'txt'; s.textContent = item.text;
+  b.appendChild(s);
+  if (!isEn) {
+    const hl = document.createElement('div'); hl.className = 'h l';
+    const hr = document.createElement('div'); hr.className = 'h r';
+    b.appendChild(hl); b.appendChild(hr);
+    b.addEventListener('pointerdown', (e) => startDrag(e, i, e.target === hl ? 'l' : e.target === hr ? 'r' : 'm'));
+    b.addEventListener('dblclick', (e) => { e.stopPropagation(); openEdit(i, b); });
+  }
+  track.appendChild(b);
+}
+function renderTracks() {
+  const ko = $('koTrack'), en = $('enTrack');
+  ko.querySelectorAll('.blk').forEach(el => el.remove());
+  en.querySelectorAll('.blk').forEach(el => el.remove());
+  caps.forEach((c, i) => mkBlock(ko, c, i, false));
+  if (ens.length) { en.style.display = 'block'; ens.forEach((c, i) => mkBlock(en, c, i, true)); }
+  else en.style.display = 'none';
+  $('tRange').textContent = fmt(view.a) + ' ~ ' + fmt(view.b);
+}
+function renderAll() { renderRuler(); renderThumbs(); renderTracks(); renderPlayhead(); }
+window.addEventListener('resize', renderAll);
+
+// 클릭=탐색, 휠=확대/축소
+function seekFromEvent(e, el) {
+  const rect = el.getBoundingClientRect();
+  const t = x2t(e.clientX - rect.left);
+  v.currentTime = Math.min(Math.max(t, 0), dur - 0.05);
+  updateOverlay(); renderPlayhead();
+}
+$('ruler').addEventListener('pointerdown', (e) => seekFromEvent(e, $('ruler')));
+$('thumbs').addEventListener('pointerdown', (e) => seekFromEvent(e, $('thumbs')));
+tlBody.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = tlBody.getBoundingClientRect();
+  const pivot = x2t(e.clientX - rect.left);
+  const f = e.deltaY > 0 ? 1.25 : 0.8;
+  let a = pivot - (pivot - view.a) * f, b = pivot + (view.b - pivot) * f;
+  if (b - a < 2) { const c = (a + b) / 2; a = c - 1; b = c + 1; }
+  view = { a: Math.max(0, a), b: Math.min(dur, b) };
+  renderAll();
+}, { passive: false });
+
+// ── 블록 드래그(이동/리사이즈) + 스냅 ──
+let drag = null;
+function startDrag(e, i, mode) {
+  e.preventDefault();
+  selIdx = i; renderTracks();
+  drag = { i, mode, x0: e.clientX, s0: caps[i].start, e0: caps[i].end };
+  document.addEventListener('pointermove', onDrag);
+  document.addEventListener('pointerup', endDrag, { once: true });
+}
+function snap(t, i) {
+  const eps = (view.b - view.a) / tlBody.clientWidth * 7; // 7px
+  const cands = [v.currentTime];
+  if (i > 0) cands.push(caps[i - 1].end);
+  if (i < caps.length - 1) cands.push(caps[i + 1].start);
+  for (const c of cands) if (Math.abs(t - c) < eps) return c;
+  return t;
+}
+function onDrag(e) {
+  if (!drag) return;
+  const dt = (e.clientX - drag.x0) / tlBody.clientWidth * (view.b - view.a);
+  const c = caps[drag.i];
+  if (drag.mode === 'm') {
+    const len = drag.e0 - drag.s0;
+    let ns = snap(drag.s0 + dt, drag.i);
+    ns = Math.max(0, Math.min(ns, dur - len));
+    c.start = ns; c.end = ns + len;
+  } else if (drag.mode === 'l') {
+    c.start = Math.min(snap(drag.s0 + dt, drag.i), c.end - 0.3);
+    c.start = Math.max(0, c.start);
+  } else {
+    c.end = Math.max(snap(drag.e0 + dt, drag.i), c.start + 0.3);
+    c.end = Math.min(dur, c.end);
+  }
+  dirty = true;
+  renderTracks(); updateOverlay();
+}
+function endDrag() { drag = null; document.removeEventListener('pointermove', onDrag); }
+
+// ── 더블클릭 텍스트 수정 ──
+function openEdit(i, blkEl) {
+  closeEdit();
+  const wrap = document.createElement('div'); wrap.className = 'blk-edit'; wrap.id = 'blkEdit';
+  const inp = document.createElement('input'); inp.type = 'text'; inp.value = caps[i].text;
+  const ok = document.createElement('button'); ok.textContent = '확인';
+  wrap.appendChild(inp); wrap.appendChild(ok);
+  wrap.style.left = Math.max(0, Math.min(parseFloat(blkEl.style.left), tlBody.clientWidth - 420)) + 'px';
+  wrap.style.top = ($('koTrack').offsetTop - 4) + 'px';
+  tlBody.appendChild(wrap);
+  inp.focus(); inp.select();
+  const commit = () => { caps[i].text = inp.value.trim() || caps[i].text; dirty = true; closeEdit(); renderTracks(); updateOverlay(); };
+  ok.addEventListener('click', commit);
+  inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') commit(); if (ev.key === 'Escape') closeEdit(); });
+}
+function closeEdit() { const el = $('blkEdit'); if (el) el.remove(); }
+
+$('bAdd').addEventListener('click', () => {
+  const t = Math.max(C.start, Math.min(v.currentTime, C.end - 2));
+  caps.push({ start: t, end: Math.min(t + 3, C.end), text: '새 소절' });
+  caps.sort((a, b) => a.start - b.start);
+  dirty = true; renderTracks();
+});
+
+// ── 저장/만들기/AI 도구 ──
+function collect() { return caps.map(c => ({ start: c.start, end: c.end, text: c.text })); }
+function payloadCaps() {
+  const p = { captions: collect(), caption_size: parseInt($('pSize').value, 10),
+              caption_offset_x: parseFloat($('pX').value), caption_offset_y: parseFloat($('pY').value) };
+  if (ens.length === caps.length && ens.length) {
+    p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
+  }
+  return p;
+}
+async function save() {
+  const r = await fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/position', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadCaps()),
+  });
+  if (r.ok) { dirty = false; setStatus('저장됨 ✓'); return true; }
+  setStatus('저장 실패'); return false;
+}
+$('bSave').addEventListener('click', save);
+$('bRender').addEventListener('click', async () => {
+  if (!(await save())) return;
+  const r = await fetch('/video/' + VIDEO_ID + '/render', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ indices: [IDX], outro: true }),
+  });
+  if (r.ok) setStatus('렌더 시작 — 후보 목록에서 진행률 확인');
+  else setStatus('렌더 요청 실패');
+});
+function setStatus(m) { $('status').textContent = m; setTimeout(() => { if ($('status').textContent === m) $('status').textContent = ''; }, 5000); }
+async function aiCall(btn, url, body, apply) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '처리 중…';
+  let r = null;
+  try { r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch (e) {}
+  const j = r && r.ok ? await r.json().catch(() => null) : null;
+  btn.disabled = false; btn.textContent = old;
+  if (!j || j.error || !j.lines) { alert('실패' + (j && j.error ? ': ' + j.error : '')); return; }
+  apply(j); dirty = true; renderTracks(); updateOverlay();
+}
+$('bSync').addEventListener('click', () => aiCall($('bSync'),
+  '/video/' + VIDEO_ID + '/clip/' + IDX + '/sync_captions', { captions: collect() },
+  (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 맞춤: ' + (j.source || '')); }));
+$('bCorrect').addEventListener('click', () => aiCall($('bCorrect'),
+  '/video/' + VIDEO_ID + '/clip/' + IDX + '/correct_captions', { captions: collect(), model: '' },
+  (j) => { j.lines.forEach((ln, i) => { if (caps[i]) caps[i].text = ln.text; }); setStatus('교정 ' + (j.changed || 0) + '줄'); }));
+$('bTranslate').addEventListener('click', () => aiCall($('bTranslate'),
+  '/video/' + VIDEO_ID + '/clip/' + IDX + '/translate_captions', { captions: collect(), model: '' },
+  (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); }));
+$('bLyrics').addEventListener('click', () => {
+  const t = prompt('곡 제목 (인터넷에서 정식 가사를 검색합니다)', (C && C.title) || '');
+  if (t == null || !t.trim()) return;
+  aiCall($('bLyrics'), '/video/' + VIDEO_ID + '/clip/' + IDX + '/fetch_lyrics', { title: t.trim() },
+    (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); ens = []; setStatus('가사 ' + j.lines.length + '소절'); });
+});
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/studio")
+def clip_studio(video_id: str, idx: int):
+    """프리미어식 스튜디오: 미리보기 + 속성 패널(자막 크기/위치) + 타임라인 트랙(자막 블록
+    드래그·리사이즈·더블클릭 편집). 데이터/저장/AI 도구는 기존 엔드포인트를 재사용한다."""
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return "해당 영상 작업을 찾을 수 없습니다.", 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return "잘못된 클립 번호입니다.", 404
+    return render_template_string(STUDIO_TEMPLATE, video_id=video_id, idx=idx)
+
+
 @app.route("/video/<video_id>/clip/<int:idx>/edit")
 def clip_edit(video_id: str, idx: int):
     clips_path = OUTPUT_ROOT / video_id / "clips.json"
@@ -2588,6 +3024,7 @@ PREVIEW_MODAL_JS = r"""
       '  </div>' +
       '  <div class="pv-cands"></div>' +
       '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
+      '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio">🎬 스튜디오(타임라인 편집) →</a>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
       '</div>';
     document.body.appendChild(back);
