@@ -577,25 +577,32 @@ def map_lines_to_voice_times(
 
     wnorm = [_norm(w[2]) for w in words]
     n = len(words)
-    anchors: dict[int, tuple[float, float]] = {}  # line_idx -> (매칭 시작초, 매칭 끝초)
-    wi = 0
-    for li, text in enumerate(texts):
-        target = _norm(text)
-        if not target or wi >= n:
-            continue
-        best = None  # (score, i, j)
-        for i in range(wi, min(wi + 80, n)):
+
+    def _best_window(target: str, lo: int, hi: int) -> tuple[float, int, int] | None:
+        """단어 [lo, hi) 범위에서 target과 가장 비슷한 연속 단어 창을 찾는다."""
+        best = None
+        for i in range(lo, min(hi, n)):
             acc = ""
-            for j in range(i, min(i + 25, n)):
+            for j in range(i, min(i + 25, hi, n)):
                 acc += wnorm[j]
                 if len(acc) > len(target) * 2 + 10:
                     break
                 score = difflib.SequenceMatcher(None, acc, target).ratio()
                 if best is None or score > best[0]:
                     best = (score, i, j)
+        return best
+
+    # 1차: 순차 퍼지 앵커링(전 범위, 임계 0.42 — 오탐 방지 위해 보수적).
+    anchors: dict[int, tuple[int, int, float, float]] = {}  # li -> (i, j, 시작초, 끝초)
+    wi = 0
+    for li, text in enumerate(texts):
+        target = _norm(text)
+        if not target or wi >= n:
+            continue
+        best = _best_window(target, wi, min(wi + 80, n))
         if best and best[0] >= 0.42:
             _, i, j = best
-            anchors[li] = (words[i][0], max(words[j][1], words[i][0] + 0.3))
+            anchors[li] = (i, j, words[i][0], max(words[j][1], words[i][0] + 0.3))
             wi = j + 1
 
     # 앵커 밀집 정리: 두 앵커 사이 실제 시간 간격이 그 사이 미앵커 소절 수가 최소한으로
@@ -608,31 +615,59 @@ def map_lines_to_voice_times(
     while k < len(idxs):
         prev_i, cur_i = idxs[k - 1], idxs[k]
         gap_lines = cur_i - prev_i - 1  # 그 사이 미앵커 소절 수
-        gap_sec = anchors[cur_i][0] - anchors[prev_i][1]
+        gap_sec = anchors[cur_i][2] - anchors[prev_i][3]
         if gap_sec < (gap_lines + 1) * MIN_SEC_PER_LINE:
             del anchors[cur_i]
             idxs.pop(k)
             continue  # k는 그대로 두고 다음(당겨진) 항목과 다시 비교
         k += 1
 
-    starts: list[float] = [0.0] * len(texts)
+    # 2차: 미앵커 소절을 '이웃 앵커 사이 좁은 단어 구간'에서만 다시 매칭한다. 탐색 범위가
+    # 좁아 오탐 위험이 낮으므로 임계값을 0.30으로 내릴 수 있다 — 1차에서 놓친 소절
+    # (오인식이 심하지만 그 구간에 그 소절뿐인 경우)을 추가로 실측 위치에 고정한다.
+    # 92→100점의 관건: 보간(추정)을 줄이고 실측 앵커를 늘리는 것.
     if anchors:
-        # 앵커된 소절은 실제 위치로, 나머지는 이웃 앵커 사이를 글자수 비례로 보간.
         idxs = sorted(anchors.keys())
         for li in range(len(texts)):
             if li in anchors:
-                starts[li] = anchors[li][0]
+                continue
+            target = _norm(texts[li])
+            if not target:
                 continue
             prev_a = max((k for k in idxs if k < li), default=None)
             next_a = min((k for k in idxs if k > li), default=None)
-            t0 = anchors[prev_a][1] if prev_a is not None else clip_start
-            t1 = anchors[next_a][0] if next_a is not None else clip_end
+            lo_w = anchors[prev_a][1] + 1 if prev_a is not None else 0
+            hi_w = anchors[next_a][0] if next_a is not None else n
+            if hi_w - lo_w < 2:
+                continue  # 사이에 단어가 거의 없음(간주) — 매칭 불가
+            best = _best_window(target, lo_w, hi_w)
+            if best and best[0] >= 0.30:
+                _, i, j = best
+                # 같은 간극의 앞선 소절보다 시간이 역행하면 오탐 — 버린다.
+                t_start = words[i][0]
+                prev_t = anchors[prev_a][3] if prev_a is not None else clip_start
+                if t_start >= prev_t - 0.2:
+                    anchors[li] = (i, j, t_start, max(words[j][1], t_start + 0.3))
+                    idxs = sorted(anchors.keys())
+
+    starts: list[float] = [0.0] * len(texts)
+    if anchors:
+        # 앵커된 소절은 실측 위치로, 나머지는 이웃 앵커 사이를 글자수 비례로 보간.
+        idxs = sorted(anchors.keys())
+        for li in range(len(texts)):
+            if li in anchors:
+                starts[li] = anchors[li][2]
+                continue
+            prev_a = max((k for k in idxs if k < li), default=None)
+            next_a = min((k for k in idxs if k > li), default=None)
+            t0 = anchors[prev_a][3] if prev_a is not None else clip_start
+            t1 = anchors[next_a][2] if next_a is not None else clip_end
             lo = prev_a + 1 if prev_a is not None else 0
             hi = next_a if next_a is not None else len(texts)
             span_chars = sum(max(1, len(texts[k])) for k in range(lo, hi)) or 1
             cum = sum(max(1, len(texts[k])) for k in range(lo, li))
             starts[li] = t0 + (t1 - t0) * (cum / span_chars)
-        print(f"[praise-sync] 앵커 {len(anchors)}/{len(texts)}소절 (퍼지 매칭)")
+        print(f"[praise-sync] 앵커 {len(anchors)}/{len(texts)}소절 (1차+2차 퍼지 매칭)")
     else:
         # 전부 매칭 실패(전사가 심하게 뭉개짐) → 예전 글자수 비례 방식 폴백.
         times = [w[0] for w in words]
@@ -642,6 +677,11 @@ def map_lines_to_voice_times(
             starts[li] = times[min(n - 1, int(cum / total_chars * n))]
             cum += max(1, len(t))
         print("[praise-sync] 퍼지 앵커 0개 → 글자수 비례 폴백")
+
+    # 표시 리드: whisper 단어 시각은 '또렷해진 발성' 기준이라 노래의 여린 시작보다 조금
+    # 늦다. 자막은 그 소절을 부르기 시작하는 순간(또는 살짝 전)에 떠야 '제시간'으로
+    # 느껴진다(가사 슬라이드의 정석). 모든 소절 시작을 0.3초 당긴다.
+    starts = [max(clip_start, s - 0.3) for s in starts]
 
     # 첫 소절 스냅: 찬양 클립은 이미 '노래 시작' 기준으로 잘려 있다(제목 기반 업로드는
     # 0초=노래 시작, 자동 감지 곡도 전주 패딩 ~4초뿐). whisper는 노래의 여린 도입부를
@@ -669,7 +709,7 @@ def map_lines_to_voice_times(
     for i in range(len(out)):
         nxt = out[i + 1]["start"] if i + 1 < len(out) else clip_end
         if i in anchors:
-            cap = anchors[i][1] + 2.0
+            cap = anchors[i][3] + 2.0
         else:
             cap = out[i]["start"] + max(5.0, len(texts[i]) * 1.0 + 3.0)
         out[i]["end"] = round(max(out[i]["start"] + 0.5, min(nxt, cap)), 2)
@@ -1651,8 +1691,9 @@ def render_selected(
                     "background_mode": "crop",
                     # 제목(곡명) 오버레이도 없앤다(사용자 요청: "제목은 없애고 그냥 자막만").
                     "hook": {"enabled": False},
-                    # 로고 아웃트로는 세로(1080x1920) 전용 이미지라 16:9에 붙이면 찌그러진다 — 끔.
-                    "outro": {**pr_render.get("outro", {}), "enabled": False},
+                    # 아웃트로는 이제 비율 유지+흰 패딩으로 만들어져(render._get_or_create_outro_segment)
+                    # 16:9에 붙여도 안 찌그러진다 — 강제 off를 풀고 체크박스(outro_enabled)를 따른다
+                    # (실신고 2026-09-05: "끝에 로고 넣기 2초도 작동을 안 하네 찬양에선").
                 }
                 # 카라오케(단어별 발화 싱크에 맞춰 색이 바뀌는 효과)는 기본 끔 — whisper 노래
                 # 타이밍이 부정확할 수 있어, 사용자가 팝업에서 "싱크 맞추기"로 직접 확인·저장한

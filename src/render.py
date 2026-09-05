@@ -286,7 +286,14 @@ def _get_or_create_outro_segment(
         "-loop", "1", "-i", str(image_path),
         "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl={ch_layout}",
         "-t", str(duration_sec),
-        "-vf", f"scale={w}:{h},fps={fps}",
+        # 이미지 비율을 유지한 채 해상도에 맞추고 남는 부분은 흰 패딩(레터박스).
+        # 예전 scale={w}:{h} 강제 스케일은 세로 로고(1080x1920)를 16:9 업로드 찬양에
+        # 붙일 때 찌그러뜨렸다(그래서 찬양 아웃트로를 끄는 임시조치가 있었음 — 이제
+        # 비율이 달라도 안전하므로 켤 수 있다). 로고 배경이 흰색이라 패딩도 흰색.
+        "-vf", (
+            f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=white,fps={fps}"
+        ),
         "-pix_fmt", "yuv420p",
         *video_args,
         "-c:a", "aac", "-b:a", "192k", "-ar", str(sample_rate), "-ac", str(channels),
