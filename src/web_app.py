@@ -667,7 +667,7 @@ CANDIDATES_TEMPLATE = f"""
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, caption_lang: capLangSel ? capLangSel.value : 'bilingual', facetrack: facetrackChk ? facetrackChk.checked : false}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, caption_lang: capLangSel ? capLangSel.value : 'bilingual', facetrack: facetrackChk ? facetrackChk.checked : false, horizontal_indices: window.__pvHorizontal ? Array.from(window.__pvHorizontal) : []}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1203,6 +1203,12 @@ def render_route(video_id: str):
     else:  # 구 체크박스/스튜디오(미전송) 하위호환
         caption_lang = "bilingual" if body.get("bilingual", True) else ("en" if body.get("english") else "")
     facetrack_enabled = bool(body.get("facetrack", False))
+    # 팝업 '가로 원본' 버튼으로 고른 클립들: 찬양을 쇼츠 레이아웃 없이 원본 가로 그대로,
+    # 자막·제목 없이 잘라만 낸다(곡별 개별 업로드용).
+    try:
+        horizontal_indices = [int(x) for x in (body.get("horizontal_indices") or [])]
+    except (TypeError, ValueError):
+        horizontal_indices = []
 
     video_dir = OUTPUT_ROOT / video_id
     # 같은 영상 렌더가 이미 도는 중이면 새 스레드를 또 띄우지 않는다(분석과 동일한 가드).
@@ -1231,6 +1237,7 @@ def render_route(video_id: str):
                 caption_preset=caption_preset,
                 caption_lang=caption_lang,
                 facetrack_enabled=facetrack_enabled,
+                horizontal_indices=horizontal_indices,
             )
         except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
             _update_job(video_id, render_error=str(e))
@@ -2953,6 +2960,7 @@ PREVIEW_MODAL_JS = r"""
 
   // 만들기 흐름: 선택한 클립들을 순서대로 팝업 확인 → 모두 확인되면 onAllConfirmed() 실행.
   window.__previewFlow = function (indices, onAllConfirmed) {
+    window.__pvHorizontal = new Set();  // '가로 원본'으로 만들 클립 인덱스(팝업에서 선택)
     let i = 0;
     const next = () => {
       if (i >= indices.length) { onAllConfirmed(); return; }
@@ -3104,6 +3112,9 @@ PREVIEW_MODAL_JS = r"""
   .pv-foot { display: flex; gap: 9px; margin-top: 14px; align-items: center; }
   .pv-cancel { flex: 0 0 auto; padding: 13px 16px; border: none; border-radius: 12px; background: #f0f1f3;
     color: #191f28; font-weight: 600; font-size: 14px; font-family: inherit; cursor: pointer; }
+  .pv-wide { flex: 0 0 auto; padding: 13px 18px; border: 1.5px solid #d1d6db; border-radius: 12px;
+    background: #fff; color: #191f28; font-size: 15px; font-weight: 700; font-family: inherit; cursor: pointer; }
+  .pv-wide:hover { border-color: #3182f6; background: #f0f6ff; }
   .pv-ok { flex: 1; padding: 13px; border: none; border-radius: 12px; background: #3182f6; color: #fff;
     font-weight: 700; font-size: 14.5px; font-family: inherit; cursor: pointer;
     box-shadow: 0 8px 24px rgba(49,130,246,.28); }
@@ -3194,7 +3205,9 @@ PREVIEW_MODAL_JS = r"""
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
       '  <div class="pv-cands"></div>' +
-      '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button><button class="pv-ok">이 설정으로 만들기</button></div>' +
+      '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button>' +
+      '<button class="pv-wide" hidden title="쇼츠 세로 레이아웃 없이 원본 가로 비율 그대로, 자막·제목 없이 이 구간만 잘라냅니다 (곡별 개별 업로드용)">가로 원본</button>' +
+      '<button class="pv-ok">이 설정으로 만들기</button></div>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio">스튜디오(타임라인 편집) →</a>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
       '</div>';
@@ -4026,6 +4039,20 @@ PREVIEW_MODAL_JS = r"""
     $('.pv-ok').addEventListener('click', async () => {
       const ok = await saveNow();
       if (!ok) { alert('저장에 실패했어요'); return; }
+      // 이 클립을 이전에 '가로 원본'으로 찍어뒀다가 마음을 바꿔 일반 만들기를 눌렀을 수
+      // 있으므로, 일반 확정은 가로 목록에서 확실히 뺀다.
+      if (window.__pvHorizontal) window.__pvHorizontal.delete(idx);
+      close();
+      onConfirm();
+    });
+    // '가로 원본': 찬양 클립 전용 — 쇼츠 세로 레이아웃 없이 원본 가로 비율 그대로,
+    // 자막·제목 없이 이 구간만 잘라낸다(곡별 개별 업로드용, 사용자 요청 2026-09-06).
+    const wideBtn = $('.pv-wide');
+    if (C.clip_type === 'praise') wideBtn.hidden = false;
+    wideBtn.addEventListener('click', async () => {
+      const ok = await saveNow();
+      if (!ok) { alert('저장에 실패했어요'); return; }
+      (window.__pvHorizontal = window.__pvHorizontal || new Set()).add(idx);
       close();
       onConfirm();
     });

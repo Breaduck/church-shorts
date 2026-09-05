@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
@@ -1598,6 +1599,7 @@ def render_selected(
     caption_preset: str = "",
     caption_lang: str = "",
     facetrack_enabled: bool | None = None,
+    horizontal_indices: list[int] | None = None,
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
@@ -1605,7 +1607,10 @@ def render_selected(
     progress(message, pct)로 호출되며, 클립 개수만큼 균등 분할한 뒤 각 클립을
     재전사(전반 30%)/렌더링(후반 70%) 두 단계로 나눠 진행률을 채운다.
 
-    outro_enabled: "끝에 로고 넣기" UI 체크박스 값(None이면 config 기본값 그대로 따름)."""
+    outro_enabled: "끝에 로고 넣기" UI 체크박스 값(None이면 config 기본값 그대로 따름).
+    horizontal_indices: 팝업의 '가로 원본' 버튼으로 고른 클립 인덱스들 — 찬양 클립을
+    쇼츠 레이아웃 없이 원본 가로 비율 그대로, 자막·제목 없이 잘라만 낸다(곡별 개별
+    업로드 용도, 사용자 요청 2026-09-06)."""
     # 진행률 콜백을 방어적으로 감싼다: UI 표시 오류가 전사/렌더를 죽이거나 폴백을 유발하지 않게.
     _raw_progress = progress
     progress = lambda message, pct, eta=None: _safe_progress(_raw_progress, message, pct, eta)  # noqa: E731
@@ -1744,6 +1749,38 @@ def render_selected(
                 "remove_silence": False,           # 간주/조용한 피아노 구간을 무음으로 오인해 자르지 않게
                 "hook_speedup": {"enabled": False},
             }
+            # '가로 원본' 모드(팝업 버튼): 쇼츠 세로 카드 대신 원본 가로 비율 그대로,
+            # 자막·제목 전부 없이 곡 구간만 잘라낸다(곡별 개별 업로드용 — 사용자 요청
+            # 2026-09-06 "그냥 자르기 용도임. 자막도 필요없어").
+            if horizontal_indices and idx in horizontal_indices:
+                src_w, src_h = _probe_display_resolution(video_path)
+                if src_w > 1920:  # 인코딩 시간/용량 절약, 비율 유지
+                    src_h = int(src_h * (1920 / src_w))
+                    src_w = 1920
+                out_res = (src_w - src_w % 2, src_h - src_h % 2)
+                pr_render = {
+                    **pr_render,
+                    "resolution": out_res,
+                    "background_mode": "crop",     # 스케일+크롭 — 패딩 여백이 원천적으로 없음
+                    "hook": {"enabled": False},    # 상단 제목(곡명) 오버레이 제거
+                }
+                # 자막 이벤트 0개: 전사 세그먼트도, 확정 자막(caption_overrides)도 안 넘긴다.
+                # 원본 clip은 건드리지 않는다(디스크의 가사 자막은 보존 — 얕은 복사로 충분,
+                # 리스트 참조만 새로 비운 것이라 원본 리스트는 그대로다).
+                clip = copy.copy(clip)
+                clip.caption_overrides = []
+                clip.caption_overrides_en = []
+                _run_with_progress_ticker(
+                    lambda: render_clip(video_path, [], clip, out_path, pr_render, dict(cfg["captions"])),
+                    start_pct=base, end_pct=base + step, progress=progress,
+                    message=f"[{i+1}/{total}] 찬양 가로 원본 렌더링 중: {clip.title}",
+                    est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
+                )
+                out_path.with_suffix(".src").write_text(
+                    render_signature(clip.start, clip.end), encoding="utf-8"
+                )
+                outputs.append(out_path)
+                continue
             # 주의: captions enabled=False로 두면 ffmpeg subtitles 필터가 통째로 빠져
             # 같은 ASS에 든 '제목'까지 안 구워진다(실측: 제목 없는 찬양 렌더). 켠 채로 두고
             # 세그먼트로 자막 유무를 조절한다(빈 리스트 = 가사 자막 이벤트 0개).
