@@ -2336,6 +2336,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_highlights": (getattr(clip, "caption_highlights", None) or []),
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
+            "caption_size": int(getattr(clip, "caption_size", 0) or 0),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -2450,14 +2451,14 @@ PREVIEW_MODAL_JS = r"""
     border: 1.5px solid #f0f1f3; background: #fafbfc; border-radius: 8px; cursor: pointer; }
   .pv-capcopyall:hover { border-color: #3182f6; background: #f0f6ff; }
   .pv-retrans, .pv-syncbtn, .pv-shiftm, .pv-shiftp,
-  .pv-correctbtn, .pv-translatebtn, .pv-karaoke-toggle { flex: 0 0 auto; padding: 6px 10px;
+  .pv-correctbtn, .pv-translatebtn, .pv-karaoke-toggle, .pv-lyricsbtn { flex: 0 0 auto; padding: 6px 10px;
     font-size: 12px; font-weight: 700; font-family: inherit; border: 1.5px solid #f0f1f3;
     background: #fafbfc; color: #3182f6; border-radius: 8px; cursor: pointer; white-space: nowrap; }
   .pv-retrans:hover, .pv-syncbtn:hover, .pv-shiftm:hover, .pv-shiftp:hover,
-  .pv-correctbtn:hover, .pv-translatebtn:hover, .pv-karaoke-toggle:hover {
+  .pv-correctbtn:hover, .pv-translatebtn:hover, .pv-karaoke-toggle:hover, .pv-lyricsbtn:hover {
     border-color: #3182f6; background: #f0f6ff; }
   .pv-retrans:disabled, .pv-syncbtn:disabled,
-  .pv-correctbtn:disabled, .pv-translatebtn:disabled { opacity: .6; cursor: default; }
+  .pv-correctbtn:disabled, .pv-translatebtn:disabled, .pv-lyricsbtn:disabled { opacity: .6; cursor: default; }
   .pv-shiftm, .pv-shiftp { color: #191f28; }
   .pv-karaoke-toggle.on { background: #3182f6; color: #fff; border-color: #3182f6; }
   .pv-karaoke-toggle.on:hover { background: #2b74d9; }
@@ -2572,6 +2573,7 @@ PREVIEW_MODAL_JS = r"""
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">🔍 꼼꼼 재분석</button>' +
       '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다 (토큰 비용 없음)">⏱ 싱크 맞추기</button>' +
       '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">✨ AI 자막 교정</button>' +
+      '      <button type="button" class="pv-lyricsbtn" hidden title="곡 제목으로 정식 가사를 인터넷에서 검색해 가져오고, 이 영상의 노래 속도에 맞춰 자막을 채웁니다 (토큰 사용)">🎼 가사 자동 가져오기</button>' +
       '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">🌐 영어 자막 만들기</button>' +
       '      <button type="button" class="pv-karaoke-toggle" hidden title="켜면 말에 따라 단어가 파란색으로 강조됩니다. 끄면(기본) 흰 자막이 그대로 떠 있습니다.">🎨 파란 강조: 끔</button>' +
       '      <button type="button" class="pv-shiftm" title="자막 전체를 0.1초 앞으로(빠르게)">◀ 0.1s</button>' +
@@ -3257,6 +3259,37 @@ PREVIEW_MODAL_JS = r"""
       setTimeout(() => { correctBtn.textContent = '✨ AI 자막 교정'; }, 5000);
     });
 
+    // ── 가사 자동 가져오기(찬양): 곡 제목으로 인터넷 검색 → 정식 가사 + 노래 속도 싱크 ──
+    const lyricsBtn = $('.pv-lyricsbtn');
+    if (C.clip_type === 'praise') {
+      lyricsBtn.hidden = false;
+      lyricsBtn.addEventListener('click', async () => {
+        const t = prompt('곡 제목 (이 제목으로 인터넷에서 정식 가사를 검색합니다)', chosenTitle || C.title || '');
+        if (t == null || !t.trim()) return;
+        lyricsBtn.disabled = true; lyricsBtn.textContent = '가사 검색·싱크 중… (1~3분)';
+        let r = null;
+        try {
+          r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/fetch_lyrics', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: t.trim() }),
+          });
+        } catch (e) { r = null; }
+        const j = r && r.ok ? await r.json().catch(() => null) : null;
+        lyricsBtn.disabled = false;
+        if (!j || !j.lines) {
+          lyricsBtn.textContent = '🎼 가사 자동 가져오기';
+          const d = r && !r.ok ? await r.json().catch(() => ({})) : {};
+          alert('가사 가져오기 실패' + (d.error ? ': ' + d.error : (j && j.error ? ': ' + j.error : ''))); return;
+        }
+        capRowsBox.innerHTML = '';
+        j.lines.forEach((c2) => addCapRow(c2.start - C.start, c2.end - C.start, c2.text));
+        capsDirty = true;
+        capSec.classList.remove('hidden');
+        lyricsBtn.textContent = '✓ ' + j.lines.length + '소절 (저장 필요)';
+        setTimeout(() => { lyricsBtn.textContent = '🎼 가사 자동 가져오기'; }, 5000);
+      });
+    }
+
     // ── 영어 자막 만들기: 현재 자막을 영어로 번역해 영어 트랙에 저장(한국어 유지) ──
     const translateBtn = $('.pv-translatebtn');
     translateBtn.addEventListener('click', async () => {
@@ -3740,6 +3773,54 @@ def correct_captions_route(video_id: str, idx: int):
         })
     changed = sum(1 for i, ln in enumerate(in_lines) if out[i]["text"].strip() != str(ln.get("text", "")).strip())
     return jsonify({"lines": out, "highlights": highlights, "changed": changed, "total": len(out)})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/fetch_lyrics", methods=["POST"])
+def fetch_lyrics_route(video_id: str, idx: int):
+    """'가사 자동 가져오기'(찬양): 곡 제목으로 정식 가사를 인터넷 검색(WebSearch)해 가져오고,
+    이 클립의 실제 가창 시각에 맞춰(싱크까지) 자막 라인으로 반환한다. 저장은 편집기에서."""
+    video_dir = OUTPUT_ROOT / video_id
+    clips_path = video_dir / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "잘못된 클립 번호"}), 400
+    clip = clips[idx]
+    body = request.get_json() or {}
+    title = (body.get("title") or clip.title or "").strip()
+    if not title:
+        return jsonify({"error": "곡 제목이 없습니다"}), 400
+
+    from src.highlights import fetch_praise_lyrics_by_titles
+    from src.main import map_lines_to_voice_times
+
+    cfg = _load_config()
+    p = cfg.get("praise", {}) or {}
+    try:
+        lyrics_by_idx = fetch_praise_lyrics_by_titles(
+            [title], model=p.get("model", ""),
+            thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
+        )
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"가사 검색 실패: {e}"}), 500
+    lines = lyrics_by_idx.get(0) or []
+    if not lines:
+        return jsonify({"error": f"'{title}' 가사를 찾지 못했습니다. 곡 제목을 확인해 주세요."}), 404
+    # 이 클립의 실제 가창 시각에 매핑(분석 단계와 동일: 정밀 모델+캐시). 실패 시 글자수 비례.
+    mapped = None
+    try:
+        mapped = map_lines_to_voice_times(
+            video_dir / "source.mp4", clip.start, clip.end, lines,
+            cfg["whisper"], cache_dir=video_dir / "precise_cache",
+            model_override=cfg["whisper"].get("precise_model_size", "large-v3"),
+        )
+    except Exception:  # noqa: BLE001 - 매핑 실패해도 가사는 반환(균등 분배)
+        traceback.print_exc()
+    if not mapped:
+        from src.highlights import _distribute_lines_by_chars
+        mapped = _distribute_lines_by_chars(lines, clip.start, clip.end)
+    return jsonify({"lines": mapped, "total": len(mapped), "title": title})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/translate_captions", methods=["POST"])
