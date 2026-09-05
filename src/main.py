@@ -32,6 +32,7 @@ from src.highlights import (
     _distribute_lines_by_chars,
     correct_praise_lyrics,
     fetch_praise_lyrics_by_titles,
+    guess_praise_title_from_snippet,
     _build_praise_clips_from_titles,
     save_prompt_for_manual_mode,
     select_highlights_auto,
@@ -407,6 +408,89 @@ def reanalyze_clip_region(
     return new
 
 
+def _title_based_praise_clips(
+    dl: "DownloadResult", video_dir: Path, title_lines: list[str], cfg: dict, model: str, sp,
+) -> list[Clip]:
+    """곡 제목(들)으로 정식 가사를 가져와 클립을 만들고, 영상의 노래 속도에 맞춰 싱크한다.
+
+    title_lines가 사용자가 직접 입력한 것이든(analyze의 title_lines 분기), 짧은 스니펫으로
+    자동 추정된 것이든(_quick_guess_praise_title) 동일하게 처리한다 — 두 경로가 결과를
+    합치는 지점. 가사를 하나도 못 찾으면 빈 리스트를 반환해 호출자가 폴백하게 한다."""
+    p = cfg.get("praise", {}) or {}
+    lyrics_by_idx = fetch_praise_lyrics_by_titles(
+        title_lines, model=model or p.get("model", ""),
+        thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
+        on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+    )
+    clips = _build_praise_clips_from_titles(title_lines, lyrics_by_idx, dl.duration_sec)
+    if not clips:
+        return []
+    missing = [title_lines[i] for i in range(len(title_lines)) if not lyrics_by_idx.get(i)]
+    if missing:
+        print(f"[praise] 가사를 못 찾은 곡(자막 없음): {', '.join(missing)}")
+    # '우리 영상의 노래 속도'에 맞춰 가사를 띄운다(사용자 요청): 전사는 타이밍 전용으로만
+    # 쓰고(가사 텍스트는 정식 가사 유지), 각 소절을 실제 가창 시각에 매핑한다. 실패하면
+    # 글자 수 균등 분배(기존)로 폴백 — 자막은 어떻게든 나온다.
+    sp.set_fraction(0.4, "가사를 영상의 노래 속도에 맞추는 중...")
+    for ci, c in enumerate(clips):
+        texts = [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
+        if not texts:
+            continue
+        try:
+            mapped = map_lines_to_voice_times(
+                dl.video_path, c.start, c.end, texts,
+                cfg["whisper"], cache_dir=video_dir / "precise_cache",
+            )
+            if mapped:
+                c.caption_overrides = mapped
+            else:
+                print(f"[praise] 곡 {ci} 노래 속도 매핑 실패(단어 부족) → 균등 분배 유지")
+        except Exception:  # noqa: BLE001 - 타이밍 매핑 실패해도 자막은 유지
+            traceback.print_exc()
+    return clips
+
+
+def _quick_guess_praise_title(video_path: Path, duration_sec: float, cfg: dict, model: str, sp) -> str:
+    """전체 영상을 통째로 정밀 전사하지 않고, 짧은 구간만 빠르게 훑어 찬양 제목을 추정한다.
+
+    사용자 요청(2026-09-05): "그냥 제목만 파악해서 검색해서 자막 확보되잖아. 전체 전사하지
+    말고." — 직접 녹화해 올리는 전형적인 케이스(찬양 한 곡, 보통 몇 분)를 대상으로 한다.
+    8분을 넘는 녹화는 여러 곡이 섞인 예배 실황일 가능성이 커, 한 제목으로 특정하는 게
+    무의미하므로 아예 시도하지 않는다(호출자가 기존 전체 분석 경로로 안전하게 폴백).
+
+    시작 구간(필요하면 중간 구간도) 몇 십 초만 small 모델로 빠르게 전사해(vad 끔 — 노래도
+    받아적어야 함) Claude에게 곡을 추정하게 한다. 확신 없으면 빈 문자열(호출자가 폴백)."""
+    if duration_sec > 480:  # 8분 초과 — 다곡 예배 실황 가능성 커 추정 생략
+        return ""
+    w = cfg["whisper"]
+    sp.message("찬양 제목 추정 중 (일부만 빠르게 확인)...")
+
+    def _snip(a: float, b: float) -> str:
+        try:
+            segs = transcribe_clip_precise(
+                video_path, a, b, model_size="small",
+                device=w["device"], compute_type=w["compute_type"], language=w["language"],
+                vad_filter=False, cpu_threads=int(w.get("cpu_threads", 0)),
+                batch_size=int(w.get("batch_size", 8)), batched=True,
+            )
+            return " ".join((s.text or "") for s in segs)
+        except Exception:  # noqa: BLE001 - 스니펫 전사 실패는 치명적이지 않음(추정 실패로 처리)
+            return ""
+
+    text = _snip(0.0, min(45.0, duration_sec))
+    if duration_sec > 90 and len(text.split()) < 15:
+        # 도입부가 조용하면(간주 등) 중간 구간도 한 번 더 훑어 재료를 보탠다.
+        text += " " + _snip(duration_sec * 0.4, min(duration_sec, duration_sec * 0.4 + 30.0))
+    if len(text.split()) < 8:
+        return ""  # 노래가 아직 안 잡혔거나 너무 조용함 — 추정 불가, 폴백
+    p = cfg.get("praise", {}) or {}
+    title, conf = guess_praise_title_from_snippet(
+        text, model=model or p.get("model", ""),
+        thinking_tokens=int(p.get("lyrics_thinking_tokens", 1024)),
+    )
+    return title if title and conf >= 6 else ""
+
+
 def map_lines_to_voice_times(
     video_path: Path,
     clip_start: float,
@@ -572,48 +656,39 @@ def analyze(
                 sp.finish("완료: 기존 후보 재사용")
                 return video_dir, load_clips_json(clips_path)
             sp.advance("입력한 곡 제목으로 정식 가사를 가져오는 중...")
-            p = cfg.get("praise", {}) or {}
-            lyrics_by_idx = fetch_praise_lyrics_by_titles(
-                title_lines, model=model or p.get("model", ""),
-                thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
-                on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
-            )
-            clips = _build_praise_clips_from_titles(
-                title_lines, lyrics_by_idx, dl.duration_sec,
-            )
+            clips = _title_based_praise_clips(dl, video_dir, title_lines, cfg, model, sp)
             if not clips:
                 raise RuntimeError(
                     "가사를 만들지 못했습니다. 곡 제목을 정확히 입력했는지 확인해 주세요."
                 )
-            missing = [
-                title_lines[i] for i in range(len(title_lines))
-                if not lyrics_by_idx.get(i)
-            ]
-            if missing:
-                print(f"[praise] 가사를 못 찾은 곡(자막 없음): {', '.join(missing)}")
-            # '우리 영상의 노래 속도'에 맞춰 가사를 띄운다(사용자 요청): 전사는 타이밍 전용으로만
-            # 쓰고(가사 텍스트는 정식 가사 유지), 각 소절을 실제 가창 시각에 매핑한다. 실패하면
-            # 글자 수 균등 분배(기존)로 폴백 — 자막은 어떻게든 나온다.
-            sp.set_fraction(0.4, "가사를 영상의 노래 속도에 맞추는 중...")
-            for ci, c in enumerate(clips):
-                texts = [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
-                if not texts:
-                    continue
-                try:
-                    mapped = map_lines_to_voice_times(
-                        dl.video_path, c.start, c.end, texts,
-                        cfg["whisper"], cache_dir=video_dir / "precise_cache",
-                    )
-                    if mapped:
-                        c.caption_overrides = mapped
-                    else:
-                        print(f"[praise] 곡 {ci} 노래 속도 매핑 실패(단어 부족) → 균등 분배 유지")
-                except Exception:  # noqa: BLE001 - 타이밍 매핑 실패해도 자막은 유지
-                    traceback.print_exc()
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
             sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크)")
             return video_dir, clips
+
+        # ── 업로드 찬양 + 곡 제목 미입력: 전체 전사 대신 짧은 구간만 훑어 제목 자동 추정 ──
+        # 사용자 요청(2026-09-05): "그냥 제목만 파악해서 검색해서 자막 확보되잖아. 전체
+        # 전사하지 말고." 제목을 안 넣어도, 영상 전체를 whisper로 정밀 전사하는 대신 짧은
+        # 구간만 빠르게 훑어 추정하고, 확신이 있으면 위와 동일한 빠른 경로(정식 가사+속도
+        # 싱크)로 간다. 추정 실패(8분 넘는 다곡 실황 등)면 아래 기존 전체 분석으로 폴백한다.
+        if mode == "praise" and dl_local and not song_titles.strip():
+            sp.advance("자막 준비 중...")
+            guessed = _quick_guess_praise_title(dl.video_path, dl.duration_sec, cfg, model, sp)
+            if guessed:
+                clips_path = video_dir / "clips.json"
+                if clips_path.exists() and not force:
+                    sp.finish("완료: 기존 후보 재사용")
+                    return video_dir, load_clips_json(clips_path)
+                sp.message(f"'{guessed}' 정식 가사를 가져오는 중...")
+                clips = _title_based_praise_clips(dl, video_dir, [guessed], cfg, model, sp)
+                if clips:
+                    with CLIPS_LOCK:
+                        save_clips_json(clips, clips_path)
+                    sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크)")
+                    return video_dir, clips
+                sp.message(f"'{guessed}' 가사를 찾지 못해 정밀 분석으로 진행합니다...")
+            else:
+                sp.message("제목을 특정하지 못해 정밀 분석으로 진행합니다 (시간이 더 걸려요)...")
 
         # 2) 전사 --------------------------------------------------------------
         sp.advance("자막 준비 중...")

@@ -1211,6 +1211,51 @@ def translate_captions_to_english(
     return out
 
 
+def guess_praise_title_from_snippet(
+    snippet_text: str,
+    model: str = "",
+    thinking_tokens: int = 1024,
+    timeout_sec: int = 300,
+    on_progress=None,
+) -> tuple[str, int]:
+    """짧게 훑은 whisper 전사 조각(부정확·짧음)에서 찬양 곡 제목을 추정한다.
+
+    사용자 요청(2026-09-05): "그냥 제목만 파악해서 검색해서 자막 확보되잖아" — 사용자가
+    제목을 안 넣어도, 영상 전체를 통째로 정밀 전사하는 대신 짧은 구간만 빠르게 훑어 제목을
+    추정하면 곧장 정식 가사 경로(fetch_praise_lyrics_by_titles)로 갈 수 있다. whisper가
+    노래를 심하게 오인식해도 후렴 반복·발음 유사성으로 Claude가 알아맞히는 경우가 많다.
+
+    반환: (제목 또는 빈 문자열, confidence 1~10). 확신 없으면 빈 문자열 — 호출자가 안전하게
+    기존 전체 분석(다곡 예배 실황 대응)으로 폴백해야 한다."""
+    text = (snippet_text or "").strip()
+    if not text:
+        return "", 0
+    prompt = f"""너는 한국 교회 찬송가·CCM 전문가다. 아래는 음성인식(whisper)이 찬양(회중 노래) 일부를
+받아적은 원문 조각이다(부정확할 수 있다 — 노래 전사라 오인식이 흔하다).
+
+원문 조각:
+{text[:2000]}
+
+이 조각만으로 어떤 찬양(찬송가 또는 CCM)인지 알아맞혀라. 발음 유사성과 후렴 반복 패턴으로
+추론해도 좋다. 확신이 없으면 title을 빈 문자열로 두라(억지로 맞추지 마라 — 틀린 제목으로
+엉뚱한 가사가 나가는 게 가장 나쁘다).
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열(원소 하나)만:
+[{{"title": "곡 제목 또는 빈 문자열", "confidence": 1~10}}]"""
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, on_progress=on_progress, max_clips=1,
+    )
+    if not raw or not isinstance(raw[0], dict):
+        return "", 0
+    title = str(raw[0].get("title", "") or "").strip()
+    try:
+        conf = int(raw[0].get("confidence", 0) or 0)
+    except (TypeError, ValueError):
+        conf = 0
+    return title, conf
+
+
 def _build_praise_clips_from_titles(
     titles: list[str],
     lyrics_by_idx: dict[int, list[str]],
