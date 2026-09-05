@@ -528,21 +528,84 @@ def map_lines_to_voice_times(
                 _precise_cache_save(cache_dir, model, sig, clip_start, clip_end, segs)
             except Exception:  # noqa: BLE001
                 pass
-    times = sorted(
-        float(wd.start) for s in segs for wd in s.words
-        if clip_start <= float(wd.start) <= clip_end
+    words = sorted(
+        (
+            (float(wd.start), float(wd.end), str(wd.text or ""))
+            for s in segs for wd in s.words
+            if clip_start <= float(wd.start) <= clip_end
+        ),
+        key=lambda w: w[0],
     )
-    if len(times) < max(2, len(texts) // 3):
+    if len(words) < max(2, len(texts) // 3):
         return None  # 가창 단어가 거의 안 잡힘 → 폴백(글자수 균등 분배)
-    n = len(times)
-    total_chars = sum(max(1, len(t)) for t in texts) or 1
-    out: list[dict] = []
-    cum = 0
-    for t in texts:
-        frac = cum / total_chars
-        wi = min(n - 1, int(frac * n))
-        out.append({"start": round(times[wi], 2), "end": 0.0, "text": t})
-        cum += max(1, len(t))
+
+    # ── 소절별 퍼지 앵커링 ─────────────────────────────────────────────────────
+    # 예전 글자수 비례 매핑은 "가사 진행 = 가창 단어 진행"을 가정하는데, 간주(단어 공백)와
+    # 후렴 반복·전사 환각(같은 구절 반복 인식)에서 무너진다("실제 노래랑 다르다" 실신고).
+    # 대신 각 소절 텍스트를 전사 단어열과 순차 퍼지 매칭(difflib)해 '실제로 그 소절을 부른
+    # 위치'에 앵커한다 — whisper가 노래를 오인식해도 음절 일부는 비슷하게 받아적으므로
+    # 낮은 임계값(0.42)이면 대부분 잡힌다. 앵커 안 된 소절은 이웃 앵커 사이를 글자수
+    # 비례로 보간한다(전부 실패하면 예전 비례 방식으로 전체 폴백).
+    import difflib
+    import re as _re
+
+    def _norm(s: str) -> str:
+        return _re.sub(r"[^0-9가-힣a-zA-Z]", "", s or "")
+
+    wnorm = [_norm(w[2]) for w in words]
+    n = len(words)
+    anchors: dict[int, tuple[float, float]] = {}  # line_idx -> (매칭 시작초, 매칭 끝초)
+    wi = 0
+    for li, text in enumerate(texts):
+        target = _norm(text)
+        if not target or wi >= n:
+            continue
+        best = None  # (score, i, j)
+        for i in range(wi, min(wi + 80, n)):
+            acc = ""
+            for j in range(i, min(i + 25, n)):
+                acc += wnorm[j]
+                if len(acc) > len(target) * 2 + 10:
+                    break
+                score = difflib.SequenceMatcher(None, acc, target).ratio()
+                if best is None or score > best[0]:
+                    best = (score, i, j)
+        if best and best[0] >= 0.42:
+            _, i, j = best
+            anchors[li] = (words[i][0], max(words[j][1], words[i][0] + 0.3))
+            wi = j + 1
+
+    starts: list[float] = [0.0] * len(texts)
+    if anchors:
+        # 앵커된 소절은 실제 위치로, 나머지는 이웃 앵커 사이를 글자수 비례로 보간.
+        idxs = sorted(anchors.keys())
+        for li in range(len(texts)):
+            if li in anchors:
+                starts[li] = anchors[li][0]
+                continue
+            prev_a = max((k for k in idxs if k < li), default=None)
+            next_a = min((k for k in idxs if k > li), default=None)
+            t0 = anchors[prev_a][1] if prev_a is not None else clip_start
+            t1 = anchors[next_a][0] if next_a is not None else clip_end
+            lo = prev_a + 1 if prev_a is not None else 0
+            hi = next_a if next_a is not None else len(texts)
+            span_chars = sum(max(1, len(texts[k])) for k in range(lo, hi)) or 1
+            cum = sum(max(1, len(texts[k])) for k in range(lo, li))
+            starts[li] = t0 + (t1 - t0) * (cum / span_chars)
+        print(f"[praise-sync] 앵커 {len(anchors)}/{len(texts)}소절 (퍼지 매칭)")
+    else:
+        # 전부 매칭 실패(전사가 심하게 뭉개짐) → 예전 글자수 비례 방식 폴백.
+        times = [w[0] for w in words]
+        total_chars = sum(max(1, len(t)) for t in texts) or 1
+        cum = 0
+        for li, t in enumerate(texts):
+            starts[li] = times[min(n - 1, int(cum / total_chars * n))]
+            cum += max(1, len(t))
+        print("[praise-sync] 퍼지 앵커 0개 → 글자수 비례 폴백")
+
+    out: list[dict] = [
+        {"start": round(s, 2), "end": 0.0, "text": t} for s, t in zip(starts, texts)
+    ]
     # 단조 증가 보정 + 끝 시각 = 다음 줄 시작(연속 표시), 마지막은 클립 끝.
     for i in range(len(out)):
         if out[i]["start"] < clip_start:

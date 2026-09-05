@@ -1328,17 +1328,57 @@ def _voice_corrected_words(words_abs: list, video_id: str, clip_start: float, cl
     return [Word(start=w.start + clip_start, end=w.end + clip_start, text=w.text) for w in rel]
 
 
-def _compute_layout(cfg: dict, clip, source_resolution: tuple[int, int]) -> dict:
+def _is_upload_praise(video_id: str, clip) -> bool:
+    """직접 업로드한 찬양 클립인가 — 렌더가 원본 16:9 풀프레임+제목 없음으로 가는 경로.
+    미리보기(_compute_layout full_frame)도 이 판정과 반드시 같이 움직여야 한다."""
+    return video_id.startswith("upload_") and getattr(clip, "clip_type", "") == "praise"
+
+
+def _compute_layout(
+    cfg: dict, clip, source_resolution: tuple[int, int], full_frame: bool = False,
+) -> dict:
     """위치 편집 화면에 필요한 좌표들을 render.py/captions.py와 동일한 공식으로 계산한다.
     이 값이 실제 렌더링(render_clip)과 어긋나면 편집 화면에서 본 위치와 실제 결과물의
     위치가 달라지므로, 반드시 같은 헬퍼 함수(_compute_card_video_box_*, compute_card_margins)
-    를 재사용한다."""
+    를 재사용한다.
+
+    full_frame=True(업로드 찬양): 실제 렌더가 원본 16:9 그대로 + 제목 없음 + 자막만
+    오버레이하므로, 미리보기도 세로 카드가 아니라 소스 비율 캔버스 전체 = 영상으로 그린다
+    (사용자 신고: "미리보기는 왜 설교영상처럼 나오냐"). 해상도 축소 규칙(1920 상한·짝수)은
+    render_selected의 업로드 찬양 분기와 동일하게 맞춘다."""
     from src.captions import _fit_title_font_size, compute_card_margins
     from src.fonts import ass_size_coeff
     from src.render import _compute_card_video_box_height, _compute_card_video_box_y
 
     render_cfg = cfg["render"]
     captions_cfg = cfg["captions"]
+
+    if full_frame:
+        src_w, src_h = source_resolution
+        if src_w > 1920:
+            src_h = int(src_h * (1920 / src_w))
+            src_w = 1920
+        res_w, res_h = src_w - src_w % 2, src_h - src_h % 2
+        caption_size = int(captions_cfg.get("font_size", 72) * 1.35)  # 렌더의 업로드 찬양 확대와 동일
+        scale = PREVIEW_CANVAS_WIDTH / res_w
+        caption_font_name = getattr(clip, "caption_font", "") or captions_cfg.get("font_family", "")
+        # 자막은 하단 안전영역 위(bottom 정렬). 미리보기 요소는 top 기준이라 폰트 높이만큼 위로.
+        cap_y = int(res_h * (1 - captions_cfg.get("safe_area_bottom_pct", 0.2)))
+        return {
+            "resolution": (res_w, res_h),
+            "scale": scale,
+            "canvas_w": PREVIEW_CANVAS_WIDTH,
+            "canvas_h": round(res_h * scale),
+            "video_box": {"x": 0, "y": 0, "w": res_w, "h": res_h, "r": 0},
+            "no_title": True,   # 실제 렌더에 제목 오버레이가 없다 — 팝업도 제목을 숨긴다
+            "title_base_margin_v": 0,
+            "caption_base_margin_v": max(0, cap_y - int(caption_size * 1.3)),
+            "title_size": 0,
+            "caption_font_size": caption_size,
+            "title_ass_coeff": 1,
+            "caption_ass_coeff": ass_size_coeff(caption_font_name),
+        }
+
     resolution = tuple(render_cfg.get("resolution", [1080, 1920]))
     card = render_cfg["card_layout"]
 
@@ -2016,7 +2056,10 @@ def clip_edit(video_id: str, idx: int):
 
     cfg = _load_config()
     source_res = _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4")
-    layout = _compute_layout(cfg, clip, source_res)
+    layout = _compute_layout(
+        cfg, clip, source_res,
+        full_frame=_is_upload_praise(video_id, clip),
+    )
     caption_preview = _preview_caption_text(video_id, clip)
     caption_lines = _caption_lines_for_clip(video_id, clip, cfg)
 
@@ -2240,7 +2283,10 @@ def clip_preview_info(video_id: str, idx: int):
     from src.render import _probe_resolution
 
     cfg = _load_config()
-    layout = _compute_layout(cfg, clip, _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4"))
+    layout = _compute_layout(
+        cfg, clip, _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4"),
+        full_frame=_is_upload_praise(video_id, clip),
+    )
 
     # 소스 전체 길이(트림 확장 한계). transcript.json의 duration_sec가 가장 싸게 정확하다.
     duration = 0.0
@@ -2547,6 +2593,12 @@ PREVIEW_MODAL_JS = r"""
     const video = $('video');
     video.src = '/media/' + VIDEO_ID + '/source.mp4';
     video.style.objectFit = (C.fill_mode === 'cover') ? 'cover' : 'contain';
+    if (L.no_title) {
+      // 업로드 찬양: 실제 렌더가 원본 풀프레임+제목 없음이므로 미리보기도 똑같이 —
+      // 흰 카드 배경 대신 영상이 캔버스 전체를 채우고, 제목 드래그 요소를 숨긴다.
+      $('.pv-canvas').style.background = '#000';
+      video.style.objectFit = 'cover';  // 렌더의 crop(여백 없음)과 동일한 보기
+    }
 
     // ── NLE식 타임라인: 휠 확대 · 분할 · 조각 삭제 ──
     const dur = info.source_duration;
@@ -2770,6 +2822,12 @@ PREVIEW_MODAL_JS = r"""
     }
     setTitleText(C.title);
     titleEl.title = '더블클릭하면 제목을 직접 고칠 수 있어요 · Enter로 줄바꿈';
+    if (L.no_title) {
+      titleEl.style.display = 'none';  // 업로드 찬양: 렌더에 제목이 없다
+      // 실제 렌더 자막은 검은 외곽선의 흰 글씨(영상 위 오버레이) — 미리보기도 맞춘다.
+      capEl.style.color = '#fff';
+      capEl.style.textShadow = '0 0 6px rgba(0,0,0,.9)';
+    }
     capEl.textContent = info.caption_preview;
     // libass는 ASS Fontsize를 셀 높이로 해석해 같은 숫자라도 브라우저보다 작게 그린다
     // (Gmarket Sans ≈ 0.87배, 서버가 폰트별 계수를 계산해 내려줌). 미리보기 px에 이
