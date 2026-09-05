@@ -2485,7 +2485,11 @@ def clip_studio(video_id: str, idx: int):
     clips = load_clips_json(clips_path)
     if idx < 0 or idx >= len(clips):
         return "잘못된 클립 번호입니다.", 404
-    return render_template_string(STUDIO_TEMPLATE, video_id=video_id, idx=idx)
+    # no-store: 스튜디오를 고쳐도 브라우저가 옛 페이지를 캐시하면 "고쳤다는데 그대로"가
+    # 된다(preview-modal.js와 같은 이유 — 실제로 겪은 유형의 사고).
+    resp = Response(render_template_string(STUDIO_TEMPLATE, video_id=video_id, idx=idx))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/edit")

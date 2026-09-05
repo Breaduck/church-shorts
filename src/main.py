@@ -608,37 +608,50 @@ def map_lines_to_voice_times(
     wnorm = [_norm(w[2]) for w in words]
     n = len(words)
 
-    def _best_window(target: str, lo: int, hi: int) -> tuple[float, int, int] | None:
-        """단어 [lo, hi) 범위에서 target과 가장 비슷한 연속 단어 창을 찾는다.
-
-        후렴 반복곡 대응: 같은 소절이 여러 번 나오면 점수가 비슷한 후보가 여럿 생기는데,
-        순차 매칭에서 '뒤쪽 반복'을 고르면 그 사이 소절들이 뒤로 밀리며 꼬리가 뭉개진다
-        (실측: 마지막 소절들이 0.5~1.6초로 압축, 중간 15초 공백 — "자막이 안 나온다" 신고).
-        나중 후보는 기존 최고보다 '의미 있게'(+0.03) 좋아야만 교체 — 앞선 위치 우선."""
-        best = None
-        for i in range(lo, min(hi, n)):
-            acc = ""
-            for j in range(i, min(i + 25, hi, n)):
-                acc += wnorm[j]
-                if len(acc) > len(target) * 2 + 10:
-                    break
-                score = difflib.SequenceMatcher(None, acc, target).ratio()
-                if best is None or score > best[0] + 0.03:
-                    best = (score, i, j)
-        return best
-
-    # 1차: 순차 퍼지 앵커링(전 범위, 임계 0.42 — 오탐 방지 위해 보수적).
-    anchors: dict[int, tuple[int, int, float, float]] = {}  # li -> (i, j, 시작초, 끝초)
-    wi = 0
-    for li, text in enumerate(texts):
+    # ── 전역 최적 정렬(DP) 앵커링 ────────────────────────────────────────────
+    # 순차 탐욕 매칭의 구조적 실패(실측): 후렴 반복곡에서 소절4("예수 늘 함께 하시네")가
+    # 첫 후렴(오인식 심함, 0.6점) 대신 끝 후렴(깨끗, 0.93점)에 붙어, 사이 소절들("후회도
+    # 염려도...")이 매칭 기회 자체를 잃고 꼬리에 뭉개졌다 — "이 2개가 왜 맨 뒤에 가 있냐"
+    # 실신고. 전역 정렬은 '전체 소절의 매칭 총점'을 최대화하므로, 소절4를 첫 후렴에 앉혀
+    # 5·6번까지 살리는 배치(0.6+0.45+0.93)가 하나만 잘 맞는 배치(0.93)를 이긴다.
+    # 1) 소절별 후보 창 수집(임계 0.35 — 전역 제약이 오탐을 걸러주므로 낮춰도 안전).
+    cands_per_line: list[list[tuple[float, int, int]]] = []
+    for text in texts:
         target = _norm(text)
-        if not target or wi >= n:
-            continue
-        best = _best_window(target, wi, min(wi + 80, n))
-        if best and best[0] >= 0.42:
-            _, i, j = best
-            anchors[li] = (i, j, words[i][0], max(words[j][1], words[i][0] + 0.3))
-            wi = j + 1
+        cl: list[tuple[float, int, int]] = []
+        if target:
+            for i in range(n):
+                acc = ""
+                for j in range(i, min(i + 25, n)):
+                    acc += wnorm[j]
+                    if len(acc) > len(target) * 2 + 10:
+                        break
+                    sc = difflib.SequenceMatcher(None, acc, target).ratio()
+                    if sc >= 0.35:
+                        cl.append((sc, i, j))
+        cl.sort(reverse=True)
+        cands_per_line.append(cl[:40])  # 상위 40개면 충분(성능)
+    # 2) DP: 소절 순서 = 단어 순서 제약 하에 (매칭 점수 + 소절당 보너스) 총합 최대 배치.
+    #    보너스는 '한 소절이라도 더 실측에 앉히는' 배치를 선호하게 한다. 상태는 마지막
+    #    사용 단어 인덱스별 최고점만 유지(가지치기).
+    MATCH_BONUS = 0.25
+    states: list[tuple[int, float, list]] = [(-1, 0.0, [])]  # (last_j, 총점, [(li,i,j)])
+    for li in range(len(texts)):
+        new_states = list(states)  # 이 소절을 매칭 안 하는 선택지(상태 유지)
+        for last_j, tot, path in states:
+            for sc, i, j in cands_per_line[li]:
+                if i > last_j:
+                    new_states.append((j, tot + sc + MATCH_BONUS, path + [(li, i, j)]))
+        by_last: dict[int, tuple[int, float, list]] = {}
+        for st in new_states:
+            if st[0] not in by_last or st[1] > by_last[st[0]][1]:
+                by_last[st[0]] = st
+        states = sorted(by_last.values(), key=lambda s: -s[1])[:60]
+    best_path = max(states, key=lambda s: s[1])[2]
+    anchors: dict[int, tuple[int, int, float, float]] = {
+        li: (i, j, words[i][0], max(words[j][1], words[i][0] + 0.3))
+        for (li, i, j) in best_path
+    }
 
     # 앵커 밀집 정리: 두 앵커 사이 실제 시간 간격이 그 사이 미앵커 소절 수가 최소한으로
     # 필요한 시간보다 좁으면, 그 구간은 인식 부실/후렴 반복 오탐일 가능성이 크다
@@ -658,33 +671,8 @@ def map_lines_to_voice_times(
             continue  # k는 그대로 두고 다음(당겨진) 항목과 다시 비교
         k += 1
 
-    # 2차: 미앵커 소절을 '이웃 앵커 사이 좁은 단어 구간'에서만 다시 매칭한다. 탐색 범위가
-    # 좁아 오탐 위험이 낮으므로 임계값을 0.30으로 내릴 수 있다 — 1차에서 놓친 소절
-    # (오인식이 심하지만 그 구간에 그 소절뿐인 경우)을 추가로 실측 위치에 고정한다.
-    # 92→100점의 관건: 보간(추정)을 줄이고 실측 앵커를 늘리는 것.
-    if anchors:
-        idxs = sorted(anchors.keys())
-        for li in range(len(texts)):
-            if li in anchors:
-                continue
-            target = _norm(texts[li])
-            if not target:
-                continue
-            prev_a = max((k for k in idxs if k < li), default=None)
-            next_a = min((k for k in idxs if k > li), default=None)
-            lo_w = anchors[prev_a][1] + 1 if prev_a is not None else 0
-            hi_w = anchors[next_a][0] if next_a is not None else n
-            if hi_w - lo_w < 2:
-                continue  # 사이에 단어가 거의 없음(간주) — 매칭 불가
-            best = _best_window(target, lo_w, hi_w)
-            if best and best[0] >= 0.30:
-                _, i, j = best
-                # 같은 간극의 앞선 소절보다 시간이 역행하면 오탐 — 버린다.
-                t_start = words[i][0]
-                prev_t = anchors[prev_a][3] if prev_a is not None else clip_start
-                if t_start >= prev_t - 0.2:
-                    anchors[li] = (i, j, t_start, max(words[j][1], t_start + 0.3))
-                    idxs = sorted(anchors.keys())
+    # (예전의 '2차 좁은 구간 재매칭'은 DP 전역 정렬이 대체한다 — 임계 0.35 후보를 순서
+    # 제약과 총점 최대화로 배치하므로, 좁은 구간의 낮은 점수 매칭도 전역 최적이면 채택된다.)
 
     starts: list[float] = [0.0] * len(texts)
     if anchors:
