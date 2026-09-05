@@ -329,6 +329,52 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
         tmp_path.unlink(missing_ok=True)  # replace 성공 시 이미 없음; 실패 시 잔여물 정리
 
 
+def _add_sfx(output_path: Path, times: list[float], sfx_cfg: dict) -> None:
+    """효과음(whoosh)을 지정 시각에 합성해 본 클립 오디오 아래로 믹싱한다(외부 파일 없음).
+
+    게시물의 '효과음은 받는 게 아니라 만든다'처럼 ffmpeg로 직접 합성한다: 핑크노이즈를
+    밴드로 걸러 짧게 페이드인/아웃한 '스위시(whoosh)'를 각 시각에 adelay로 배치하고
+    amix(normalize=0)로 원 오디오와 섞는다. 비디오는 재인코딩 없이 복사(-c:v copy).
+
+    실패해도 본 렌더는 이미 완성돼 있으므로 호출자가 로그만 남기고 넘어간다."""
+    times = sorted({round(max(0.0, t), 2) for t in times})
+    if not times:
+        return
+    vol = float(sfx_cfg.get("volume", 0.35) or 0.35)
+    dur = float(sfx_cfg.get("whoosh_dur_sec", 0.45) or 0.45)
+    parts = ["[0:a]aformat=sample_rates=48000:channel_layouts=stereo[base]"]
+    labels = ["[base]"]
+    for i, t in enumerate(times):
+        ms = int(round(t * 1000))
+        # 핑크노이즈 → 밴드패스(700~6000) → 페이드인/아웃 → 볼륨 → 지연 배치.
+        parts.append(
+            f"anoisesrc=d={dur:.2f}:c=pink:a=0.9,highpass=f=700,lowpass=f=6000,"
+            f"afade=t=in:d=0.08,afade=t=out:st={max(0.0, dur-0.25):.2f}:d=0.25,"
+            f"volume={vol:.2f},aformat=sample_rates=48000:channel_layouts=stereo,"
+            f"adelay={ms}|{ms}[s{i}]"
+        )
+        labels.append(f"[s{i}]")
+    n = len(labels)
+    parts.append(f"{''.join(labels)}amix=inputs={n}:normalize=0:dropout_transition=0[aout]")
+    filter_complex = ";".join(parts)
+    tmp_path = output_path.with_suffix(".sfx.mp4")
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(output_path),
+        "-filter_complex", filter_complex,
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        str(tmp_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not tmp_path.exists():
+            raise RuntimeError(f"효과음 믹싱 실패:\n{proc.stderr[-2000:]}")
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # 소스 하단 크롭 기본값. 렌더(_build_card_filter_complex)와 편집 미리보기(web_app)가
 # 서로 다른 기본값을 쓰면 config에 이 키가 없을 때 미리보기와 결과물이 어긋난다 — 반드시
 # 이 상수 하나만 참조할 것.
@@ -702,6 +748,22 @@ def render_clip(
         used_encoder = "libx264"
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 렌더링 실패:\n{proc.stderr[-3000:]}")
+
+    # 효과음(선택): 본편 완성 후·아웃트로 이전에 whoosh를 합성해 믹싱한다. 도입부(0초)에
+    # 하나, 무음 제거로 생긴 컷 경계마다 하나(전환음). 배속 구간이 있으면 컷 시각이 어긋날
+    # 수 있어 컷 전환음은 배속이 없을 때만 넣는다. 실패해도 본 렌더는 유지(로그만).
+    sfx_cfg = render_cfg.get("sfx") or {}
+    if sfx_cfg.get("enabled"):
+        sfx_times = [0.0]
+        if sfx_cfg.get("whoosh_at_cuts", True) and keep_segments and len(keep_segments) > 1 and not warp_active:
+            acc = 0.0
+            for s, e in keep_segments[:-1]:
+                acc += (e - s)
+                sfx_times.append(round(acc, 2))
+        try:
+            _add_sfx(output_path, sfx_times, sfx_cfg)
+        except Exception:  # noqa: BLE001 - 효과음 실패는 치명적이지 않음
+            traceback.print_exc()
 
     # 끝에 로고 이미지 아웃트로(사용자 요청, 2026-09-03). 본 클립은 이미 output_path에
     # 완성됐으므로, 아웃트로 붙이기가 실패해도 렌더 전체를 실패시키지 않고 로그만 남긴다.

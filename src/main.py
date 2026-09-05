@@ -1196,6 +1196,7 @@ def render_selected(
     config_path: Path = Path("config.yaml"),
     progress=_default_progress,
     outro_enabled: bool | None = None,
+    sfx_enabled: bool | None = None,
 ) -> list[Path]:
     """analyze()가 골라둔 후보 중 clip_indices(0-based, 배열 순서 기준)만 정밀
     재전사 + 렌더링한다. 결과 파일은 video_dir/clips/short_<원래순번>.mp4 로 저장된다.
@@ -1212,6 +1213,11 @@ def render_selected(
         cfg["render"] = {
             **cfg["render"],
             "outro": {**cfg["render"].get("outro", {}), "enabled": outro_enabled},
+        }
+    if sfx_enabled is not None:
+        cfg["render"] = {
+            **cfg["render"],
+            "sfx": {**cfg["render"].get("sfx", {}), "enabled": sfx_enabled},
         }
     with CLIPS_LOCK:
         clips = load_clips_json(video_dir / "clips.json")

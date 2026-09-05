@@ -587,6 +587,9 @@ CANDIDATES_TEMPLATE = f"""
     <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
       <input type="checkbox" id="outroChk" checked style="vertical-align:middle;margin-right:6px"> 끝에 로고 2초 넣기
     </label>
+    <label style="display:inline-block;font-size:13px;color:var(--text-muted);margin-bottom:10px;margin-left:8px;user-select:none;background:var(--card,#fff);border:1.5px solid var(--border,#f0f1f3);border-radius:10px;padding:8px 12px;box-shadow:0 2px 10px rgba(15,23,42,.08)">
+      <input type="checkbox" id="sfxChk" style="vertical-align:middle;margin-right:6px"> 효과음(전환 whoosh) 넣기
+    </label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
   </form>
@@ -617,10 +620,11 @@ CANDIDATES_TEMPLATE = f"""
     const idx = [...document.querySelectorAll('input[name=idx]:checked')].map(el => parseInt(el.value));
     if (idx.length === 0) {{ alert('클립을 하나 이상 선택하세요'); return; }}
     const outroChk = document.getElementById('outroChk');
+    const sfxChk = document.getElementById('sfxChk');
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1109,6 +1113,7 @@ def render_route(video_id: str):
     if not indices:
         return jsonify({"error": "선택된 항목이 없습니다"}), 400
     outro_enabled = bool(body.get("outro", True))
+    sfx_enabled = bool(body.get("sfx", False))
 
     video_dir = OUTPUT_ROOT / video_id
     # 같은 영상 렌더가 이미 도는 중이면 새 스레드를 또 띄우지 않는다(분석과 동일한 가드).
@@ -1132,6 +1137,7 @@ def render_route(video_id: str):
                     video_id, render_message=msg, render_pct=pct, render_eta_seconds=eta
                 ),
                 outro_enabled=outro_enabled,
+                sfx_enabled=sfx_enabled,
             )
         except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
             _update_job(video_id, render_error=str(e))

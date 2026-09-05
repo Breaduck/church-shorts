@@ -211,6 +211,13 @@ render:
     enabled: true
     duration_sec: 2   # 3→2초(사용자 요청, 2026-09-03)
     image_path: "assets/outro/logo.png"  # 1080x1920 — render.resolution과 이미 일치
+  # 효과음(선택): ffmpeg로 whoosh를 직접 합성해 도입부·컷 전환에 목소리 아래로 믹싱한다.
+  # 외부 파일 불필요. 기본 꺼짐(현재 플로우 유지) — 편집기 '이 설정으로 만들기' 옵션으로 켠다.
+  sfx:
+    enabled: false
+    volume: 0.3            # 효과음 크기(0~1). 설교/찬양엔 은은하게.
+    whoosh_dur_sec: 0.45
+    whoosh_at_cuts: true   # 무음 제거로 생긴 컷 경계마다 전환음(배속 구간엔 생략)
 
 captions:
   enabled: true
