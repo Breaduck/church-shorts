@@ -407,6 +407,70 @@ def reanalyze_clip_region(
     return new
 
 
+def map_lines_to_voice_times(
+    video_path: Path,
+    clip_start: float,
+    clip_end: float,
+    texts: list[str],
+    whisper_cfg: dict,
+    cache_dir: Path | None = None,
+) -> list[dict] | None:
+    """가사 줄(texts)을 클립의 실제 '가창 단어 시각'에 비례로 매핑해 caption_overrides를 만든다.
+
+    핵심: 전사는 '언제 노래하는지(타이밍)'에만 쓰고, 자막 '텍스트'는 정식 가사(texts) 그대로
+    둔다 — 노래 오인식 문제를 피하면서도 '우리 영상의 노래 속도'에 맞춰 가사가 뜨게 한다
+    (사용자 요청 2026-09-05). 단어 내용이 틀려도 발화 시각 진행은 맞으므로 인트로/간주를
+    자연히 건너뛴다. 타이밍만 필요하므로 빠른 small 모델 + vad off로 전사한다.
+
+    반환: [{start,end,text}, ...] (절대초). 전사 단어가 너무 적으면 None(호출자가 폴백)."""
+    texts = [str(t).strip() for t in texts if str(t).strip()]
+    if not texts:
+        return None
+    model = "small"
+    sig = "praisesync"
+    segs = None
+    if cache_dir is not None:
+        segs = _precise_cache_find(cache_dir, model, sig, clip_start, clip_end)
+    if segs is None:
+        segs = transcribe_clip_precise(
+            video_path, clip_start, clip_end,
+            model_size=model, device=whisper_cfg["device"], compute_type=whisper_cfg["compute_type"],
+            language=whisper_cfg["language"], vad_filter=False,
+            cpu_threads=int(whisper_cfg.get("cpu_threads", 0)),
+            batch_size=int(whisper_cfg.get("batch_size", 8)), batched=True,
+        )
+        if cache_dir is not None:
+            try:
+                _precise_cache_save(cache_dir, model, sig, clip_start, clip_end, segs)
+            except Exception:  # noqa: BLE001
+                pass
+    times = sorted(
+        float(wd.start) for s in segs for wd in s.words
+        if clip_start <= float(wd.start) <= clip_end
+    )
+    if len(times) < max(2, len(texts) // 3):
+        return None  # 가창 단어가 거의 안 잡힘 → 폴백(글자수 균등 분배)
+    n = len(times)
+    total_chars = sum(max(1, len(t)) for t in texts) or 1
+    out: list[dict] = []
+    cum = 0
+    for t in texts:
+        frac = cum / total_chars
+        wi = min(n - 1, int(frac * n))
+        out.append({"start": round(times[wi], 2), "end": 0.0, "text": t})
+        cum += max(1, len(t))
+    # 단조 증가 보정 + 끝 시각 = 다음 줄 시작(연속 표시), 마지막은 클립 끝.
+    for i in range(len(out)):
+        if out[i]["start"] < clip_start:
+            out[i]["start"] = round(clip_start, 2)
+        if i > 0 and out[i]["start"] <= out[i - 1]["start"]:
+            out[i]["start"] = round(out[i - 1]["start"] + 0.3, 2)
+    for i in range(len(out) - 1):
+        out[i]["end"] = round(max(out[i]["start"] + 0.3, out[i + 1]["start"]), 2)
+    out[-1]["end"] = round(max(out[-1]["start"] + 0.5, clip_end), 2)
+    return out
+
+
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
     transcript_text: str = "", force: bool = False, model: str = "",
@@ -527,9 +591,28 @@ def analyze(
             ]
             if missing:
                 print(f"[praise] 가사를 못 찾은 곡(자막 없음): {', '.join(missing)}")
+            # '우리 영상의 노래 속도'에 맞춰 가사를 띄운다(사용자 요청): 전사는 타이밍 전용으로만
+            # 쓰고(가사 텍스트는 정식 가사 유지), 각 소절을 실제 가창 시각에 매핑한다. 실패하면
+            # 글자 수 균등 분배(기존)로 폴백 — 자막은 어떻게든 나온다.
+            sp.set_fraction(0.4, "가사를 영상의 노래 속도에 맞추는 중...")
+            for ci, c in enumerate(clips):
+                texts = [o["text"] for o in (c.caption_overrides or []) if o.get("text")]
+                if not texts:
+                    continue
+                try:
+                    mapped = map_lines_to_voice_times(
+                        dl.video_path, c.start, c.end, texts,
+                        cfg["whisper"], cache_dir=video_dir / "precise_cache",
+                    )
+                    if mapped:
+                        c.caption_overrides = mapped
+                    else:
+                        print(f"[praise] 곡 {ci} 노래 속도 매핑 실패(단어 부족) → 균등 분배 유지")
+                except Exception:  # noqa: BLE001 - 타이밍 매핑 실패해도 자막은 유지
+                    traceback.print_exc()
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
-            sp.finish(f"완료: 찬양 {len(clips)}곡 (입력 제목 기반 가사)")
+            sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크)")
             return video_dir, clips
 
         # 2) 전사 --------------------------------------------------------------

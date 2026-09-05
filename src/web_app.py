@@ -3482,64 +3482,23 @@ def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list) -> "Response"
     - 텍스트 매칭이 아니라 '단어 시각 진행'에 매핑하므로 노래 오인식에 강하다.
     - 전사에 단어가 거의 없으면(간주만 등) 원래 시각을 유지한다."""
     cfg = _load_config()
-    w = cfg["whisper"]
-    from src.transcribe import transcribe_clip_precise
-    from src.main import _precise_cache_find, _precise_cache_save
+    from src.main import map_lines_to_voice_times
 
-    tr_a = max(0.0, clip.start)
-    tr_b = clip.end
-    # 타이밍만 필요하므로 빠른 모델(small)로 충분. vad는 노래를 통째로 건너뛰므로 끈다.
-    model = "small"
-    sig = "praisesync"
-    segs = _precise_cache_find(video_dir / "precise_cache", model, sig, tr_a, tr_b)
-    if segs is None:
-        segs = transcribe_clip_precise(
-            video_dir / "source.mp4", tr_a, tr_b,
-            model_size=model, device=w["device"], compute_type=w["compute_type"],
-            language=w["language"], vad_filter=False,
-            cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
-            batched=True,
-        )
-        try:
-            _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
-        except Exception:  # noqa: BLE001
-            pass
-    # 가창 단어 시작 시각(절대) 목록 — 클립 구간 안만. whisper가 np.float64를 주므로
-    # jsonify 직렬화 오류를 막으려 float로 캐스팅한다.
-    times = sorted(
-        float(wd.start) for s in segs for wd in s.words
-        if clip.start <= float(wd.start) <= clip.end
+    texts = [str(l.get("text", "")).strip() for l in in_lines]
+    mapped = map_lines_to_voice_times(
+        video_dir / "source.mp4", clip.start, clip.end, texts,
+        cfg["whisper"], cache_dir=video_dir / "precise_cache",
     )
-    lines = [
-        {"start": float(l.get("start", 0)), "end": float(l.get("end", 0)),
-         "text": str(l.get("text", "")).strip()}
-        for l in in_lines
-    ]
-    if len(times) < max(2, len(lines) // 3):
+    if not mapped:
         # 가창 단어가 거의 안 잡혔다 → 매핑 불가, 원래 시각 유지.
+        lines = [
+            {"start": float(l.get("start", 0)), "end": float(l.get("end", 0)),
+             "text": str(l.get("text", "")).strip()}
+            for l in in_lines
+        ]
         return jsonify({"lines": lines, "matched": 0, "total": len(lines),
                         "source": "전사 단어 부족 — 원래 시각 유지"})
-    n = len(times)
-    total_chars = sum(max(1, len(l["text"])) for l in lines) or 1
-    cum = 0
-    matched = 0
-    for i, l in enumerate(lines):
-        frac = cum / total_chars
-        wi = min(n - 1, int(frac * n))
-        new_start = times[wi]
-        l["start"] = round(new_start, 2)
-        cum += max(1, len(l["text"]))
-        matched += 1
-    # 끝 시각 = 다음 줄 시작(연속 표시), 마지막 줄은 클립 끝. 시작이 역행하지 않게 정리.
-    for i in range(len(lines)):
-        if lines[i]["start"] < clip.start:
-            lines[i]["start"] = round(clip.start, 2)
-        if i > 0 and lines[i]["start"] <= lines[i - 1]["start"]:
-            lines[i]["start"] = round(lines[i - 1]["start"] + 0.3, 2)
-    for i in range(len(lines) - 1):
-        lines[i]["end"] = round(max(lines[i]["start"] + 0.3, lines[i + 1]["start"]), 2)
-    lines[-1]["end"] = round(max(lines[-1]["start"] + 0.5, clip.end), 2)
-    return jsonify({"lines": lines, "matched": matched, "total": len(lines),
+    return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped),
                     "source": "가창 단어 시각 기준(노래 싱크)"})
 
 
