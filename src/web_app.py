@@ -1136,7 +1136,9 @@ def render_route(video_id: str):
     sfx_enabled = bool(body.get("sfx", False))
     motion_enabled = bool(body.get("motion", False))
     caption_preset = "bold_yellow" if body.get("bold_caption") else ""
-    caption_lang = "en" if body.get("english") else ("bilingual" if body.get("bilingual") else "")
+    # 한글+영어 2줄은 기본 켬(사용자 요청 2026-09-05 "디폴트로") — 영어 트랙이 있는 클립만
+    # 실제로 2줄이 되므로(en 없으면 한국어만) 설교/영어 미번역 클립엔 아무 영향 없다.
+    caption_lang = "en" if body.get("english") else ("bilingual" if body.get("bilingual", True) else "")
     facetrack_enabled = bool(body.get("facetrack", False))
 
     video_dir = OUTPUT_ROOT / video_id
@@ -2491,7 +2493,10 @@ def clip_edit(video_id: str, idx: int):
     from src.render import _probe_resolution
 
     cfg = _load_config()
-    source_res = _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4")
+    # 회전 메타데이터 반영(세로 촬영 업로드가 가로로 계산되던 실사고 — 렌더와 동일 함수).
+    from src.render import _probe_display_resolution
+
+    source_res = _probe_display_resolution(OUTPUT_ROOT / video_id / "source.mp4")
     layout = _compute_layout(
         cfg, clip, source_res,
         full_frame=_is_upload_praise(video_id, clip),
@@ -2728,8 +2733,10 @@ def clip_preview_info(video_id: str, idx: int):
     from src.render import _probe_resolution
 
     cfg = _load_config()
+    from src.render import _probe_display_resolution
+
     layout = _compute_layout(
-        cfg, clip, _probe_resolution(OUTPUT_ROOT / video_id / "source.mp4"),
+        cfg, clip, _probe_display_resolution(OUTPUT_ROOT / video_id / "source.mp4"),
         full_frame=_is_upload_praise(video_id, clip),
     )
 
@@ -3437,6 +3444,9 @@ PREVIEW_MODAL_JS = r"""
 
     // ── 자막 수정(접었다 폈다, 시작·끝·내용 편집) ──
     const capSec = $('.pv-capsec'), capRowsBox = $('.pv-caprows');
+    // 찬양 클립은 자막(가사)이 핵심이라 자막 영역을 처음부터 펼쳐 둔다 — 🎼 가사 가져오기·
+    // ⏱ 싱크 같은 도구가 '✎ 자막 수정'을 눌러야만 보여서 못 찾는 문제(실신고) 방지.
+    if (C.clip_type === 'praise') capSec.classList.remove('hidden');
     // ── 자막 글꼴 선택 ──
     const capFontSel = $('.pv-capfont');
     let chosenCaptionFont = (info.caption_font && info.caption_font.family) || '';

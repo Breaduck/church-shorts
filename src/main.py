@@ -497,6 +497,36 @@ def _quick_guess_praise_title(video_path: Path, duration_sec: float, cfg: dict, 
     return title if title and conf >= 6 else ""
 
 
+def _prewarm_praise_sync_cache(video_path: Path, video_dir: Path, clips: list[Clip], cfg: dict) -> None:
+    """백그라운드 예열: 찬양 클립들의 '타이밍 전사'(정밀 모델)를 미리 돌려 캐시한다.
+
+    싱크 맞추기 버튼이 눌리는 시점에 캐시가 이미 있으면 몇 분 걸리던 게 즉시가 된다
+    (사용자 신고: "싱크 맞추기 해도 시간이 너무 오래 걸리는데 더 빨리는 못하나" —
+    CPU뿐인 환경이라 전사 자체를 빠르게 할 수는 없고, 미리 해두는 게 정답).
+    데몬 스레드라 분석 응답을 막지 않고, 실패해도 조용히 넘어간다(버튼이 그때 전사)."""
+    def _run():
+        w = cfg["whisper"]
+        model = w.get("precise_model_size", "large-v3")
+        for c in clips:
+            if getattr(c, "clip_type", "") != "praise":
+                continue
+            try:
+                if _precise_cache_find(video_dir / "precise_cache", model, "praisesync2", c.start, c.end):
+                    continue
+                segs = transcribe_clip_precise(
+                    video_path, c.start, c.end,
+                    model_size=model, device=w["device"], compute_type=w["compute_type"],
+                    language=w["language"], vad_filter=False,
+                    cpu_threads=int(w.get("cpu_threads", 0)),
+                    batch_size=int(w.get("batch_size", 8)), batched=True,
+                )
+                _precise_cache_save(video_dir / "precise_cache", model, "praisesync2", c.start, c.end, segs)
+                print(f"[praise-sync] 예열 캐시 저장: {c.start:.0f}~{c.end:.0f}초")
+            except Exception:  # noqa: BLE001 - 예열 실패는 치명적이지 않음
+                traceback.print_exc()
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def map_lines_to_voice_times(
     video_path: Path,
     clip_start: float,
@@ -678,10 +708,11 @@ def map_lines_to_voice_times(
             cum += max(1, len(t))
         print("[praise-sync] 퍼지 앵커 0개 → 글자수 비례 폴백")
 
-    # 표시 리드: whisper 단어 시각은 '또렷해진 발성' 기준이라 노래의 여린 시작보다 조금
-    # 늦다. 자막은 그 소절을 부르기 시작하는 순간(또는 살짝 전)에 떠야 '제시간'으로
-    # 느껴진다(가사 슬라이드의 정석). 모든 소절 시작을 0.3초 당긴다.
-    starts = [max(clip_start, s - 0.3) for s in starts]
+    # 표시 오프셋: 처음엔 0.3초 '당겼는데'(리드) 실사용 피드백이 "자막이 1초 정도 빠르다"
+    # (2026-09-05) — whisper(large-v3)가 노래에서 단어 시작을 실제 발성보다 이르게 찍는
+    # 경향이 이 클립들에서 우세했다. 앵커 시각에서 0.7초 늦춰 표시한다(체감 제시간).
+    # 또 어긋나면 이 상수 대신 실측 재조정 — 편집기 '전체 밀기'(±0.1초)로 미세 보정도 가능.
+    starts = [max(clip_start, s + 0.7) for s in starts]
 
     # 첫 소절 스냅: 찬양 클립은 이미 '노래 시작' 기준으로 잘려 있다(제목 기반 업로드는
     # 0초=노래 시작, 자동 감지 곡도 전주 패딩 ~4초뿐). whisper는 노래의 여린 도입부를
@@ -1039,6 +1070,9 @@ def analyze(
                     traceback.print_exc()
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
+            # 업로드 찬양: 싱크 맞추기가 즉시 되도록 타이밍 전사를 백그라운드로 예열.
+            if dl_local:
+                _prewarm_praise_sync_cache(dl.video_path, video_dir, clips, cfg)
             sp.finish(f"완료: 찬양 {len(clips)}곡 감지")
             return video_dir, clips
 
