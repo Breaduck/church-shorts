@@ -1075,6 +1075,32 @@ def fetch_praise_lyrics_by_titles(
     ]
     if not songs:
         return {}
+    # 제목별 가사 캐시: 찬양은 매주 같은 곡이 반복되므로, 한 번 검색한 곡은 다시 검색하지
+    # 않는다(사용자 신고 2026-09-06: "제목만 넣으면 바로 나와야 하는 것 아니냐" — 남은
+    # 대기시간의 전부가 WebSearch 가사 확인 1~2분이었다). 캐시 히트면 그 곡은 즉시,
+    # 전 곡 히트면 claude 호출 자체를 건너뛴다. 키는 공백 정규화한 제목.
+    cache_path = Path("output") / "lyrics_cache.json"
+    try:
+        _cache: dict[str, list[str]] = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _cache = {}
+
+    def _ckey(t: str) -> str:
+        return " ".join(t.split()).lower()
+
+    cached_out: dict[int, list[str]] = {}
+    pending = []
+    for s in songs:
+        hit = _cache.get(_ckey(s["title"]))
+        if hit:
+            cached_out[s["index"]] = list(hit)
+        else:
+            pending.append(s)
+    if not pending:
+        if on_progress:
+            on_progress(1.0, "가사 캐시 재사용 (검색 생략)")
+        return cached_out
+    songs = pending
     payload = json.dumps(songs, ensure_ascii=False, indent=1)
     prompt = f"""너는 한국 교회 찬송가·CCM(복음성가) 가사 전문가다. 아래 곡 제목들의 '정식 가사'를 써라.
 
@@ -1107,7 +1133,8 @@ def fetch_praise_lyrics_by_titles(
         timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(songs),
         allowed_tools="WebSearch",  # 기억이 아니라 실제 인터넷 검색으로 가사 확인
     )
-    out: dict[int, list[str]] = {}
+    out: dict[int, list[str]] = dict(cached_out)
+    title_by_index = {s["index"]: s["title"] for s in songs}
     for item in raw:
         try:
             idx = int(item["index"])
@@ -1117,6 +1144,15 @@ def fetch_praise_lyrics_by_titles(
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
         if lines:
             out[idx] = lines
+            if idx in title_by_index:
+                _cache[_ckey(title_by_index[idx])] = lines
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(_cache, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError:
+        pass  # 캐시 저장 실패는 치명적이지 않음(다음에 다시 검색하면 됨)
     return out
 
 
