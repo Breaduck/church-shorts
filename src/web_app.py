@@ -404,6 +404,11 @@ CANDIDATES_TEMPLATE = f"""
   .reason-toggle[aria-expanded="true"] .chev {{ transform: rotate(180deg); }}
   .edit-link {{ font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }}
   .edit-link:hover {{ text-decoration: underline; }}
+  .cand-foot-actions {{ display: flex; align-items: center; gap: 12px; }}
+  .dup-btn {{ font-size: 13px; font-weight: 600; color: var(--text-muted); background: none;
+    border: none; padding: 0; cursor: pointer; font-family: inherit; white-space: nowrap; }}
+  .dup-btn:hover {{ color: var(--accent); }}
+  .dup-btn:disabled {{ opacity: .5; cursor: default; }}
   .reason {{
     background: #f7f8fa; border-radius: 12px; padding: 13px 15px; margin: 12px 0 0;
   }}
@@ -509,7 +514,10 @@ CANDIDATES_TEMPLATE = f"""
     {{# 캡션·해시태그·추천 이유는 기본으로 접어 화면을 조용하게 유지한다(제목이 주인공). #}}
     <div class="cand-foot">
       <button type="button" class="reason-toggle" aria-expanded="false">상세 보기 <span class="chev">▾</span></button>
-      <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
+      <span class="cand-foot-actions">
+        <button type="button" class="dup-btn" data-idx="{{{{ loop.index0 }}}}" title="이 후보를 통째로 복제합니다(자막·제목·배속 등 그대로) — 다른 설정으로 한 번 더 만들 때 유용">⧉ 복제</button>
+        <a class="edit-link" href="/video/{{{{ video_id }}}}/clip/{{{{ loop.index0 }}}}/edit">위치·자막 편집 &rarr;</a>
+      </span>
     </div>
     <div class="reason" hidden>
       {{% if c.appeal or c.hook_line %}}
@@ -673,6 +681,29 @@ CANDIDATES_TEMPLATE = f"""
       btn.firstChild.textContent = willOpen ? '접기 ' : '상세 보기 ';
     }});
   }});
+
+  // 후보 복제: 자막·배속 등을 그대로 복사한 새 후보를 목록 끝에 추가한다.
+  document.querySelectorAll('.dup-btn').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+      btn.disabled = true; var old = btn.textContent; btn.textContent = '복제 중…';
+      fetch('/video/{{{{ video_id }}}}/clip/' + btn.dataset.idx + '/duplicate', {{ method: 'POST' }})
+        .then(function(r) {{ return r.json().then(function(d) {{ return {{ok: r.ok, d: d}}; }}); }})
+        .then(function(res) {{
+          if (!res.ok) {{ alert('복제 실패: ' + (res.d.error || '')); btn.disabled = false; btn.textContent = old; return; }}
+          sessionStorage.setItem('scrollToCand', res.d.new_idx);
+          location.reload();
+        }})
+        .catch(function() {{ alert('복제 요청 실패'); btn.disabled = false; btn.textContent = old; }});
+    }});
+  }});
+  (function() {{
+    var target = sessionStorage.getItem('scrollToCand');
+    if (target !== null) {{
+      sessionStorage.removeItem('scrollToCand');
+      var el = document.getElementById('cand-' + target);
+      if (el) setTimeout(function() {{ el.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }}, 100);
+    }}
+  }})();
 
   // 업로드 캡션 한 번에 복사 (클립보드 API 실패 시 select+execCommand 폴백)
   document.querySelectorAll('.capcopy').forEach(function(box) {{
@@ -2081,7 +2112,10 @@ STUDIO_TEMPLATE = """
   .mid { flex: 1 1 auto; display: flex; min-height: 0; }
   .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
     position: relative; min-width: 0; }
-  .vwrap { position: relative; max-width: 96%; max-height: 94%; }
+  /* 세로 영상(9:16)이 넓은 화면에서 화면 전체를 압도하지 않도록 상한을 둔다
+     (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아") — 실제 에디터의 미리보기
+     크기에 맞춰 최대 폭/높이를 둘 다 제한한다. */
+  .vwrap { position: relative; max-width: min(92%, 380px); max-height: 68vh; }
   .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
   .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
@@ -2532,6 +2566,32 @@ def clip_edit(video_id: str, idx: int):
         caption_preview=caption_preview, caption_lines=caption_lines,
         fonts=fonts, defaults=defaults,
     )
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/duplicate", methods=["POST"])
+def duplicate_clip(video_id: str, idx: int):
+    """후보 하나를 통째로 복제해 목록 끝에 새 후보로 추가한다(원본은 그대로).
+
+    자막·제목·배속·위치 등 모든 필드를 그대로 복사해, 같은 장면을 다른 설정(배속·자막
+    스타일 등)으로 한 번 더 만들어보고 싶을 때 처음부터 다시 잡을 필요가 없게 한다
+    (사용자 요청 2026-09-05 "하이라이트 후보 섹션 복제 가능하게"). 렌더 결과물(mp4)은
+    복제 안 됨 — 서명(render_signature)이 원본과 같은 시간대라도 새 인덱스라 '미렌더'로
+    시작해, 복제본에서 설정을 바꾸고 다시 만들면 그 설정으로 새로 렌더된다."""
+    import copy
+
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    with CLIPS_LOCK:
+        clips = load_clips_json(clips_path)
+        if idx < 0 or idx >= len(clips):
+            return jsonify({"error": "잘못된 클립 번호"}), 400
+        dup = copy.deepcopy(clips[idx])
+        dup.title = (dup.title or "클립") + " (복제)"
+        clips.append(dup)
+        new_idx = len(clips) - 1
+        save_clips_json(clips, clips_path)
+    return jsonify({"ok": True, "new_idx": new_idx})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/position", methods=["POST"])
