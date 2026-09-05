@@ -504,14 +504,19 @@ def map_lines_to_voice_times(
     핵심: 전사는 '언제 노래하는지(타이밍)'에만 쓰고, 자막 '텍스트'는 정식 가사(texts) 그대로
     둔다 — 노래 오인식 문제를 피하면서도 '우리 영상의 노래 속도'에 맞춰 가사가 뜨게 한다
     (사용자 요청 2026-09-05). 단어 내용이 틀려도 발화 시각 진행은 맞으므로 인트로/간주를
-    자연히 건너뛴다. 타이밍만 필요하므로 빠른 small 모델 + vad off로 전사한다.
+    자연히 건너뛴다.
+
+    모델은 small이 아니라 whisper.model_size(기본 medium)를 쓴다 — 실측(2026-09-05):
+    small은 30초 분량을 통째로 놓치는 등 단어 밀도가 너무 낮아(0.47개/초) 퍼지 앵커링이
+    앵커를 거의 못 잡고 "싱크가 헛돈다"는 재신고로 이어졌다. 타이밍 전용이라도 인식
+    자체가 부실하면 앵커링의 기반이 무너지므로, 이 경로만은 정확도를 속도보다 우선한다.
 
     반환: [{start,end,text}, ...] (절대초). 전사 단어가 너무 적으면 None(호출자가 폴백)."""
     texts = [str(t).strip() for t in texts if str(t).strip()]
     if not texts:
         return None
-    model = "small"
-    sig = "praisesync"
+    model = whisper_cfg.get("praise_model_size") or whisper_cfg.get("model_size", "medium")
+    sig = "praisesync2"  # v1(small 모델) 캐시와 섞이지 않게 시그니처 분리
     segs = None
     if cache_dir is not None:
         segs = _precise_cache_find(cache_dir, model, sig, clip_start, clip_end)
@@ -574,6 +579,23 @@ def map_lines_to_voice_times(
             _, i, j = best
             anchors[li] = (words[i][0], max(words[j][1], words[i][0] + 0.3))
             wi = j + 1
+
+    # 앵커 밀집 정리: 두 앵커 사이 실제 시간 간격이 그 사이 미앵커 소절 수가 최소한으로
+    # 필요한 시간(줄당 0.6초)보다 좁으면, 그 구간은 인식 자체가 부실해 우연히 맞은
+    # 오탐 앵커일 가능성이 크다(실측: 4소절이 1.2초 안에 욱여넣어짐 — "싱크가 헛돈다"
+    # 재신고 원인). 뒤쪽 앵커를 버리고 더 넓은 범위로 다시 보간하게 한다.
+    MIN_SEC_PER_LINE = 0.6
+    idxs = sorted(anchors.keys())
+    k = 1
+    while k < len(idxs):
+        prev_i, cur_i = idxs[k - 1], idxs[k]
+        gap_lines = cur_i - prev_i - 1  # 그 사이 미앵커 소절 수
+        gap_sec = anchors[cur_i][0] - anchors[prev_i][1]
+        if gap_sec < (gap_lines + 1) * MIN_SEC_PER_LINE:
+            del anchors[cur_i]
+            idxs.pop(k)
+            continue  # k는 그대로 두고 다음(당겨진) 항목과 다시 비교
+        k += 1
 
     starts: list[float] = [0.0] * len(texts)
     if anchors:
