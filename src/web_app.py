@@ -3417,6 +3417,74 @@ def retranscribe_status(video_id: str, idx: int):
     return jsonify(j)
 
 
+def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list) -> "Response":
+    """노래(찬양) 자막 싱크: 클립을 온디맨드 전사해 '가창 단어 시각'을 얻고, 가사 줄들을
+    글자 수 비례로 그 단어 시각에 매핑한다(내용이 틀려도 타이밍은 맞음). 결과는 캐시.
+
+    - 텍스트 매칭이 아니라 '단어 시각 진행'에 매핑하므로 노래 오인식에 강하다.
+    - 전사에 단어가 거의 없으면(간주만 등) 원래 시각을 유지한다."""
+    cfg = _load_config()
+    w = cfg["whisper"]
+    from src.transcribe import transcribe_clip_precise
+    from src.main import _precise_cache_find, _precise_cache_save
+
+    tr_a = max(0.0, clip.start)
+    tr_b = clip.end
+    # 타이밍만 필요하므로 빠른 모델(small)로 충분. vad는 노래를 통째로 건너뛰므로 끈다.
+    model = "small"
+    sig = "praisesync"
+    segs = _precise_cache_find(video_dir / "precise_cache", model, sig, tr_a, tr_b)
+    if segs is None:
+        segs = transcribe_clip_precise(
+            video_dir / "source.mp4", tr_a, tr_b,
+            model_size=model, device=w["device"], compute_type=w["compute_type"],
+            language=w["language"], vad_filter=False,
+            cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
+            batched=True,
+        )
+        try:
+            _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
+        except Exception:  # noqa: BLE001
+            pass
+    # 가창 단어 시작 시각(절대) 목록 — 클립 구간 안만. whisper가 np.float64를 주므로
+    # jsonify 직렬화 오류를 막으려 float로 캐스팅한다.
+    times = sorted(
+        float(wd.start) for s in segs for wd in s.words
+        if clip.start <= float(wd.start) <= clip.end
+    )
+    lines = [
+        {"start": float(l.get("start", 0)), "end": float(l.get("end", 0)),
+         "text": str(l.get("text", "")).strip()}
+        for l in in_lines
+    ]
+    if len(times) < max(2, len(lines) // 3):
+        # 가창 단어가 거의 안 잡혔다 → 매핑 불가, 원래 시각 유지.
+        return jsonify({"lines": lines, "matched": 0, "total": len(lines),
+                        "source": "전사 단어 부족 — 원래 시각 유지"})
+    n = len(times)
+    total_chars = sum(max(1, len(l["text"])) for l in lines) or 1
+    cum = 0
+    matched = 0
+    for i, l in enumerate(lines):
+        frac = cum / total_chars
+        wi = min(n - 1, int(frac * n))
+        new_start = times[wi]
+        l["start"] = round(new_start, 2)
+        cum += max(1, len(l["text"]))
+        matched += 1
+    # 끝 시각 = 다음 줄 시작(연속 표시), 마지막 줄은 클립 끝. 시작이 역행하지 않게 정리.
+    for i in range(len(lines)):
+        if lines[i]["start"] < clip.start:
+            lines[i]["start"] = round(clip.start, 2)
+        if i > 0 and lines[i]["start"] <= lines[i - 1]["start"]:
+            lines[i]["start"] = round(lines[i - 1]["start"] + 0.3, 2)
+    for i in range(len(lines) - 1):
+        lines[i]["end"] = round(max(lines[i]["start"] + 0.3, lines[i + 1]["start"]), 2)
+    lines[-1]["end"] = round(max(lines[-1]["start"] + 0.5, clip.end), 2)
+    return jsonify({"lines": lines, "matched": matched, "total": len(lines),
+                    "source": "가창 단어 시각 기준(노래 싱크)"})
+
+
 @app.route("/video/<video_id>/clip/<int:idx>/sync_captions", methods=["POST"])
 def sync_captions_route(video_id: str, idx: int):
     """'싱크 맞추기': 현재 자막 줄 구조(텍스트·분할)는 그대로 두고, 각 줄의 시작·끝만
@@ -3437,6 +3505,16 @@ def sync_captions_route(video_id: str, idx: int):
     in_lines = body.get("captions") or []
     if not in_lines:
         return jsonify({"error": "정렬할 자막이 없습니다"}), 400
+
+    # 찬양(제목 기반 업로드 등)은 전사본이 없거나 노래 오인식이 심해 '텍스트 매칭' 싱크가
+    # 무의미하다(사용자 신고: "업로드 영상은 싱크 맞추기해도 안 맞아"). 대신 실제 '가창 단어
+    # 시각'에 가사 진행을 비례로 매핑한다 — 단어 내용이 틀려도 '언제 노래하는지'는 맞으므로,
+    # 인트로/간주를 건너뛰고 가사가 노래에 붙는다.
+    if getattr(clip, "clip_type", "") == "praise" or not (video_dir / "transcript.json").exists():
+        try:
+            return _sync_captions_by_voice(video_dir, clip, in_lines)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": f"싱크 맞추기 실패(전사): {e}"}), 500
 
     from src.captions import _collect_words_in_range
     from src.main import (
