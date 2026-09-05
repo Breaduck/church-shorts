@@ -2113,9 +2113,9 @@ STUDIO_TEMPLATE = """
   .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
     position: relative; min-width: 0; }
   /* 세로 영상(9:16)이 넓은 화면에서 화면 전체를 압도하지 않도록 상한을 둔다
-     (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아") — 실제 에디터의 미리보기
-     크기에 맞춰 최대 폭/높이를 둘 다 제한한다. */
-  .vwrap { position: relative; max-width: min(92%, 380px); max-height: 68vh; }
+     (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아" → 1차 축소 후에도 "좀만 더
+     줄여줘" 재신고 — 300px대로 한 번 더 축소). 실제 에디터의 미리보기 크기감. */
+  .vwrap { position: relative; max-width: min(70%, 290px); max-height: 52vh; }
   .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
   .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
@@ -2361,8 +2361,13 @@ function renderTracks() {
   ko.querySelectorAll('.blk').forEach(el => el.remove());
   en.querySelectorAll('.blk').forEach(el => el.remove());
   caps.forEach((c, i) => mkBlock(ko, c, i, false));
-  if (ens.length) { en.style.display = 'block'; ens.forEach((c, i) => mkBlock(en, c, i, true)); }
-  else en.style.display = 'none';
+  // 영어 블록은 저장된 자기 시간이 아니라 '항상 한국어(caps)의 시간을 그대로' 따라간다
+  // (사용자 요청: "영어 자막은 무조건 한글 따라가는 걸로") — 한국어를 드래그로 옮기는
+  // 즉시 영어도 같이 움직여 보이고, 실제로 어긋날 수 없다.
+  if (ens.length) {
+    en.style.display = 'block';
+    ens.forEach((c, i) => { if (caps[i]) mkBlock(en, { start: caps[i].start, end: caps[i].end, text: c.text }, i, true); });
+  } else en.style.display = 'none';
   $('tRange').textContent = fmt(view.a) + ' ~ ' + fmt(view.b);
 }
 function renderAll() { renderRuler(); renderThumbs(); renderTracks(); renderPlayhead(); }
