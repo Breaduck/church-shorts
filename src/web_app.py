@@ -261,7 +261,7 @@ INDEX_TEMPLATE = f"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>교회 쇼츠 생성기</title>
+<title>교회 쇼츠 시스템</title>
 {BASE_STYLE}
 <style>
   .adv {{ margin-top: 12px; }}
@@ -320,14 +320,23 @@ INDEX_TEMPLATE = f"""
   .dropzone-text {{ font-size: 14.5px; font-weight: 600; color: var(--text); }}
   .dropzone-text b {{ color: var(--accent); }}
   .dropzone-file {{ font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }}
+  /* 사용자 요청(2026-09-06): 제목을 더 굵고 크게 + 말씀/찬양·유튜브 링크 입력·업로드
+     영역을 전체적으로 약 2배 확대. h1/.seg/#url/.dropzone은 BASE_STYLE(전역)에도 있지만
+     아래는 인덱스 페이지 전용 <style> 블록 안이라 다른 페이지(후보 목록 등)에는 영향 없다. */
+  #mainTitle {{ font-size: 42px; font-weight: 900; }}
+  .seg label {{ font-size: 26px; padding: 30px 14px; }}
+  #url {{ font-size: 26px; padding: 28px 26px; border-radius: 20px; }}
+  .dropzone {{ padding: 60px 28px; }}
+  .dropzone-icon {{ width: 88px; height: 88px; font-size: 38px; margin-bottom: 18px; }}
+  .dropzone-text {{ font-size: 26px; }}
+  .dropzone-file {{ font-size: 24px; }}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="page-head">
     <div>
-      <h1>교회 쇼츠 생성기</h1>
-      <p class="subtitle">유튜브 설교 링크를 넣으면 하이라이트 후보를 뽑아드려요.</p>
+      <h1 id="mainTitle">교회 쇼츠 시스템</h1>
     </div>
     <div class="head-btns">
       <button type="button" class="force-toggle" id="forceToggle" aria-pressed="false">새로 분석</button>
@@ -3049,14 +3058,28 @@ function playPause() {
 function seek(t) { v.currentTime = Math.min(Math.max(t, 0), dur - 0.05); updateOverlay(); renderPlayhead(); renderKf(); }
 $('tbPlay').addEventListener('click', playPause);
 v.addEventListener('click', playPause);
-v.addEventListener('play', () => { $('icPlay').style.display = 'none'; $('icPause').style.display = ''; });
-v.addEventListener('pause', () => { $('icPlay').style.display = ''; $('icPause').style.display = 'none'; });
-v.addEventListener('timeupdate', () => {
+// 시간 표시 갱신: timeupdate 이벤트만 쓰면 브라우저가 초당 4~10회 정도만 쏴서
+// 밀리초 자릿수가 뚝뚝 끊겨 보인다(사용자 신고: "분절적으로 움직인다"). 재생 중에는
+// requestAnimationFrame으로 화면 주사율만큼(보통 60fps) 매끄럽게 갱신하고, 정지 중
+// 탐색(seek)·드래그 등은 기존처럼 timeupdate/직접 호출로 커버한다.
+function frameTick() {
   if (v.currentTime >= C.end) v.pause();
   const t = tc(Math.max(0, v.currentTime));
   $('tCur').textContent = t; $('tCurT').textContent = tc(Math.max(0, v.currentTime - C.start));
   updateOverlay(); renderPlayhead(); renderKf();
+}
+let rafId = null;
+function rafLoop() { frameTick(); if (!v.paused && !v.ended) rafId = requestAnimationFrame(rafLoop); }
+v.addEventListener('play', () => {
+  $('icPlay').style.display = 'none'; $('icPause').style.display = '';
+  if (rafId == null) rafId = requestAnimationFrame(rafLoop);
 });
+v.addEventListener('pause', () => {
+  $('icPlay').style.display = ''; $('icPause').style.display = 'none';
+  if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
+  frameTick();  // 정지 직후 마지막 프레임 값으로 한 번 더 맞춘다
+});
+v.addEventListener('timeupdate', () => { if (v.paused) frameTick(); });
 $('tbStepB').addEventListener('click', () => seek(v.currentTime - 1 / FPS));
 $('tbStepF').addEventListener('click', () => seek(v.currentTime + 1 / FPS));
 $('tbGoIn').addEventListener('click', () => seek(C.start));
