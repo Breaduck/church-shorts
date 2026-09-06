@@ -424,7 +424,7 @@ function addSongTitleRow(value) {{
   const row = document.createElement('div');
   row.className = 'song-title-row';
   const input = document.createElement('input');
-  input.type = 'text'; input.className = 'song-title-input'; input.placeholder = '찬양 제목';
+  input.type = 'text'; input.className = 'song-title-input'; input.placeholder = '찬양 제목 (또는 벅스 가사 페이지 URL)';
   input.value = value || '';
   const remove = document.createElement('button');
   remove.type = 'button'; remove.className = 'song-title-remove'; remove.setAttribute('aria-label', '삭제');
@@ -3736,7 +3736,7 @@ function applyFx(kind) {
   else if (kind === 'correct') aiCall(kind, base + 'correct_captions', { captions: collect(), model: '' }, (j) => { j.lines.forEach((ln, i) => { if (caps[i]) caps[i].text = ln.text; }); setStatus('교정 ' + (j.changed || 0) + '줄'); });
   else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); });
   else if (kind === 'lyrics') {
-    const t = prompt('곡 제목 (인터넷에서 정식 가사를 검색합니다)', (C && C.title) || ''); if (t == null || !t.trim()) return;
+    const t = prompt('곡 제목 또는 벅스 트랙 URL (music.bugs.co.kr에서 가사를 가져옵니다)', (C && C.title) || ''); if (t == null || !t.trim()) return;
     aiCall(kind, base + 'fetch_lyrics', { title: t.trim() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); ens = []; setStatus('가사 ' + j.lines.length + '소절'); });
   }
 }

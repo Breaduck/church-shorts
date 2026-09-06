@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.audio_peaks import PeakHint, format_hints_for_prompt
+from src.lyrics_bugs import fetch_lyrics_from_bugs, normalize_title_key
 from src.scoring import compute_scores
 from src.transcribe import Transcript
 
@@ -1089,8 +1090,18 @@ def fetch_praise_lyrics_by_titles(
     except (OSError, ValueError):
         _cache = {}
 
-    def _ckey(t: str) -> str:
-        return " ".join(t.split()).lower()
+    # 키는 공백·기호를 전부 뺀 제목(2026-09-07: "다가도록"/"다 가도록"처럼 띄어쓰기만 다른
+    # 입력이 캐시를 빗나가 매번 재검색됐고, 그 재검색이 엉뚱한 가사를 물어왔다).
+    _ckey = normalize_title_key
+
+    def _save_cache() -> None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(_cache, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+        except OSError:
+            pass  # 캐시 저장 실패는 치명적이지 않음(다음에 다시 검색하면 됨)
 
     cached_out: dict[int, list[str]] = {}
     pending = []
@@ -1104,7 +1115,30 @@ def fetch_praise_lyrics_by_titles(
         if on_progress:
             on_progress(1.0, "가사 캐시 재사용 (검색 생략)")
         return cached_out
-    songs = pending
+
+    # 1차: 벅스에서 코드로 직접 가져온다(결정적 — 모델이 검색을 건너뛰거나 지어내는 일이
+    # 없다). 제목 자리에 벅스 트랙 URL/번호를 넣으면 그 트랙 가사를 그대로 쓴다.
+    still = []
+    for s in pending:
+        if on_progress:
+            on_progress(0.2, f"벅스에서 '{s['title']}' 가사 찾는 중...")
+        try:
+            lines, meta = fetch_lyrics_from_bugs(s["title"])
+        except Exception as e:  # noqa: BLE001 - 네트워크 문제면 모델 폴백
+            print(f"[praise] 벅스 조회 실패 '{s['title']}': {e}")
+            lines, meta = [], {}
+        if lines:
+            cached_out[s["index"]] = lines
+            _cache[_ckey(s["title"])] = lines
+        else:
+            print(f"[praise] {meta.get('reason', '벅스에서 못 찾음')} → 모델 검색 폴백")
+            still.append(s)
+    _save_cache()
+    if not still:
+        if on_progress:
+            on_progress(1.0, "벅스 가사 확정")
+        return cached_out
+    songs = still
     payload = json.dumps(songs, ensure_ascii=False, indent=1)
     prompt = f"""너는 한국 교회 찬송가·CCM(복음성가) 가사 전문가다. 아래 곡 제목들의 '정식 가사'를 써라.
 
@@ -1158,13 +1192,7 @@ def fetch_praise_lyrics_by_titles(
             out[idx] = lines
             if idx in title_by_index:
                 _cache[_ckey(title_by_index[idx])] = lines
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(_cache, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-    except OSError:
-        pass  # 캐시 저장 실패는 치명적이지 않음(다음에 다시 검색하면 됨)
+    _save_cache()
     return out
 
 
