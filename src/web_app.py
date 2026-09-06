@@ -3668,6 +3668,10 @@ async function aiCall(kind, url, body, apply) {
   if (it) it.classList.remove('busy');
   if (!j || j.error || !j.lines) { alert('실패' + (j && j.error ? ': ' + j.error : '')); setStatus(''); return; }
   pushUndo(); apply(j); markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); renderProject();
+  // AI 도구(번역/교정/싱크/가사)는 결과를 바로 저장한다 — "한 번 만들었으면 계속
+  // 남아있어야지"(사용자 신고 2026-09-06): 저장은 수동(Ctrl+S)뿐이라, 만들자마자
+  // 저장을 안 누르고 나가면(뒤로가기 등) 방금 만든 결과가 통째로 사라져 보였다.
+  await save();
 }
 function applyFx(kind) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
@@ -4508,6 +4512,14 @@ PREVIEW_MODAL_JS = r"""
     display: none; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
   .pv-trim.pv-multi .pv-seg .del { display: flex; }
   .pv-play-head { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #3182f6; pointer-events: none; }
+  /* 진행바 우클릭 메뉴(분할) — 별도 '분할' 버튼 대신 진행바에서 바로 우클릭해 분할 */
+  .pv-ctxmenu { display: none; position: fixed; min-width: 120px; background: #fff; border: 1px solid #e5e7eb;
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; z-index: 500; }
+  .pv-ctxmenu.on { display: block; }
+  .pv-ctxmenu .it { padding: 8px 12px; font-size: 13px; font-weight: 600; color: #191f28; border-radius: 6px;
+    cursor: default; white-space: nowrap; }
+  .pv-ctxmenu .it:hover { background: #eef4ff; color: #3182f6; }
+  .pv-ctxmenu .it.dis { color: #b0b4ba; pointer-events: none; }
   .pv-times { display: flex; justify-content: space-between; font-size: 12px; color: #6b7684;
     font-variant-numeric: tabular-nums; margin-top: 8px; }
   .pv-times b { color: #191f28; }
@@ -4644,10 +4656,10 @@ PREVIEW_MODAL_JS = r"""
       '      <div class="pv-strip"></div>' +
       '      <div class="pv-segs"></div>' +
       '      <div class="pv-play-head" style="display:none"></div>' +
+      '      <div class="pv-ctxmenu"><div class="it" data-act="split">분할</div></div>' +
       '    </div>' +
       '    <div class="pv-times"><span>시작 <b class="pv-t0"></b></span><span class="pv-dur"></span><span>끝 <b class="pv-t1"></b></span></div>' +
       '    <div class="pv-tools">' +
-      '      <button type="button" class="pv-tool pv-split">재생 위치서 분할</button>' +
       '      <button type="button" class="pv-tool pv-zoomout">− 축소</button>' +
       '      <button type="button" class="pv-tool pv-zoomin">+ 확대</button>' +
       '      <label class="pv-speedlbl" title="영상·소리 배속(음정 유지). 자막도 함께 배속돼 싱크가 유지됩니다.">배속 ' +
@@ -4849,19 +4861,36 @@ PREVIEW_MODAL_JS = r"""
     $('.pv-zoomin').addEventListener('click', () => { const c = focusT(), h = (view.b - view.a) * 0.4; view.a = c - h; view.b = c + h; clampView(); redraw(); });
     $('.pv-zoomout').addEventListener('click', () => { const c = focusT(), h = (view.b - view.a) * 0.625; view.a = c - h; view.b = c + h; clampView(); redraw(); });
 
-    // 분할: 재생 위치(playhead)가 든 조각을 그 지점에서 둘로 나눔
-    $('.pv-split').addEventListener('click', () => {
-      const t = video.currentTime;
+    // 분할: 지정한 지점이 든 조각을 그 지점에서 둘로 나눔
+    function splitAt(t) {
       for (let i = 0; i < segs.length; i++) {
         if (t > segs[i].s + 0.3 && t < segs[i].e - 0.3) {
           segs.splice(i + 1, 0, { s: t, e: segs[i].e });
           segs[i].e = t; activeSeg = i + 1; redraw(); return;
         }
       }
-    });
+    }
 
     const clickT = (e) => Math.max(0, Math.min(dur, x2t(e.clientX - trimEl.getBoundingClientRect().left)));
     const onHandle = (e) => e.target.closest('.h') || e.target.closest('.del');  // 핸들/삭제는 제외
+
+    // 진행바 우클릭 → '분할' 메뉴(별도 버튼 없이 우클릭한 그 지점에서 바로 분할).
+    const pvCtxMenu = $('.pv-ctxmenu');
+    let pvCtxSplitT = 0;
+    trimEl.addEventListener('contextmenu', (e) => {
+      if (onHandle(e)) return;
+      e.preventDefault();
+      pvCtxSplitT = clickT(e);
+      pvCtxMenu.style.left = '0px'; pvCtxMenu.style.top = '0px'; pvCtxMenu.classList.add('on');
+      const r = pvCtxMenu.getBoundingClientRect();
+      pvCtxMenu.style.left = Math.max(2, Math.min(e.clientX, window.innerWidth - r.width - 4)) + 'px';
+      pvCtxMenu.style.top = Math.max(2, Math.min(e.clientY, window.innerHeight - r.height - 4)) + 'px';
+    });
+    pvCtxMenu.addEventListener('click', (e) => {
+      const it = e.target.closest('.it'); pvCtxMenu.classList.remove('on');
+      if (it && it.dataset.act === 'split') splitAt(pvCtxSplitT);
+    });
+    document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.pv-ctxmenu')) pvCtxMenu.classList.remove('on'); });
     // 단일 클릭(노란 조각 위 포함): 파란 재생선만 그 지점으로 이동(스크럽). 경계는 안 건드림.
     trimEl.addEventListener('click', (e) => {
       if (onHandle(e)) return;

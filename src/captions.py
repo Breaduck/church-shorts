@@ -748,8 +748,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         _fitted_en = [
             _fit_fs(_display_text(t), base_en_size) for t in en_texts if t
         ]
+        _needed_en = [f for f in _fitted_en if f is not None]
         _floor_en = max(16, int(base_en_size * 0.78))
-        uniform_en_size = max(min(_fitted_en), _floor_en) if _fitted_en else None
+        uniform_en_size = max(min(_needed_en), _floor_en) if _needed_en else None
 
         for line, ko_text, en_text, own_fit in zip(lines, ko_texts, en_texts, _fitted_all):
             ko_size = uniform_ko_size or caption_size

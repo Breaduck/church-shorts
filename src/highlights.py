@@ -1108,10 +1108,18 @@ def fetch_praise_lyrics_by_titles(
     payload = json.dumps(songs, ensure_ascii=False, indent=1)
     prompt = f"""너는 한국 교회 찬송가·CCM(복음성가) 가사 전문가다. 아래 곡 제목들의 '정식 가사'를 써라.
 
-## 먼저 할 일: 인터넷 검색으로 확인 (중요)
-각 곡마다 WebSearch로 "<곡 제목> 가사"를 검색해 실제 정식 가사를 확인하고 그걸 기준으로 써라.
-기억에 의존하면 비슷한 다른 곡이나 다른 절과 혼동할 수 있다 — 검색 결과로 반드시 검증하라.
-검색이 실패하거나 결과가 없으면 그때만 알고 있는 가사를 쓰되, 그래도 확신이 없으면 빈 문자열로 두라.
+## 먼저 할 일: 벅스(music.bugs.co.kr)에서 가사 확인 (필수)
+가사 출처는 **벅스(music.bugs.co.kr)로 고정**한다 — 사용자 확인(2026-09-06): 이 사이트 찬송
+가사가 가장 정확하다. 네 기억이나 다른 사이트는 같은 제목의 '다른 곡' 가사를 내놓는 오답이
+잦았다(실측: "주님 부활했네"에 전혀 다른 곡 가사가 나옴).
+
+각 곡마다 반드시 이 순서로 하라:
+1) WebSearch로 `site:music.bugs.co.kr <곡 제목> 가사` 를 검색해 그 곡의 벅스 트랙 페이지를
+   찾는다(URL 형태: https://music.bugs.co.kr/track/1503357).
+2) 그 트랙 페이지를 WebFetch로 열어 '가사' 영역의 실제 가사를 **그대로** 읽어 쓴다.
+   기억으로 고쳐 쓰지 마라 — 조사 하나(예: "주를"/"주님", "깨뜨셨네"/"깨뜨렸네")까지 벅스 표기를 따른다.
+3) 같은 제목의 곡이 여러 개면 한국 교회에서 회중이 부르는 찬송가/CCM 버전을 고른다.
+벅스에서 끝내 못 찾은 경우에만 다른 출처를 쓰되, 그래도 확신이 없으면 빈 문자열로 두라.
 
 ## 규칙 (모두 중요)
 - 각 곡의 널리 불리는 정식 가사를 그대로 쓴다(찬송가 번호로 주어지면 그 장 가사).
@@ -1135,7 +1143,7 @@ def fetch_praise_lyrics_by_titles(
     raw = _invoke_claude_json(
         prompt, model=model, thinking_tokens=thinking_tokens,
         timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(songs),
-        allowed_tools="WebSearch",  # 기억이 아니라 실제 인터넷 검색으로 가사 확인
+        allowed_tools="WebSearch,WebFetch",  # 벅스 트랙 페이지를 찾아(WebSearch) 열어(WebFetch) 가사를 그대로 옮긴다
     )
     out: dict[int, list[str]] = dict(cached_out)
     title_by_index = {s["index"]: s["title"] for s in songs}
