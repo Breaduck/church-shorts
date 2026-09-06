@@ -2300,19 +2300,18 @@ STUDIO_TEMPLATE = r"""
   .menu { display: none; position: absolute; top: 22px; left: 0; min-width: 210px; background: #2b2b2b;
     border: 1px solid #111; box-shadow: 0 6px 18px rgba(0,0,0,.6); padding: 4px 0; z-index: 60; }
   .mi.open .menu { display: block; }
-  .menu .it { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 4px 22px 4px 26px;
-    color: #e0e0e0; white-space: nowrap; cursor: default; }
-  .menu .it:hover { background: var(--blue); color: #fff; }
-  .menu .it.dis { color: #6a6a6a; pointer-events: none; }
-  .menu .it .k { color: #9a9a9a; font-size: 11px; }
-  .menu .it:hover .k { color: #e8f0ff; }
-  .menu .it.chk::before { content: '✓'; position: absolute; left: 10px; font-size: 10px; }
-  .menu .it { position: relative; }
+  .menu .it, .ctxmenu .it { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 4px 22px 4px 26px;
+    color: #e0e0e0; white-space: nowrap; cursor: default; position: relative; }
+  .menu .it:hover, .ctxmenu .it:hover { background: var(--blue); color: #fff; }
+  .menu .it.dis, .ctxmenu .it.dis { color: #6a6a6a; pointer-events: none; }
+  .menu .it .k, .ctxmenu .it .k { color: #9a9a9a; font-size: 11px; }
+  .menu .it:hover .k, .ctxmenu .it:hover .k { color: #e8f0ff; }
+  .menu .it.chk::before, .ctxmenu .it.chk::before { content: '✓'; position: absolute; left: 10px; font-size: 10px; }
   /* 타임라인 우클릭 컨텍스트 메뉴(프리미어처럼 클립/빈 영역에서 우클릭 시 뜬다) */
   .ctxmenu { display: none; position: fixed; min-width: 200px; background: #2b2b2b; border: 1px solid #111;
     box-shadow: 0 6px 18px rgba(0,0,0,.6); padding: 4px 0; z-index: 200; }
   .ctxmenu.on { display: block; }
-  .menu .sep { height: 1px; background: #444; margin: 4px 8px; }
+  .menu .sep, .ctxmenu .sep { height: 1px; background: #444; margin: 4px 8px; }
 
   /* ── 헤더(홈 · 가져오기/편집/내보내기 · 프로젝트명 · 우측 아이콘) ── */
   .hdr { flex: 0 0 36px; display: flex; align-items: center; background: #121212; border-bottom: 1px solid #000;
