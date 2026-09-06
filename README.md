@@ -20,7 +20,10 @@
 3. ffmpeg 설치: `winget install Gyan.FFmpeg` 후 **새 터미널을 열어야** PATH가 반영됨
    (`ffmpeg -version`으로 확인)
 4. Claude Code CLI 로그인 상태 확인: `claude --version`
-5. 한글 자막용 폰트: Windows 기본 맑은 고딕을 프로젝트로 복사 (라이선스상 저장소엔 커밋 안 함)
+5. (선택) 글꼴 추가 — 자막 기본 글꼴 Pretendard는 저장소에 들어있어 그대로 쓰면 됩니다.
+   편집기 글꼴 목록을 늘리고 싶을 때만 ttf/otf를 `assets/fonts` 또는 `글씨체/`에 넣으면
+   `src/fonts.py`가 자동으로 스캔합니다. 맑은 고딕은 재배포 라이선스가 불명확해 저장소엔
+   커밋하지 않으므로, 쓰려면 로컬에서 직접 복사합니다.
    ```powershell
    copy C:\Windows\Fonts\malgunbd.ttf assets\fonts\malgunbd.ttf
    ```
@@ -33,14 +36,14 @@
 
 1. `git clone https://github.com/Breaduck/church-shorts.git`
 2. 폴더 안의 **`설치.bat`** 실행 - venv 생성, 파이썬 패키지, ffmpeg, deno,
-   Claude CLI 확인, 한글 폰트 복사까지 한 번에 처리합니다.
+   Claude CLI 확인까지 한 번에 처리합니다.
    (ffmpeg/deno가 새로 설치되면 창을 닫고 한 번 더 실행하라고 안내합니다.)
 3. Claude Code CLI가 없다면 `npm install -g @anthropic-ai/claude-code` 후
    `claude`를 한 번 실행해 로그인.
 4. **`편집기.bat`** 실행 → 브라우저에서 `http://localhost:5000` 이 열립니다.
    (venv가 없으면 편집기.bat이 알아서 설치.bat을 먼저 돌립니다.)
 
-저장소에 없는 것: `글씨체/`(라이선스 때문에 제외 - 없으면 Pretendard/맑은 고딕만 뜸),
+저장소에 없는 것: `글씨체/`(폰트 바이너리라 제외 - 없으면 글꼴 선택지만 줄고 동작엔 지장 없음),
 `secrets/`(유튜브 업로드용 OAuth - 업로드 안 쓰면 불필요), `output/`(생성물).
 
 ### 같은 화면을 그냥 보여주기만 하려면

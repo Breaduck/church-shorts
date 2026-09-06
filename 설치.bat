@@ -64,15 +64,17 @@ if errorlevel 1 (
   echo [5/6] claude CLI ok.
 )
 
-REM ---------------- 6) korean caption font ----------------
+REM ---------------- 6) optional extra font ----------------
+REM 자막 기본 글꼴은 저장소에 들어있는 Pretendard라 이 단계 없이도 잘 돈다.
+REM 편집기 글꼴 목록에 선택지를 하나 늘려주는 보너스일 뿐이다.
 if exist assets\fonts\malgunbd.ttf (
-  echo [6/6] korean font ok.
+  echo [6/6] fonts ok. ^(Pretendard + malgun^)
 ) else (
   if exist "%WINDIR%\Fonts\malgunbd.ttf" (
     copy /y "%WINDIR%\Fonts\malgunbd.ttf" assets\fonts\malgunbd.ttf >nul
-    echo [6/6] copied malgunbd.ttf from windows fonts.
+    echo [6/6] fonts ok. ^(Pretendard + malgun added as a bonus^)
   ) else (
-    echo [6/6] malgunbd.ttf not found in windows fonts - Pretendard will be used instead.
+    echo [6/6] fonts ok. ^(Pretendard^)
   )
 )
 
