@@ -2855,6 +2855,7 @@ STUDIO_TEMPLATE = r"""
           <button class="hb" id="hbMarker" title="마커 추가 (M)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l7 7-7 7-7-7z"/></svg></button>
           <button class="hb" id="hbSettings" title="영상 트랙 썸네일 표시/숨기기"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a4 4 0 00-5 5L4 17v3h3l5.7-5.7a4 4 0 005-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg></button>
           <button class="hb" id="hbCC" title="캡션 트랙 정보"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 12H6.5M17.5 12H15M6.5 12a2.5 2.5 0 002.5 2.5M15 12a2.5 2.5 0 002.5 2.5"/></svg></button>
+          <button class="hb" id="hbAddCap" title="재생 헤드에 자막(소절) 추가 (Ctrl+Shift+N)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg></button>
           <span class="tsep"></span>
           <button class="hb" id="zoomOut" title="축소 (-)">−</button>
           <button class="hb" id="zoomFit" title="시퀀스에 맞게 (\)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -3561,6 +3562,7 @@ function addCap() {
   selIdx = caps.findIndex((c) => c.start === t); selSet = new Set(); markDirty(); renderTracks(); syncSelPanel();
 }
 $('pjNew').addEventListener('click', addCap); $('pjDel').addEventListener('click', () => deleteSel(false));
+$('hbAddCap').addEventListener('click', addCap);
 
 // ─── 소절 복사/붙여넣기(Ctrl+C / Ctrl+V) ───
 function copySel() {

@@ -1035,6 +1035,24 @@ def analyze(
                         f"직접 전사 중... {min(100, seg_end / duration * 100):.0f}%" if duration else "직접 전사 중...",
                     ),
                 )
+                # VAD(무음/비음성 감지)가 업로드 영상 오디오를 통째로 '음성 아님'으로 오판해
+                # 세그먼트가 0개로 나오는 사고가 찬양이 아닌 설교/일반 업로드에서도 재현됨
+                # (실측 2026-09-06: 실제로 사람이 말하는 138초 영상인데 vad_filter=True면
+                # 0세그먼트, vad_filter=False면 32세그먼트 정상 전사됨). 이러면 하이라이트
+                # 후보가 통째로 비어(clips.json=[]) 사용자에게는 "아무것도 안 뜬다"로 보인다.
+                # VAD 끄고 한 번 더 시도해 되살린다 — 실패해도 기존 폴백(에러 메시지)은 그대로.
+                if _vad and not transcript.segments:
+                    sp.message("전사 결과가 비어 있어 무음 감지 없이 재시도하는 중...")
+                    transcript = transcribe_and_save(
+                        dl.video_path, transcript_path,
+                        model_size=_model_size, device=w["device"], compute_type=w["compute_type"],
+                        language=w["language"], vad_filter=False,
+                        cpu_threads=int(w.get("cpu_threads", 0)),
+                        on_segment=lambda seg_end, duration: sp.set_fraction(
+                            min(1.0, seg_end / duration) if duration else 0.0,
+                            f"직접 전사 재시도 중... {min(100, seg_end / duration * 100):.0f}%" if duration else "직접 전사 재시도 중...",
+                        ),
+                    )
             else:
                 sp.set_fraction(1.0, "유튜브 자동 자막 사용")
             transcript_path.write_text(
