@@ -121,18 +121,24 @@ BASE_STYLE = """
   }
   input[type=text] {
     width: 100%; padding: 16px 18px; font-size: 15px; font-family: inherit;
-    border: 1px solid var(--border); border-radius: 14px; background: rgba(120,120,128,0.08);
-    transition: border-color .15s, background .15s; margin-top: 14px;
+    border: 1px solid rgba(255,255,255,0.8); border-radius: 14px; background: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 18px rgba(15,23,42,.08);
+    transition: border-color .15s, box-shadow .15s; margin-top: 14px;
   }
   input[type=text]:focus {
-    outline: none; border-color: var(--accent); background: #fff;
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(10,132,255,.14), 0 6px 18px rgba(15,23,42,.08);
   }
   textarea {
     width: 100%; padding: 14px 16px; font-size: 14px; font-family: inherit; line-height: 1.5;
-    border: 1px solid var(--border); border-radius: 14px; background: rgba(120,120,128,0.08);
-    transition: border-color .15s, background .15s; margin-top: 12px; resize: vertical;
+    border: 1px solid rgba(255,255,255,0.8); border-radius: 14px; background: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 18px rgba(15,23,42,.08);
+    transition: border-color .15s, box-shadow .15s; margin-top: 12px; resize: vertical;
   }
-  textarea:focus { outline: none; border-color: var(--accent); background: #fff; }
+  textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(10,132,255,.14), 0 6px 18px rgba(15,23,42,.08);
+  }
   .hint { color: var(--text-faint); font-size: 12.5px; margin: 10px 2px 0; }
   input[type=number] {
     padding: 9px 11px; font-size: 13px; font-family: inherit; width: 100%;
@@ -325,10 +331,14 @@ INDEX_TEMPLATE = f"""
   .song-title-row:first-child {{ margin-top: 0; }}
   .song-title-input {{
     flex: 1; min-width: 0; padding: 12px 16px; font-size: 14.5px; font-family: inherit;
-    border: 1px solid var(--border); border-radius: 12px; background: rgba(120,120,128,0.08);
-    transition: border-color .15s, background .15s;
+    border: 1px solid rgba(255,255,255,0.8); border-radius: 12px; background: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 18px rgba(15,23,42,.08);
+    transition: border-color .15s, box-shadow .15s;
   }}
-  .song-title-input:focus {{ outline: none; border-color: var(--accent); background: #fff; }}
+  .song-title-input:focus {{
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(10,132,255,.14), 0 6px 18px rgba(15,23,42,.08);
+  }}
   .song-title-remove {{
     flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none;
     background: rgba(120,120,128,0.10); color: var(--text-faint); font-size: 16px; line-height: 1;
