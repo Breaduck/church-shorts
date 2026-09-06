@@ -273,13 +273,14 @@ INDEX_TEMPLATE = f"""
   .seg {{ display: flex; gap: 2px; background: rgba(120,120,128,0.12); -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px); padding: 3px; border-radius: 12px; }}
   .seg label {{
-    flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 9px 8px;
-    font-size: 13.5px; font-weight: 700; color: var(--text-muted); transition: background .2s, color .2s, box-shadow .2s;
+    flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 18px 8px;
+    font-size: 14.5px; font-weight: 700; color: var(--text-muted); transition: background .2s, color .2s, box-shadow .2s;
   }}
   .seg input {{ position: absolute; opacity: 0; pointer-events: none; }}
   .seg label:has(input:checked) {{ background: #fff; color: var(--accent);
     box-shadow: 0 1px 1px rgba(0,0,0,.04), 0 3px 8px rgba(15,23,42,.10); }}
-  /* 우측 상단 '새로 분석' 토글 — 둥근 흰색 배경 + 그림자(애플 느낌), 켜지면 포인트 컬러 링 */
+  /* 우측 상단 버튼 행 — 둥근 흰색 배경 + 그림자(애플 느낌) */
+  .head-btns {{ display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }}
   .force-toggle {{
     flex: 0 0 auto; padding: 16px 26px; font-size: 15px; font-weight: 700; font-family: inherit;
     border: none; border-radius: 999px; background: #fff; color: var(--text-muted); cursor: pointer;
@@ -292,6 +293,16 @@ INDEX_TEMPLATE = f"""
     color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent) inset, 0 2px 6px rgba(15,23,42,.08), 0 10px 26px rgba(15,23,42,.10);
   }}
+  /* 분석 시작 — 파란색 유지, 우측 상단으로 이동(사용자 요청 2026-09-06) */
+  .analyze-btn {{
+    flex: 0 0 auto; padding: 16px 30px; font-size: 15px; font-weight: 700; font-family: inherit;
+    color: #fff; background: linear-gradient(180deg, #2a9bff, var(--accent));
+    border: none; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 1px 1px rgba(255,255,255,.35) inset, 0 6px 16px rgba(10,132,255,.32);
+    transition: background .15s, box-shadow .15s, transform .1s;
+  }}
+  .analyze-btn:hover {{ background: linear-gradient(180deg, #1f92ff, var(--accent-hover)); }}
+  .analyze-btn:active {{ transform: scale(0.97); }}
   /* 파일 드래그앤드롭 박스 — 애플 점선 업로드 카드 */
   .dropzone {{
     margin-top: 14px; padding: 36px 20px; text-align: center; cursor: pointer;
@@ -308,7 +319,6 @@ INDEX_TEMPLATE = f"""
   }}
   .dropzone-text {{ font-size: 14.5px; font-weight: 600; color: var(--text); }}
   .dropzone-text b {{ color: var(--accent); }}
-  .dropzone-hint {{ font-size: 12.5px; color: var(--text-faint); margin-top: 8px; }}
   .dropzone-file {{ font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }}
 </style>
 </head>
@@ -319,7 +329,10 @@ INDEX_TEMPLATE = f"""
       <h1>교회 쇼츠 생성기</h1>
       <p class="subtitle">유튜브 설교 링크를 넣으면 하이라이트 후보를 뽑아드려요.</p>
     </div>
-    <button type="button" class="force-toggle" id="forceToggle" aria-pressed="false">새로 분석</button>
+    <div class="head-btns">
+      <button type="button" class="force-toggle" id="forceToggle" aria-pressed="false">새로 분석</button>
+      <button class="analyze-btn" type="submit" form="f">분석 시작</button>
+    </div>
   </div>
   <div class="card">
     <form id="f">
@@ -332,7 +345,6 @@ INDEX_TEMPLATE = f"""
         <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="display:none">
         <div class="dropzone-icon">&#8593;</div>
         <div class="dropzone-text" id="dropzoneText">동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b></div>
-        <p class="dropzone-hint">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
       </div>
       <div id="songTitlesWrap" style="display:none;margin-top:10px">
         <textarea id="songTitles" rows="3" placeholder="부른 찬양 제목을 한 줄에 하나씩, 부른 순서대로 적어주세요."></textarea>
@@ -342,7 +354,6 @@ INDEX_TEMPLATE = f"""
         <summary>고급 옵션</summary>
         <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기"></textarea>
       </details>
-      <button class="primary" type="submit">분석 시작</button>
     </form>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
@@ -350,7 +361,9 @@ INDEX_TEMPLATE = f"""
 <script>
 const f = document.getElementById('f');
 const statusEl = document.getElementById('status');
-const submitBtn = f.querySelector('button[type="submit"]');
+// '분석 시작' 버튼은 우측 상단으로 옮겨 폼 바깥에 있다 — form="f" 속성으로 제출과
+// 연결되므로 querySelector는 문서 전체에서 찾아야 한다(f.querySelector는 못 찾음).
+const submitBtn = document.querySelector('.analyze-btn');
 // 찬양 모드일 때만 '곡 제목' 입력란을 보여준다(제목 → 정식 가사 자막).
 const songTitlesWrap = document.getElementById('songTitlesWrap');
 function syncSongTitlesVisibility() {{
@@ -2187,39 +2200,39 @@ STUDIO_TEMPLATE = """
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    background:
-      radial-gradient(1000px 600px at 10% -10%, rgba(10,132,255,.14), transparent 60%),
-      radial-gradient(900px 600px at 100% 0%, rgba(191,90,242,.10), transparent 55%),
-      #161618;
+    background: #1b1b1d;
     color: #d4d4d4; font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif;
     display: flex; flex-direction: column; overflow: hidden; }
-  /* ── 상단 툴바(다크 리퀴드 글래스: 반투명+blur+얇은 밝은 하이라이트 테두리) ── */
-  .top { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-    background: rgba(40,40,42,.6); -webkit-backdrop-filter: blur(20px) saturate(160%);
-    backdrop-filter: blur(20px) saturate(160%);
-    border-bottom: 1px solid rgba(255,255,255,.08); flex: 0 0 auto; }
+  /* ── 상단 툴바 ── */
+  .top { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    background: #2b2b2d; border-bottom: 1px solid #000; flex: 0 0 auto; }
   .top a { color: #9aa0a6; text-decoration: none; font-size: 13px; margin-right: 6px; }
   .top a:hover { color: #fff; }
   .top .name { font-weight: 700; font-size: 14px; color: #e8eaed; margin-right: auto;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tbtn { padding: 6px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px;
-    border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); color: #6cb2ff;
+  .tbtn { padding: 6px 11px; font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 5px;
+    border: 1px solid #444; background: #333336; color: #6cb2ff;
     cursor: pointer; white-space: nowrap; transition: background .15s; }
-  .tbtn:hover { background: rgba(108,178,255,.16); border-color: rgba(108,178,255,.4); }
+  .tbtn:hover { background: #3d3d41; border-color: #6cb2ff; }
   .tbtn:disabled { opacity: .5; cursor: default; }
   .tbtn.primary { background: linear-gradient(180deg, #2a9bff, #0a84ff); border-color: transparent; color: #fff; }
   .tbtn.primary:hover { background: linear-gradient(180deg, #1f92ff, #0071e3); }
-  /* ── 중앙: 미리보기 + 속성 ── */
+  /* ── 패널 공통(프리미어식 탭 헤더) ── */
+  .panel-head { flex: 0 0 auto; padding: 5px 10px; font-size: 10.5px; font-weight: 700; color: #9aa0a6;
+    background: #232325; border-bottom: 1px solid #000; text-transform: uppercase; letter-spacing: .03em;
+    display: flex; align-items: center; gap: 10px; }
+  /* ── 중앙: 프로그램 모니터 + 이펙트 컨트롤 ── */
   .mid { flex: 1 1 auto; display: flex; min-height: 0; }
-  .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111;
-    position: relative; min-width: 0; }
+  .panel.monitor { flex: 1 1 62%; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid #000; background: #1b1b1d; }
+  .stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #101010;
+    position: relative; min-width: 0; min-height: 0; }
   /* 세로 영상(9:16)이 넓은 화면에서 화면 전체를 압도하지 않도록 상한을 둔다
      (사용자 신고 2026-09-05: "비율은 맞는데 너무 크잖아" → "안 줄인 것 같은데"까지
      이어짐). 실제 원인: .stage가 flex 컨테이너라 flex 자식(.vwrap)의 기본
      min-width/min-height가 'auto'(콘텐츠 = video의 원본 해상도) — max-width를 아무리
      줘도 flex가 그 밑으로는 안 줄여서 실제로는 계속 원본 크기로 그려지고 있었다.
      min-width:0 / min-height:0을 명시해야 flex가 max-width/max-height를 실제로 적용한다. */
-  .vwrap { position: relative; max-width: min(80%, 377px); max-height: 68vh; min-width: 0; min-height: 0; }
+  .vwrap { position: relative; max-width: min(80%, 377px); max-height: 100%; min-width: 0; min-height: 0; }
   .vwrap video { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; }
   .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
@@ -2233,38 +2246,79 @@ STUDIO_TEMPLATE = """
   .playbig { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 62px; height: 62px;
     border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; font-size: 24px; cursor: pointer; }
   .playbig.hidden { display: none; }
-  /* ── 속성 패널 ── */
-  .props { flex: 0 0 250px; background: rgba(40,40,42,.55); -webkit-backdrop-filter: blur(20px) saturate(160%);
-    backdrop-filter: blur(20px) saturate(160%); border-left: 1px solid rgba(255,255,255,.08); padding: 14px;
-    overflow-y: auto; font-size: 12.5px; }
-  .props h3 { font-size: 12px; color: #9aa0a6; text-transform: none; margin: 14px 0 8px; font-weight: 700; }
-  .props h3:first-child { margin-top: 0; }
+  /* 프로그램 모니터 하단 재생 트랜스포트(프리미어식 타임코드 바) */
+  .transport { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    background: #202022; border-top: 1px solid #000; }
+  .transport .tplay { width: 26px; height: 26px; border-radius: 50%; border: 1px solid #444; background: #2d2d30;
+    color: #d4d4d4; cursor: pointer; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+  .transport .tplay:hover { border-color: #6cb2ff; color: #6cb2ff; }
+  .transport .tc { font-variant-numeric: tabular-nums; font-size: 12.5px; color: #e8eaed; font-weight: 700; }
+  .transport .tc-sep { color: #666; }
+  /* ── 이펙트 컨트롤(속성) 패널 ── */
+  .panel.props { flex: 0 0 290px; display: flex; flex-direction: column; background: #232325; }
+  .props-body { flex: 1 1 auto; overflow-y: auto; padding: 12px; font-size: 12.5px; }
+  .props-body h3 { font-size: 11px; color: #9aa0a6; margin: 16px 0 8px; font-weight: 700; letter-spacing: .02em; }
+  .props-body h3:first-child { margin-top: 0; }
   .prow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .prow label { flex: 0 0 62px; color: #bbb; }
-  .prow input[type=range] { flex: 1; accent-color: #6cb2ff; }
-  .prow .val { flex: 0 0 44px; text-align: right; color: #e8eaed; font-variant-numeric: tabular-nums; }
+  .prow label { flex: 0 0 58px; color: #bbb; }
+  .prow input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: #6cb2ff; }
   .prow select { flex: 1; background: #2d2d30; color: #d4d4d4; border: 1px solid #3c3c3c; border-radius: 6px;
     padding: 5px 7px; font-family: inherit; font-size: 12.5px; }
   .prow input[type=checkbox] { accent-color: #6cb2ff; }
+  .numin { width: 60px; flex: 0 0 60px; background: #1c1c1e; color: #e8eaed; border: 1px solid #3c3c3c;
+    border-radius: 5px; padding: 4px 6px; font-family: inherit; font-size: 12px; text-align: right; }
+  .numin.wide { width: 84px; flex-basis: 84px; text-align: left; }
+  .numin:focus { outline: none; border-color: #6cb2ff; }
+  .numin:disabled { opacity: .4; }
   .hintp { color: #777; font-size: 11.5px; line-height: 1.5; margin-top: 4px; }
-  /* ── 타임라인 ── */
-  .tl { flex: 0 0 auto; background: rgba(28,28,30,.6); -webkit-backdrop-filter: blur(20px) saturate(160%);
-    backdrop-filter: blur(20px) saturate(160%); border-top: 1px solid rgba(255,255,255,.08);
-    padding: 8px 12px 12px; user-select: none; }
-  .tl-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #9aa0a6; margin-bottom: 6px; }
+  .selname { color: #6cb2ff; font-weight: 700; }
+  /* ── 타임라인 리사이즈 핸들 ── */
+  .tl-resize { flex: 0 0 7px; cursor: row-resize; background: #000; position: relative; }
+  .tl-resize::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 40px; height: 3px; border-radius: 2px; background: #4a4a4d; }
+  .tl-resize:hover::after, .tl-resize.dragging::after { background: #6cb2ff; }
+  /* ── 타임라인 패널 ── */
+  .tl { flex: 0 0 auto; height: 236px; min-height: 140px; background: #1c1c1e; display: flex; flex-direction: column;
+    user-select: none; }
+  .tl-panelhead { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  .tl-toolbar { display: flex; align-items: center; gap: 2px; }
+  .ttool { width: 24px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent; border-radius: 4px; color: #9aa0a6; cursor: pointer; padding: 0; }
+  .ttool:hover { background: rgba(255,255,255,.08); }
+  .ttool.active { background: rgba(108,178,255,.18); border-color: rgba(108,178,255,.5); color: #6cb2ff; }
+  .tl-sep { width: 1px; height: 15px; background: #3a3a3c; margin: 0 5px; }
+  .tl-head { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: #9aa0a6;
+    padding: 6px 10px; }
   .tl-head .time { font-variant-numeric: tabular-nums; color: #e8eaed; font-weight: 700; }
-  .tl-body { position: relative; }
-  .ruler { position: relative; height: 18px; cursor: pointer; }
+  .tl-main { flex: 1 1 auto; display: flex; min-height: 0; padding: 0 10px 8px 0; gap: 0; }
+  /* 프리미어의 상징적인 세로 도구 막대(선택/자르기)를 타임라인 왼쪽에 그대로 재현 */
+  .tl-vtools { flex: 0 0 26px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding-top: 2px; margin-right: 8px; }
+  .tl-vtools .ttool { width: 22px; height: 20px; }
+  .tl-headers { flex: 0 0 96px; display: flex; flex-direction: column; }
+  .tl-body { flex: 1 1 auto; position: relative; display: flex; flex-direction: column; min-width: 0; }
+  .row-ruler { flex: 0 0 18px; }
+  .row-thumbs { flex: 1 1 0; min-height: 22px; }
+  .row-ko { flex: 1.3 1 0; min-height: 30px; margin-top: 6px; }
+  .row-en { flex: 0.85 1 0; min-height: 20px; margin-top: 6px; }
+  .ruler { position: relative; cursor: pointer; }
   .ruler .tick { position: absolute; top: 0; font-size: 10px; color: #777; border-left: 1px solid #444;
-    padding-left: 3px; height: 18px; line-height: 16px; }
-  .thumbs { position: relative; height: 44px; display: flex; overflow: hidden; border-radius: 4px;
+    padding-left: 3px; height: 100%; line-height: 16px; }
+  .thumbs { position: relative; display: flex; overflow: hidden; border-radius: 4px;
     background: #101010; cursor: pointer; }
-  .thumbs img { flex: 1 1 0; min-width: 0; object-fit: cover; opacity: .85; pointer-events: none; }
-  .track { position: relative; height: 46px; margin-top: 6px; background: #232324; border-radius: 4px; }
-  .track.en-track { height: 30px; opacity: .8; }
-  .track-label { position: absolute; left: 6px; top: 4px; font-size: 10px; color: #666; pointer-events: none; z-index: 1; }
-  .blk { position: absolute; top: 4px; bottom: 4px; background: #2f4f77; border: 1px solid #4a79b3;
-    border-radius: 5px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
+  .thumbs img { flex: 1 1 0; min-width: 0; height: 100%; object-fit: cover; opacity: .85; pointer-events: none; }
+  .track { position: relative; background: #29292b; border-radius: 4px; }
+  .track.locked { background: #262023; }
+  .track-head { display: flex; align-items: center; gap: 3px; padding: 0 6px; background: #29292b; border-radius: 4px; }
+  .track-head.en-head { background: #232922; }
+  .track-head .track-label { font-size: 10px; color: #9aa0a6; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; margin-left: 2px; }
+  .tico { width: 18px; height: 18px; flex: 0 0 18px; display: inline-flex; align-items: center; justify-content: center;
+    border: none; background: transparent; color: #6a6a6d; cursor: pointer; border-radius: 3px; padding: 0; }
+  .tico:hover { background: rgba(255,255,255,.08); color: #ddd; }
+  .tico.active { color: #ffb454; }
+  .blk { position: absolute; top: 3px; bottom: 3px; background: #2f4f77; border: 1px solid #4a79b3;
+    border-radius: 4px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
   .blk.sel { background: #38618f; border-color: #6cb2ff; box-shadow: 0 0 0 1px #6cb2ff; z-index: 2; }
   .blk .txt { padding: 0 8px; font-size: 11.5px; color: #dce6f2; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; pointer-events: none; width: 100%; }
@@ -2273,6 +2327,8 @@ STUDIO_TEMPLATE = """
   .blk .h:hover { background: rgba(108,178,255,.4); }
   .en-track .blk { background: #34432f; border-color: #5b7a52; cursor: default; }
   .en-track .blk .txt { color: #cfe0c8; font-size: 10.5px; }
+  .tl.tool-razor .track.ko-track .blk { cursor: crosshair; }
+  .track.locked .blk { cursor: not-allowed; opacity: .7; }
   .phead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff5252; z-index: 5; pointer-events: none; }
   .blk-edit { position: absolute; z-index: 9; background: #2d2d30; border: 1px solid #6cb2ff; border-radius: 6px;
     padding: 6px; display: flex; gap: 6px; align-items: center; }
@@ -2280,7 +2336,6 @@ STUDIO_TEMPLATE = """
     border-radius: 5px; padding: 6px 8px; font-family: inherit; font-size: 12.5px; }
   .blk-edit button { padding: 5px 9px; font-size: 12px; border-radius: 5px; border: 1px solid #3c3c3c;
     background: #37373d; color: #d4d4d4; cursor: pointer; }
-  .tl-tools { display: flex; gap: 8px; margin-top: 8px; align-items: center; font-size: 12px; color: #888; }
   .status { margin-left: auto; font-size: 12px; color: #6cb2ff; }
 </style>
 </head>
@@ -2296,36 +2351,85 @@ STUDIO_TEMPLATE = """
   <button class="tbtn primary" id="bRender">만들기</button>
 </div>
 <div class="mid">
-  <div class="stage">
-    <div class="vwrap" id="vwrap">
-      <video id="v" src="/media/{{ video_id }}/source.mp4" playsinline preload="auto"></video>
-      <div class="safe right"></div><div class="safe bottom"></div>
-      <div class="cap-ov" id="capOv" style="display:none"><span class="ko"></span><span class="en"></span></div>
-      <button class="playbig" id="playBig">▶</button>
+  <div class="panel monitor">
+    <div class="panel-head">프로그램: <span id="clipName2">클립 {{ idx + 1 }}</span></div>
+    <div class="stage">
+      <div class="vwrap" id="vwrap">
+        <video id="v" src="/media/{{ video_id }}/source.mp4" playsinline preload="auto"></video>
+        <div class="safe right"></div><div class="safe bottom"></div>
+        <div class="cap-ov" id="capOv" style="display:none"><span class="ko"></span><span class="en"></span></div>
+        <button class="playbig" id="playBig">▶</button>
+      </div>
+    </div>
+    <div class="transport">
+      <button class="tplay" id="playBig2">▶</button>
+      <span class="tc" id="tCurT">0:00.000</span><span class="tc-sep">/</span><span class="tc" id="tTotal">0:00.000</span>
     </div>
   </div>
-  <div class="props">
-    <h3>자막 속성</h3>
-    <div class="prow"><label>크기</label><input type="range" id="pSize" min="36" max="170" step="1"><span class="val" id="pSizeV"></span></div>
-    <div class="prow"><label>세로 위치</label><input type="range" id="pY" min="-400" max="400" step="2"><span class="val" id="pYV"></span></div>
-    <div class="prow"><label>가로 위치</label><input type="range" id="pX" min="-400" max="400" step="2"><span class="val" id="pXV"></span></div>
-    <div class="prow"><label>영어 표시</label><input type="checkbox" id="pEn" checked> <span style="color:#888">미리보기에 영어 함께</span></div>
-    <div class="prow"><label>안전영역</label><input type="checkbox" id="pSafe" checked> <span style="color:#888">폰 UI 가이드(우측·하단)</span></div>
-    <p class="hintp">타임라인: 블록 드래그=이동 · 가장자리=길이 · 더블클릭=텍스트 수정 · Delete=삭제 · 휠=확대/축소 · Space=재생</p>
-    <h3>도움말</h3>
-    <p class="hintp">빨간 점선 안쪽(우측·하단)은 휴대폰에서 좋아요·캡션 UI에 가려질 수 있는 영역이에요. 자막이 침범하지 않게 위치를 잡아주세요.</p>
+  <div class="panel props">
+    <div class="panel-head">효과 컨트롤</div>
+    <div class="props-body">
+      <h3>자막 속성</h3>
+      <div class="prow"><label>크기</label><input type="range" id="pSize" min="36" max="170" step="1"><input type="number" class="numin" id="pSizeN" min="36" max="170" step="1"></div>
+      <div class="prow"><label>세로 위치</label><input type="range" id="pY" min="-400" max="400" step="1"><input type="number" class="numin" id="pYN" min="-400" max="400" step="1"></div>
+      <div class="prow"><label>가로 위치</label><input type="range" id="pX" min="-400" max="400" step="1"><input type="number" class="numin" id="pXN" min="-400" max="400" step="1"></div>
+      <div class="prow"><label>안전영역</label><input type="checkbox" id="pSafe" checked> <span style="color:#888">폰 UI 가이드(우측·하단)</span></div>
+      <h3>선택한 자막</h3>
+      <div class="prow"><label>시작(초)</label><input type="number" class="numin wide" id="selStart" step="0.001" disabled></div>
+      <div class="prow"><label>끝(초)</label><input type="number" class="numin wide" id="selEnd" step="0.001" disabled></div>
+      <div class="prow"><label>길이</label><span class="hintp" id="selDur" style="margin:0">-</span></div>
+      <p class="hintp">숫자를 직접 입력하면 소수점 3자리(밀리초)까지 정밀하게 편집돼요. 타임라인 블록을 먼저 선택하세요.</p>
+      <h3>도움말</h3>
+      <p class="hintp">타임라인: 블록 드래그=이동 · 가장자리=길이 · 더블클릭=텍스트 수정 · Delete=삭제 · 휠=확대/축소 · Space=재생 · 자르기 도구로 클릭=분할</p>
+      <p class="hintp">빨간 점선 안쪽(우측·하단)은 휴대폰에서 좋아요·캡션 UI에 가려질 수 있는 영역이에요. 자막이 침범하지 않게 위치를 잡아주세요.</p>
+    </div>
   </div>
 </div>
-<div class="tl">
-  <div class="tl-head"><span class="time" id="tCur">0:00.0</span><span id="tRange"></span>
+<div class="tl-resize" id="tlResize" title="드래그해서 타임라인 높이 조절"></div>
+<div class="tl" id="tlPanel">
+  <div class="tl-panelhead panel-head">
+    타임라인
+    <div class="tl-toolbar">
+      <button class="ttool" id="zoomOut" title="축소">&minus;</button>
+      <button class="ttool" id="zoomFit" title="클립 범위로 맞추기">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      </button>
+      <button class="ttool" id="zoomIn" title="확대">+</button>
+    </div>
+  </div>
+  <div class="tl-head"><span class="time" id="tCur">0:00.000</span><span id="tRange"></span>
     <button class="tbtn" id="bAdd" style="padding:3px 8px;font-size:11.5px">+ 소절 추가</button>
     <span class="status" id="status"></span></div>
-  <div class="tl-body">
-    <div class="ruler" id="ruler"></div>
-    <div class="thumbs" id="thumbs"></div>
-    <div class="track" id="koTrack"><span class="track-label">자막</span></div>
-    <div class="track en-track" id="enTrack" style="display:none"><span class="track-label">EN</span></div>
-    <div class="phead" id="phead" style="display:none"></div>
+  <div class="tl-main">
+    <div class="tl-vtools">
+      <button class="ttool active" id="toolSelect" title="선택 도구(V)">&#8598;</button>
+      <button class="ttool" id="toolRazor" title="자르기 도구(C) — 자막 블록을 클릭한 지점에서 둘로 나눕니다">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><line x1="20" y1="4" x2="8.5" y2="14.5"/><line x1="8.5" y1="9.5" x2="20" y2="20"/></svg>
+      </button>
+    </div>
+    <div class="tl-headers">
+      <div class="row-ruler"></div>
+      <div class="row-thumbs"></div>
+      <div class="track-head row-ko" id="koHead">
+        <button class="tico" id="koLock" title="자막(한글) 잠금">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 017.8-1.3"/></svg>
+        </button>
+        <span class="track-label">V2 · 자막(한글)</span>
+      </div>
+      <div class="track-head en-head row-en" id="enHead" style="display:none">
+        <button class="tico" id="enEye" title="미리보기에 영어 표시/숨김">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <span class="track-label">V1 · 자막(영어)</span>
+      </div>
+    </div>
+    <div class="tl-body" id="tlBody">
+      <div class="ruler row-ruler" id="ruler"></div>
+      <div class="thumbs row-thumbs" id="thumbs"></div>
+      <div class="track row-ko ko-track" id="koTrack"></div>
+      <div class="track en-track row-en" id="enTrack" style="display:none"></div>
+      <div class="phead" id="phead" style="display:none"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -2340,34 +2444,54 @@ let ens = [];              // 영어 트랙(인덱스로 한국어와 짝) — �
 let selIdx = -1;
 let dirty = false;
 let view = { a: 0, b: 60 };
+let homeView = { a: 0, b: 60 };
 let dur = 60;
-const fmt = (t) => Math.floor(t / 60) + ':' + (t % 60 < 10 ? '0' : '') + (t % 60).toFixed(1);
+let activeTool = 'select';  // 'select' | 'razor'
+let koLocked = false;
+let enVisible = true;
+// 사용자 요청(2026-09-06): "10.2초처럼 소수점 한 자리만 나온다, 3자리까지 정밀하게" — 시간
+// 표시·편집 전 구간을 밀리초 단위(소수점 3자리)로 통일.
+const fmt = (t) => Math.floor(t / 60) + ':' + (t % 60 < 10 ? '0' : '') + (t % 60).toFixed(3);
 
 fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json()).then(info => {
   C = info.clip; L = info.layout;
   dur = info.source_duration || (C.end + 10);
   caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
   ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
-  $('clipName').textContent = (C.title || ('클립 ' + (IDX + 1)));
+  const title = (C.title || ('클립 ' + (IDX + 1)));
+  $('clipName').textContent = title; $('clipName2').textContent = title;
   if (C.clip_type === 'praise') $('bLyrics').hidden = false;
+  $('enHead').style.display = ens.length ? 'flex' : 'none';
   // 복제 직후 클립이면 원본 영상 전체를 보여준다(팝업과 동일한 힌트).
   const basePad = Math.max((C.end - C.start) * 0.08, 3);
   view = C.show_full_source_once
     ? { a: 0, b: dur }
     : { a: Math.max(0, C.start - basePad), b: Math.min(dur, C.end + basePad) };
+  homeView = { a: view.a, b: view.b };
+  $('tTotal').textContent = fmt(C.end);
   // 속성 초기값
   const defSize = Math.round((L.caption_font_size || 72));
-  $('pSize').value = C.caption_size || defSize; $('pX').value = C.caption_offset_x || 0; $('pY').value = C.caption_offset_y || 0;
-  syncPropLabels();
+  bindNum('pSize', 'pSizeN', C.caption_size || defSize);
+  bindNum('pX', 'pXN', C.caption_offset_x || 0);
+  bindNum('pY', 'pYN', C.caption_offset_y || 0);
   v.addEventListener('loadedmetadata', () => { v.currentTime = C.start; });
-  renderAll();
+  renderAll(); syncSelPanel();
 });
 
-function syncPropLabels() {
-  $('pSizeV').textContent = $('pSize').value; $('pXV').textContent = $('pX').value; $('pYV').textContent = $('pY').value;
+// 슬라이더(빠른 조절)와 숫자 입력(정밀 입력)을 양방향으로 묶는다 — 사용자 요청
+// "글씨크기도 직접 입력할 수 있게 해야지": 슬라이더만 있던 걸 정확한 값 타이핑으로 보완.
+function bindNum(rangeId, numId, initial) {
+  const r = $(rangeId), n = $(numId);
+  r.value = initial; n.value = initial;
+  const onChange = () => { dirty = true; updateOverlay(); };
+  r.addEventListener('input', () => { n.value = r.value; onChange(); });
+  n.addEventListener('input', () => {
+    let val = parseFloat(n.value);
+    if (Number.isNaN(val)) return;
+    val = Math.max(parseFloat(r.min), Math.min(parseFloat(r.max), val));
+    r.value = val; onChange();
+  });
 }
-['pSize','pX','pY'].forEach(id => $(id).addEventListener('input', () => { syncPropLabels(); dirty = true; updateOverlay(); }));
-$('pEn').addEventListener('change', updateOverlay);
 $('pSafe').addEventListener('change', () => $('vwrap').classList.toggle('showsafe', $('pSafe').checked));
 $('vwrap').classList.add('showsafe');
 
@@ -2383,7 +2507,7 @@ function updateOverlay() {
   ov.style.display = 'block';
   const koEl = ov.querySelector('.ko');
   koEl.textContent = caps[i].text;
-  const en = ($('pEn').checked && ens[i]) ? ens[i].text : '';
+  const en = (enVisible && ens[i]) ? ens[i].text : '';
   const enEl = ov.querySelector('.en');
   enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
   // 크기: 렌더 해상도 px → 미리보기 px (영상 표시폭/해상도폭 비율), libass 계수 반영
@@ -2416,34 +2540,62 @@ function playPause() {
   else v.pause();
 }
 $('playBig').addEventListener('click', playPause);
+$('playBig2').addEventListener('click', playPause);
 v.addEventListener('click', playPause);
-v.addEventListener('play', () => $('playBig').classList.add('hidden'));
-v.addEventListener('pause', () => $('playBig').classList.remove('hidden'));
+v.addEventListener('play', () => { $('playBig').classList.add('hidden'); $('playBig2').textContent = '⏸'; });
+v.addEventListener('pause', () => { $('playBig').classList.remove('hidden'); $('playBig2').textContent = '▶'; });
 v.addEventListener('timeupdate', () => {
   if (v.currentTime >= C.end) { v.pause(); }
-  $('tCur').textContent = fmt(Math.max(0, v.currentTime));
+  const t = fmt(Math.max(0, v.currentTime));
+  $('tCur').textContent = t; $('tCurT').textContent = t;
   updateOverlay(); renderPlayhead();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
   if (e.code === 'Space') { e.preventDefault(); playPause(); }
-  if ((e.key === 'Delete' || e.key === 'Backspace') && selIdx >= 0 && e.target.tagName !== 'INPUT') {
+  if (e.key === 'v' || e.key === 'V') setTool('select');
+  if (e.key === 'c' || e.key === 'C') setTool('razor');
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selIdx >= 0) {
     caps.splice(selIdx, 1); if (ens.length > selIdx) ens.splice(selIdx, 1);
-    selIdx = -1; dirty = true; renderTracks();
+    selIdx = -1; dirty = true; renderTracks(); syncSelPanel();
   }
 });
 
+// ── 도구(선택/자르기) ──
+function setTool(t) {
+  activeTool = t;
+  $('toolSelect').classList.toggle('active', t === 'select');
+  $('toolRazor').classList.toggle('active', t === 'razor');
+  $('tlPanel').classList.toggle('tool-razor', t === 'razor');
+}
+$('toolSelect').addEventListener('click', () => setTool('select'));
+$('toolRazor').addEventListener('click', () => setTool('razor'));
+
+// ── 트랙 헤더: 잠금(한글) / 표시(영어) ──
+$('koLock').addEventListener('click', () => {
+  koLocked = !koLocked;
+  $('koLock').classList.toggle('active', koLocked);
+  $('koTrack').classList.toggle('locked', koLocked);
+  syncSelPanel();
+});
+$('enEye').addEventListener('click', () => {
+  enVisible = !enVisible;
+  $('enEye').classList.toggle('active', !enVisible);
+  updateOverlay();
+});
+
 // ── 타임라인 렌더 ──
-const tlBody = document.querySelector('.tl-body');
+const tlBody = $('tlBody');
 const t2x = (t) => (t - view.a) / (view.b - view.a) * tlBody.clientWidth;
 const x2t = (px) => view.a + px / tlBody.clientWidth * (view.b - view.a);
 function renderRuler() {
   const r = $('ruler'); r.innerHTML = '';
   const span = view.b - view.a;
-  const step = span > 240 ? 60 : span > 90 ? 30 : span > 40 ? 10 : span > 12 ? 5 : 1;
+  const step = span > 240 ? 60 : span > 90 ? 30 : span > 40 ? 10 : span > 12 ? 5 : span > 4 ? 1 : span > 1.5 ? 0.5 : span > 0.6 ? 0.2 : 0.1;
   for (let t = Math.ceil(view.a / step) * step; t <= view.b; t += step) {
     const el = document.createElement('div'); el.className = 'tick';
-    el.style.left = t2x(t) + 'px'; el.textContent = fmt(t).replace('.0', '');
+    el.style.left = t2x(t) + 'px';
+    el.textContent = step >= 1 ? fmt(t).replace(/\\.0+$/, '') : fmt(t).replace(/0+$/, '').replace(/\\.$/, '.0');
     r.appendChild(el);
   }
 }
@@ -2476,7 +2628,11 @@ function mkBlock(track, item, i, isEn) {
     const hl = document.createElement('div'); hl.className = 'h l';
     const hr = document.createElement('div'); hr.className = 'h r';
     b.appendChild(hl); b.appendChild(hr);
-    b.addEventListener('pointerdown', (e) => startDrag(e, i, e.target === hl ? 'l' : e.target === hr ? 'r' : 'm'));
+    b.addEventListener('pointerdown', (e) => {
+      if (koLocked) { selIdx = i; renderTracks(); syncSelPanel(); return; }
+      if (activeTool === 'razor' && e.target === b || e.target === s) { splitBlockAt(i, e); return; }
+      startDrag(e, i, e.target === hl ? 'l' : e.target === hr ? 'r' : 'm');
+    });
     b.addEventListener('dblclick', (e) => { e.stopPropagation(); openEdit(i, b); });
   }
   track.appendChild(b);
@@ -2490,9 +2646,9 @@ function renderTracks() {
   // (사용자 요청: "영어 자막은 무조건 한글 따라가는 걸로") — 한국어를 드래그로 옮기는
   // 즉시 영어도 같이 움직여 보이고, 실제로 어긋날 수 없다.
   if (ens.length) {
-    en.style.display = 'block';
+    en.style.display = 'block'; $('enHead').style.display = 'flex';
     ens.forEach((c, i) => { if (caps[i]) mkBlock(en, { start: caps[i].start, end: caps[i].end, text: c.text }, i, true); });
-  } else en.style.display = 'none';
+  } else { en.style.display = 'none'; $('enHead').style.display = 'none'; }
   $('tRange').textContent = fmt(view.a) + ' ~ ' + fmt(view.b);
 }
 function renderAll() { renderRuler(); renderThumbs(); renderTracks(); renderPlayhead(); }
@@ -2507,22 +2663,27 @@ function seekFromEvent(e, el) {
 }
 $('ruler').addEventListener('pointerdown', (e) => seekFromEvent(e, $('ruler')));
 $('thumbs').addEventListener('pointerdown', (e) => seekFromEvent(e, $('thumbs')));
+function zoomBy(factor, pivot) {
+  let a = pivot - (pivot - view.a) * factor, b = pivot + (view.b - pivot) * factor;
+  if (b - a < 0.3) { const c = (a + b) / 2; a = c - 0.15; b = c + 0.15; }
+  view = { a: Math.max(0, a), b: Math.min(dur, b) };
+  renderAll();
+}
 tlBody.addEventListener('wheel', (e) => {
   e.preventDefault();
   const rect = tlBody.getBoundingClientRect();
   const pivot = x2t(e.clientX - rect.left);
-  const f = e.deltaY > 0 ? 1.25 : 0.8;
-  let a = pivot - (pivot - view.a) * f, b = pivot + (view.b - pivot) * f;
-  if (b - a < 2) { const c = (a + b) / 2; a = c - 1; b = c + 1; }
-  view = { a: Math.max(0, a), b: Math.min(dur, b) };
-  renderAll();
+  zoomBy(e.deltaY > 0 ? 1.25 : 0.8, pivot);
 }, { passive: false });
+$('zoomIn').addEventListener('click', () => zoomBy(0.75, (view.a + view.b) / 2));
+$('zoomOut').addEventListener('click', () => zoomBy(1.34, (view.a + view.b) / 2));
+$('zoomFit').addEventListener('click', () => { view = { a: homeView.a, b: homeView.b }; renderAll(); });
 
 // ── 블록 드래그(이동/리사이즈) + 스냅 ──
 let drag = null;
 function startDrag(e, i, mode) {
   e.preventDefault();
-  selIdx = i; renderTracks();
+  selIdx = i; renderTracks(); syncSelPanel();
   drag = { i, mode, x0: e.clientX, s0: caps[i].start, e0: caps[i].end };
   document.addEventListener('pointermove', onDrag);
   document.addEventListener('pointerup', endDrag, { once: true });
@@ -2552,9 +2713,48 @@ function onDrag(e) {
     c.end = Math.min(dur, c.end);
   }
   dirty = true;
-  renderTracks(); updateOverlay();
+  renderTracks(); updateOverlay(); syncSelPanel();
 }
 function endDrag() { drag = null; document.removeEventListener('pointermove', onDrag); }
+
+// ── 자르기 도구: 클릭 지점에서 선택한 소절을 둘로 나눈다(프리미어 Razor와 동일) ──
+function splitBlockAt(i, e) {
+  const rect = tlBody.getBoundingClientRect();
+  const t = x2t(e.clientX - rect.left);
+  const c = caps[i];
+  if (t <= c.start + 0.05 || t >= c.end - 0.05) return;  // 가장자리 근처는 무시
+  const secondHalf = { start: t, end: c.end, text: c.text };
+  c.end = t;
+  caps.splice(i + 1, 0, secondHalf);
+  if (ens[i]) ens.splice(i + 1, 0, { start: secondHalf.start, end: secondHalf.end, text: ens[i].text });
+  selIdx = i; dirty = true; renderTracks(); updateOverlay(); syncSelPanel();
+  setStatus('소절 분할됨');
+}
+
+// ── 선택한 자막의 정밀 시작/끝 편집(밀리초 단위 직접 입력) ──
+function syncSelPanel() {
+  const has = selIdx >= 0 && !!caps[selIdx];
+  $('selStart').disabled = !has || koLocked;
+  $('selEnd').disabled = !has || koLocked;
+  if (has) {
+    if (document.activeElement !== $('selStart')) $('selStart').value = caps[selIdx].start.toFixed(3);
+    if (document.activeElement !== $('selEnd')) $('selEnd').value = caps[selIdx].end.toFixed(3);
+    $('selDur').textContent = (caps[selIdx].end - caps[selIdx].start).toFixed(3) + '초';
+  } else {
+    $('selStart').value = ''; $('selEnd').value = ''; $('selDur').textContent = '-';
+  }
+}
+function commitSelTimes() {
+  if (selIdx < 0 || !caps[selIdx] || koLocked) return;
+  let s = parseFloat($('selStart').value), en = parseFloat($('selEnd').value);
+  if (Number.isNaN(s) || Number.isNaN(en)) { syncSelPanel(); return; }
+  s = Math.max(0, s); en = Math.min(dur, en);
+  if (en <= s + 0.05) en = s + 0.05;
+  caps[selIdx].start = s; caps[selIdx].end = en;
+  dirty = true; renderTracks(); updateOverlay(); syncSelPanel();
+}
+$('selStart').addEventListener('change', commitSelTimes);
+$('selEnd').addEventListener('change', commitSelTimes);
 
 // ── 더블클릭 텍스트 수정 ──
 function openEdit(i, blkEl) {
@@ -2577,8 +2777,29 @@ $('bAdd').addEventListener('click', () => {
   const t = Math.max(C.start, Math.min(v.currentTime, C.end - 2));
   caps.push({ start: t, end: Math.min(t + 3, C.end), text: '새 소절' });
   caps.sort((a, b) => a.start - b.start);
-  dirty = true; renderTracks();
+  selIdx = caps.findIndex((c) => c.start === t);
+  dirty = true; renderTracks(); syncSelPanel();
 });
+
+// ── 타임라인 패널 높이 드래그 리사이즈(사용자 요청: "시간~자막 공간을 더 늘릴 수 있게") ──
+const tlResize = $('tlResize'), tlPanel = $('tlPanel');
+let resizingTl = false, tlStartY = 0, tlStartH = 0;
+tlResize.addEventListener('pointerdown', (e) => {
+  resizingTl = true; tlStartY = e.clientY; tlStartH = tlPanel.getBoundingClientRect().height;
+  tlResize.classList.add('dragging');
+  document.addEventListener('pointermove', onTlResize);
+  document.addEventListener('pointerup', endTlResize, { once: true });
+});
+function onTlResize(e) {
+  if (!resizingTl) return;
+  const dy = tlStartY - e.clientY;  // 위로 끌면 커지도록
+  const h = Math.max(140, Math.min(window.innerHeight * 0.78, tlStartH + dy));
+  tlPanel.style.height = h + 'px';
+}
+function endTlResize() {
+  resizingTl = false; tlResize.classList.remove('dragging');
+  document.removeEventListener('pointermove', onTlResize);
+}
 
 // ── 저장/만들기/AI 도구 ──
 function collect() { return caps.map(c => ({ start: c.start, end: c.end, text: c.text })); }
@@ -2615,7 +2836,7 @@ async function aiCall(btn, url, body, apply) {
   const j = r && r.ok ? await r.json().catch(() => null) : null;
   btn.disabled = false; btn.textContent = old;
   if (!j || j.error || !j.lines) { alert('실패' + (j && j.error ? ': ' + j.error : '')); return; }
-  apply(j); dirty = true; renderTracks(); updateOverlay();
+  apply(j); dirty = true; renderTracks(); updateOverlay(); syncSelPanel();
 }
 $('bSync').addEventListener('click', () => aiCall($('bSync'),
   '/video/' + VIDEO_ID + '/clip/' + IDX + '/sync_captions', { captions: collect() },
