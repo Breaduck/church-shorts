@@ -322,12 +322,20 @@ INDEX_TEMPLATE = f"""
   .dropzone-file {{ font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }}
   /* 사용자 요청(2026-09-06): 제목을 더 굵고 크게 + 말씀/찬양·유튜브 링크 입력·업로드
      영역을 전체적으로 약 2배 확대. h1/.seg/#url/.dropzone은 BASE_STYLE(전역)에도 있지만
-     아래는 인덱스 페이지 전용 <style> 블록 안이라 다른 페이지(후보 목록 등)에는 영향 없다. */
+     아래는 인덱스 페이지 전용 <style> 블록 안이라 다른 페이지(후보 목록 등)에는 영향 없다.
+     2차 피드백(2026-09-06): "글씨 크기가 아니라 칸(박스) 전체를 키우라는 것" — 넓은
+     화면에 비해 카드 자체가 작아 보였던 게 진짜 문제. 그래서 폭·패딩·버튼까지 전부 확대. */
+  .wrap {{ max-width: 1120px; }}
+  .card {{ padding: 48px 52px; border-radius: 28px; }}
+  .page-head {{ margin-bottom: 8px; }}
   #mainTitle {{ font-size: 42px; font-weight: 900; }}
-  .seg label {{ font-size: 26px; padding: 30px 14px; }}
-  #url {{ font-size: 26px; padding: 28px 26px; border-radius: 20px; }}
-  .dropzone {{ padding: 60px 28px; }}
-  .dropzone-icon {{ width: 88px; height: 88px; font-size: 38px; margin-bottom: 18px; }}
+  .force-toggle {{ padding: 22px 38px; font-size: 19px; }}
+  .analyze-btn {{ padding: 22px 42px; font-size: 19px; }}
+  .seg {{ padding: 6px; border-radius: 18px; margin-bottom: 24px !important; }}
+  .seg label {{ font-size: 26px; padding: 36px 14px; border-radius: 14px; }}
+  #url {{ font-size: 26px; padding: 34px 30px; border-radius: 22px; margin-top: 20px; }}
+  .dropzone {{ padding: 90px 40px; margin-top: 20px; border-radius: 24px; }}
+  .dropzone-icon {{ width: 100px; height: 100px; font-size: 42px; margin-bottom: 22px; }}
   .dropzone-text {{ font-size: 26px; }}
   .dropzone-file {{ font-size: 24px; }}
 </style>
