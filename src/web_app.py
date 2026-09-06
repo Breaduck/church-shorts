@@ -3739,16 +3739,26 @@ async function aiCall(kind, url, body, apply) {
   try { r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch (e) {}
   const j = r && r.ok ? await r.json().catch(() => null) : null;
   if (it) it.classList.remove('busy');
-  if (!j || j.error || !j.lines) { alert('실패' + (j && j.error ? ': ' + j.error : '')); setStatus(''); return; }
+  if (!j || j.error || !j.lines) { alert('실패' + (j && j.error ? ': ' + j.error : '')); setStatus(''); return false; }
   pushUndo(); apply(j); markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); renderProject();
   // AI 도구(번역/교정/싱크/가사)는 결과를 바로 저장한다 — "한 번 만들었으면 계속
   // 남아있어야지"(사용자 신고 2026-09-06): 저장은 수동(Ctrl+S)뿐이라, 만들자마자
   // 저장을 안 누르고 나가면(뒤로가기 등) 방금 만든 결과가 통째로 사라져 보였다.
   await save();
+  return true;   // 호출부가 성공 여부로 후속 작업(싱크 → 영어 번역)을 이어갈 수 있게.
 }
 function applyFx(kind) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
-  if (kind === 'sync') aiCall(kind, base + 'sync_captions', { captions: collect() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 맞춤: ' + (j.source || '')); });
+  if (kind === 'sync') {
+    // 싱크가 끝나면 영어 자막도 이어서 만든다(사용자 요청 2026-09-07). 번역 입력은 방금
+    // 싱크된 줄(collect())이라 영어 트랙의 시간이 한국어와 정확히 같아진다.
+    aiCall(kind, base + 'sync_captions', { captions: collect() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 맞춤: ' + (j.source || '')); })
+      .then((ok) => {
+        if (!ok) return;
+        setStatus('싱크 완료 — 영어 자막 만드는 중…');
+        return aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
+      });
+  }
   else if (kind === 'correct') aiCall(kind, base + 'correct_captions', { captions: collect(), model: '' }, (j) => { j.lines.forEach((ln, i) => { if (caps[i]) caps[i].text = ln.text; }); setStatus('교정 ' + (j.changed || 0) + '줄'); });
   else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); });
   else if (kind === 'lyrics') {
@@ -4744,7 +4754,7 @@ PREVIEW_MODAL_JS = r"""
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">꼼꼼 재분석</button>' +
-      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다 (토큰 비용 없음)">싱크 맞추기</button>' +
+      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 맞춘 뒤 영어 자막까지 자동으로 만들어 둡니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다">싱크 맞추기</button>' +
       '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">AI 자막 교정</button>' +
       '      <button type="button" class="pv-lyricsbtn" hidden title="곡 제목으로 정식 가사를 인터넷에서 검색해 가져오고, 이 영상의 노래 속도에 맞춰 자막을 채웁니다 (토큰 사용)">가사 자동 가져오기</button>' +
       '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">영어 자막 만들기</button>' +
@@ -5435,8 +5445,23 @@ PREVIEW_MODAL_JS = r"""
       // 싱크 맞추기는 '줄의 시작·끝 시간'만 다시 맞춘다 — 파란 강조(카라오케)는 켜지 않는다.
       // (사용자 요청 2026-09-05: 흰 자막이 그대로 떠 있어야 하고, 파란색은 '파란 강조' 버튼으로만.)
       capSec.classList.remove('hidden');
-      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 (저장 필요)';
-      setTimeout(() => { syncBtn.textContent = '싱크 맞추기'; }, 4000);
+      // 영어 자막도 여기서 같이 만든다(사용자 요청 2026-09-07: "영어 자막 만들기를 따로
+      // 안 눌러도 되게"). 싱크 결과는 위에서 이미 화면에 반영했고 번역은 그 다음에 돌린다 —
+      // 싱크 자체가 번역(10~30초)을 기다리느라 느려 보이지 않게 하려는 순서다.
+      // 번역 입력은 서버가 돌려준 j.lines(분할까지 반영된 최종 줄)를 쓴다.
+      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 — 영어 자막 만드는 중…';
+      let enMsg = '';
+      try {
+        const rt = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/translate_captions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ captions: j.lines, model: '' }),
+        });
+        const jt = rt && rt.ok ? await rt.json().catch(() => null) : null;
+        if (jt && jt.lines) { capOverridesEn = jt.lines; enMsg = ' + 영어 ' + jt.lines.length + '줄'; }
+        else enMsg = ' (영어 번역 실패 — 아래 버튼으로 다시)';
+      } catch (e) { enMsg = ' (영어 번역 실패 — 아래 버튼으로 다시)'; }
+      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤' + enMsg + ' (저장 필요)';
+      setTimeout(() => { syncBtn.textContent = '싱크 맞추기'; }, 6000);
     });
 
     // ── AI 자막 교정: 문맥·성경지식으로 오타 교정 + 핵심어 형광 강조(줄 수·시간 유지) ──
