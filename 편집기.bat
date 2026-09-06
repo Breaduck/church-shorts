@@ -11,6 +11,13 @@ echo   church-shorts editor   http://localhost:5000
 echo ================================================
 echo.
 
+REM venv가 없으면(다른 PC에서 처음 클론한 경우) 설치부터 안내한다.
+if not exist venv\Scripts\python.exe (
+  echo [i] first run on this pc - starting setup...
+  call "%~dp0설치.bat"
+  goto :eof
+)
+
 REM 이미 편집기가 떠 있으면(5000 응답) 브라우저만 연다.
 powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:5000/' -TimeoutSec 2 -UseBasicParsing; exit 0 } catch { exit 1 }"
 if %errorlevel%==0 (
