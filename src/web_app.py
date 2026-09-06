@@ -3123,13 +3123,12 @@ function updateOverlay() {
   ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
   ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
   const usableW = v.clientWidth * 0.70;
-  // 렌더(captions.py)와 동일 규칙: 클립 안의 모든 줄이 '하나의 크기'(가장 긴 줄이 한 줄에
-  // 들어가는 크기, 단 기본의 78% 하한). 예전엔 현재 줄만 따로 줄여서 재생 중 글자 크기가
-  // 줄마다 커졌다 작아졌다 했다(실신고 2026-09-06). 하한에서도 넘치는 줄은 2줄로 감싼다.
+  // 렌더(captions.py)와 동일 규칙: 무조건 1줄 + 클립 안의 모든 줄이 '하나의 크기'(가장 긴
+  // 줄이 안전지대 안에 한 줄로 들어가는 크기). 예전엔 현재 줄만 따로 줄여서 재생 중 글자
+  // 크기가 줄마다 커졌다 작아졌다 했다(실신고 2026-09-06).
   const f = uniformCapSize(sz, usableW);
   ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px';
-  ov.style.whiteSpace = (f <= sz * 0.78 + 0.01) ? 'normal' : 'nowrap';
-  ov.style.maxWidth = usableW + 'px';
+  ov.style.whiteSpace = 'nowrap';
 }
 let _ucsKey = '', _ucsVal = 0;
 function uniformCapSize(sz, usableW) {
@@ -3152,7 +3151,7 @@ function uniformCapSize(sz, usableW) {
     const w = m.getBoundingClientRect().width;
     if (w > usableW && w > 0) need = Math.min(need, sz * usableW / w);
   }
-  _ucsKey = key; _ucsVal = Math.max(sz * 0.78, need);
+  _ucsKey = key; _ucsVal = Math.max(10, need);
   return _ucsVal;
 }
 

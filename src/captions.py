@@ -736,23 +736,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 다 같이 작아져도 전부 한 줄을 유지한다.
         _fitted_all = [_fit_fs(t, caption_size) for t in ko_texts]
         _needed = [f for f in _fitted_all if f is not None]
-        # 균일 크기 하한(기본의 78%): 유난히 긴 소절 하나가 클립 전체를 확 작게 만드는
-        # 것을 막는다(실신고 2026-09-06 "한글 자막이 왜이리 작아졌지"). 예전엔 하한으로도
-        # 폭을 넘는 초장문 줄을 '그 줄만' 더 줄였는데, 그게 "처음부터 끝까지 한글 크기는
-        # 모두 동일하게" 요청(2026-09-06)과 정면 충돌 — 재생 중 글자가 커졌다 작아졌다
-        # 보였다. 이제 크기는 클립 안에서 예외 없이 하나. 하한에서도 안 들어가는 극단적
-        # 줄은 크기를 유지한 채 libass 자동 줄바꿈(WrapStyle 0)으로 2줄이 된다 — 크기
-        # 균일이 '한 줄 유지'보다 우선한다는 사용자 판단.
-        _floor = max(28, int(caption_size * 0.78))
-        uniform_ko_size = max(min(_needed), _floor) if _needed else None
+        # 무조건 1줄 + 클립 전체 단일 크기(사용자 확정 2026-09-06 "자막 무조건 1줄로,
+        # 안전지대 안에서"): 가장 긴 줄이 안전지대(좌우 15% 여백) 안에 한 줄로 들어가는
+        # 크기를 모든 줄에 쓴다. 예전의 78% 하한(긴 줄 하나가 전체를 작게 만드는 것 방지)은
+        # 그 줄이 2줄로 감싸이거나 크기가 줄마다 달라지는 부작용이 있어 제거 — 크기는
+        # 필요하면 더 작아지더라도 '1줄·동일 크기'가 우선. 최소 28(가독 하한).
+        uniform_ko_size = min(_needed) if _needed else None
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
         base_en_size = max(16, int(caption_size * 0.45))
         _fitted_en = [
             _fit_fs(_display_text(t), base_en_size) for t in en_texts if t
         ]
         _needed_en = [f for f in _fitted_en if f is not None]
-        _floor_en = max(16, int(base_en_size * 0.78))
-        uniform_en_size = max(min(_needed_en), _floor_en) if _needed_en else None
+        uniform_en_size = min(_needed_en) if _needed_en else None  # 영어도 1줄·단일 크기
 
         for line, ko_text, en_text in zip(lines, ko_texts, en_texts):
             ko_size = uniform_ko_size or caption_size  # 클립 전체 단일 크기(줄별 예외 없음)
@@ -763,9 +759,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
                 en_disp = _display_text(en_text)
                 en_size = uniform_en_size or base_en_size
-                _en_own = _fit_fs(en_disp, base_en_size)
-                if _en_own is not None and _en_own < en_size:
-                    en_size = _en_own  # 하한으로도 안 들어가는 긴 영어 줄만 예외 축소
                 # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
                 extra = f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}{en_disp}{{\\r}}"
             _emit_line(line, extra_text=extra, prefix_text=prefix)
