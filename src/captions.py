@@ -721,47 +721,90 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         usable_px = width - caption_margin_l - caption_margin_r - 24
 
-        def _fit_fs(text: str, base_size: int) -> int | None:
-            """text가 base_size로 폭을 넘으면 들어가는 크기를, 아니면 None을 반환."""
-            w_px = measure_text_width_px(text, font_name, base_size)
-            if w_px and w_px > usable_px:
-                return max(28, int(base_size * usable_px / w_px))
-            return None
-
         ko_texts = [" ".join(_display_text(w.text) for w in line.words) for line in lines]
-        # 줄마다 따로 맞추면 긴 줄만 작아지고 짧은 줄은 커서 클립 안에서 자막 크기가
-        # 들쭉날쭉해 보인다(실사용 신고: "차라리 좀 더 작게 해서라도 크기는 동일하게").
-        # 클립 전체에서 가장 많이 줄여야 하는 줄 기준으로 '하나의 크기'를 정해 모든 줄에
-        # 똑같이 적용한다 — 그 줄만 한 줄로 들어가고 나머지는 항상 그보다 여유 있으므로
-        # 다 같이 작아져도 전부 한 줄을 유지한다.
-        _fitted_all = [_fit_fs(t, caption_size) for t in ko_texts]
-        _needed = [f for f in _fitted_all if f is not None]
-        # 무조건 1줄 + 클립 전체 단일 크기(사용자 확정 2026-09-06 "자막 무조건 1줄로,
-        # 안전지대 안에서"): 가장 긴 줄이 안전지대(좌우 15% 여백) 안에 한 줄로 들어가는
-        # 크기를 모든 줄에 쓴다. 예전의 78% 하한(긴 줄 하나가 전체를 작게 만드는 것 방지)은
-        # 그 줄이 2줄로 감싸이거나 크기가 줄마다 달라지는 부작용이 있어 제거 — 크기는
-        # 필요하면 더 작아지더라도 '1줄·동일 크기'가 우선. 최소 28(가독 하한).
-        uniform_ko_size = min(_needed) if _needed else None
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
-        base_en_size = max(16, int(caption_size * 0.45))
-        _fitted_en = [
-            _fit_fs(_display_text(t), base_en_size) for t in en_texts if t
-        ]
-        _needed_en = [f for f in _fitted_en if f is not None]
-        uniform_en_size = min(_needed_en) if _needed_en else None  # 영어도 1줄·단일 크기
+        en_size = max(16, int(caption_size * 0.45))
 
-        for line, ko_text, en_text in zip(lines, ko_texts, en_texts):
-            ko_size = uniform_ko_size or caption_size  # 클립 전체 단일 크기(줄별 예외 없음)
-            prefix = f"{{\\fs{ko_size}}}" if ko_size != caption_size else ""
-            extra = ""
-            if en_text:
-                # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
-                # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
-                en_disp = _display_text(en_text)
-                en_size = uniform_en_size or base_en_size
-                # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
-                extra = f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}{en_disp}{{\\r}}"
-            _emit_line(line, extra_text=extra, prefix_text=prefix)
+        # ── 크기는 절대 안 바꾼다. 대신 폭을 넘는 줄을 '앞뒤 두 자막'으로 쪼갠다 ──────
+        # 사용자 확정(2026-09-06): "자막 크기는 무조건 똑같아야 한다", "그럴 땐 2줄이 아니라
+        # 2부분으로 자동으로 쪼개라". 예전 방식(가장 긴 줄에 맞춰 클립 전체를 축소)은 긴
+        # 소절 하나 때문에 모든 자막이 작아졌고, 그 전 방식(그 줄만 축소)은 재생 중 크기가
+        # 들쭉날쭉했다. 이제 크기는 항상 설정값 그대로고, 안전지대 폭을 넘는 줄만 단어
+        # 경계에서 나눠 순서대로 보여준다(한 조각씩 한 줄).
+        def _w(text: str) -> float:
+            return measure_text_width_px(text, font_name, caption_size) or 0.0
+
+        def _pack(widths: list[float], cap: float) -> list[int]:
+            """단어 폭들을 cap 이하 묶음으로 순서대로 담아 각 묶음의 시작 인덱스를 돌려준다.
+            (단어 사이 공백 폭은 묶음 안에서만 세므로 실제보다 살짝 보수적 = 안전하다.)"""
+            starts, cur, i0 = [0], 0.0, 0
+            for i, wd in enumerate(widths):
+                add = wd if i == i0 else space_px + wd
+                if i > i0 and cur + add > cap:
+                    starts.append(i)
+                    i0, cur = i, wd
+                else:
+                    cur += add
+            return starts
+
+        space_px = _w("  ") - _w(" ") or _w(" ")
+
+        def _split_indices(line: CaptionLine) -> list[int]:
+            """이 줄을 몇 번째 단어에서 끊을지. [0]이면 안 쪼갬."""
+            disp = [_display_text(w.text) for w in line.words]
+            if len(disp) < 2:
+                return [0]
+            total = _w(" ".join(disp))
+            if not total or total <= usable_px:
+                return [0]
+            widths = [_w(d) for d in disp]
+            if max(widths) > usable_px:
+                return [0]  # 단어 하나가 폭을 넘음(초장문 합성어) — 쪼갤 수 없으니 그대로
+            k = len(_pack(widths, usable_px))  # 최소 조각 수
+            # 조각 폭을 고르게: 같은 조각 수를 유지하는 가장 작은 폭 상한을 이분 탐색.
+            lo, hi = max(widths), usable_px
+            for _ in range(24):
+                mid = (lo + hi) / 2
+                if len(_pack(widths, mid)) <= k:
+                    hi = mid
+                else:
+                    lo = mid
+            return _pack(widths, hi)
+
+        def _en_slice(text: str, i: int, k: int) -> str:
+            """영어 번역도 같은 개수로 나눠 각 조각 아래에 붙인다(단어 수 비례)."""
+            toks = text.split()
+            if not toks or k <= 1:
+                return text if i == 0 else ""
+            a0 = round(len(toks) * i / k)
+            a1 = round(len(toks) * (i + 1) / k)
+            return " ".join(toks[a0:a1])
+
+        for line, en_text in zip(lines, en_texts):
+            cuts = _split_indices(line)
+            for ci, i0 in enumerate(cuts):
+                i1 = cuts[ci + 1] if ci + 1 < len(cuts) else len(line.words)
+                part = line.words[i0:i1]
+                if not part:
+                    continue
+                # 조각의 표시 구간: 첫 조각은 줄의 시작에서, 마지막 조각은 줄의 끝까지.
+                # 중간 경계는 '다음 조각 첫 단어가 시작하는 순간'에 바뀐다(발화와 일치).
+                seg = CaptionLine(
+                    start=line.start if ci == 0 else part[0].start,
+                    end=line.end if i1 >= len(line.words) else line.words[i1].start,
+                    words=part,
+                )
+                en_part = _en_slice(en_text, ci, len(cuts)) if en_text else ""
+                extra = ""
+                if en_part:
+                    # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
+                    # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
+                    # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
+                    extra = (
+                        f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}"
+                        f"{_display_text(en_part)}{{\\r}}"
+                    )
+                _emit_line(seg, extra_text=extra)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]

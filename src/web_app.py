@@ -3114,45 +3114,81 @@ function updateOverlay() {
   const i = activeCapIdx(v.currentTime);
   if (i < 0 || !koVisible) { ov.style.display = 'none'; return; }
   ov.style.display = 'block';
-  const koEl = ov.querySelector('.ko'); koEl.textContent = caps[i].text;
-  const en = (enVisible && ens[i]) ? ens[i].text : '';
-  const enEl = ov.querySelector('.en'); enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
+  const koEl = ov.querySelector('.ko');
+  const enEl = ov.querySelector('.en');
   const scale = v.clientWidth / (L.resolution ? L.resolution[0] : 1080);
   const kc = L.caption_ass_coeff || 1;
   const sz = parseFloat($('pSize').value) * kc * scale;
+  const usableW0 = v.clientWidth * 0.70;
+  // 렌더와 같은 분할: 폭을 넘는 줄은 조각으로 나뉘고, 지금 시각의 조각만 보여준다.
+  const part = capChunkAt(i, v.currentTime, sz, usableW0);
+  koEl.textContent = part.ko;
+  const en = (enVisible && ens[i]) ? enSlice(ens[i].text, part.ci, part.n) : '';
+  enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
   ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
   ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
-  const usableW = v.clientWidth * 0.70;
-  // 렌더(captions.py)와 동일 규칙: 무조건 1줄 + 클립 안의 모든 줄이 '하나의 크기'(가장 긴
-  // 줄이 안전지대 안에 한 줄로 들어가는 크기). 예전엔 현재 줄만 따로 줄여서 재생 중 글자
-  // 크기가 줄마다 커졌다 작아졌다 했다(실신고 2026-09-06).
-  const f = uniformCapSize(sz, usableW);
-  ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px';
+  // 렌더(captions.py)와 동일 규칙: 크기는 항상 설정값 그대로(줄마다·클립마다 안 바뀜),
+  // 안전지대 폭을 넘는 줄은 크기를 줄이는 대신 앞뒤 조각으로 나눠 순서대로 보여준다.
+  ov.style.fontSize = sz + 'px'; enEl.style.fontSize = (sz * 0.45) + 'px';
   ov.style.whiteSpace = 'nowrap';
 }
-let _ucsKey = '', _ucsVal = 0;
-function uniformCapSize(sz, usableW) {
-  // 모든 자막 줄의 폭을 같은 폰트로 재서(숨김 측정 엘리먼트) 균일 크기를 구한다. 결과는
-  // (텍스트 목록·기본 크기·폭) 키로 캐시해 매 프레임 재측정을 피한다.
+// ── 자막 조각 분할(렌더 captions.py의 _split_indices와 같은 규칙) ──────────────
+// 크기는 절대 안 바꾸고, 안전지대 폭을 넘는 줄만 단어 경계에서 나눈다. 조각의 시간은
+// 글자 수 비례(렌더의 _distribute_by_chars와 동일)라 미리보기와 결과가 일치한다.
+let _chunkKey = '', _chunkCache = null;
+function capChunks(sz, usableW) {
   const key = caps.map(c => c.text).join('') + '|' + sz.toFixed(2) + '|' + Math.round(usableW);
-  if (key === _ucsKey) return _ucsVal;
-  const ov = $('capOv');
+  if (key === _chunkKey) return _chunkCache;
   let m = document.getElementById('capMeasure');
   if (!m) {
     m = document.createElement('span'); m.id = 'capMeasure';
     m.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-99999px;top:0;font-weight:800;line-height:1.25;pointer-events:none';
     document.body.appendChild(m);
   }
-  m.style.fontFamily = getComputedStyle(ov).fontFamily;
+  m.style.fontFamily = getComputedStyle($('capOv')).fontFamily;
   m.style.fontSize = sz + 'px';
-  let need = sz;
-  for (const c of caps) {
-    m.textContent = c.text || '';
-    const w = m.getBoundingClientRect().width;
-    if (w > usableW && w > 0) need = Math.min(need, sz * usableW / w);
-  }
-  _ucsKey = key; _ucsVal = Math.max(10, need);
-  return _ucsVal;
+  const W = (t) => { m.textContent = t; return m.getBoundingClientRect().width; };
+  const pack = (toks, cap) => {  // 폭 상한 cap으로 순서대로 담기 → 각 조각의 시작 인덱스
+    const starts = [0]; let cur = 0, i0 = 0;
+    for (let i = 0; i < toks.length; i++) {
+      const w = W(toks[i]);
+      const add = (i === i0) ? w : W(' ' + toks[i]);
+      if (i > i0 && cur + add > cap) { starts.push(i); i0 = i; cur = w; }
+      else cur += add;
+    }
+    return starts;
+  };
+  _chunkCache = caps.map((c) => {
+    const toks = String(c.text || '').split(/\s+/).filter(Boolean);
+    if (toks.length < 2 || W(c.text) <= usableW) return [{ start: c.start, end: c.end, text: c.text }];
+    const each = toks.map(W);
+    if (Math.max.apply(null, each) > usableW) return [{ start: c.start, end: c.end, text: c.text }];
+    const k = pack(toks, usableW).length;
+    let lo = Math.max.apply(null, each), hi = usableW;   // 조각 폭 고르게(이분 탐색)
+    for (let s = 0; s < 24; s++) { const mid = (lo + hi) / 2; if (pack(toks, mid).length <= k) hi = mid; else lo = mid; }
+    const cuts = pack(toks, hi);
+    const chars = toks.map(t => Math.max(1, t.length));
+    const total = chars.reduce((a, b) => a + b, 0) || 1;
+    const span = Math.max(0.1, c.end - c.start);
+    const at = (idx) => c.start + span * chars.slice(0, idx).reduce((a, b) => a + b, 0) / total;
+    return cuts.map((i0, ci) => {
+      const i1 = (ci + 1 < cuts.length) ? cuts[ci + 1] : toks.length;
+      return { start: ci === 0 ? c.start : at(i0), end: i1 >= toks.length ? c.end : at(i1), text: toks.slice(i0, i1).join(' ') };
+    });
+  });
+  _chunkKey = key;
+  return _chunkCache;
+}
+function capChunkAt(i, t, sz, usableW) {
+  const parts = capChunks(sz, usableW)[i] || [{ text: caps[i].text }];
+  let ci = parts.length - 1;
+  for (let k = 0; k < parts.length; k++) if (t < parts[k].end) { ci = k; break; }
+  return { ko: parts[ci].text, ci: ci, n: parts.length };
+}
+function enSlice(text, ci, n) {  // 영어 번역도 같은 개수로 나눠 조각 아래에
+  const toks = String(text || '').split(/\s+/).filter(Boolean);
+  if (!toks.length || n <= 1) return ci === 0 ? text : '';
+  return toks.slice(Math.round(toks.length * ci / n), Math.round(toks.length * (ci + 1) / n)).join(' ');
 }
 
 // ─── 재생 제어 ───
