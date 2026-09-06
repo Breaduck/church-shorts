@@ -320,6 +320,29 @@ INDEX_TEMPLATE = f"""
   .dropzone-text {{ font-size: 14.5px; font-weight: 600; color: var(--text); }}
   .dropzone-text b {{ color: var(--accent); }}
   .dropzone-file {{ font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }}
+  /* 찬양 제목 — 곡마다 개별 입력칸 + 추가 버튼(애플 스타일) */
+  .song-title-row {{ display: flex; align-items: center; gap: 8px; margin-top: 8px; }}
+  .song-title-row:first-child {{ margin-top: 0; }}
+  .song-title-input {{
+    flex: 1; min-width: 0; padding: 12px 16px; font-size: 14.5px; font-family: inherit;
+    border: 1px solid var(--border); border-radius: 12px; background: rgba(120,120,128,0.08);
+    transition: border-color .15s, background .15s;
+  }}
+  .song-title-input:focus {{ outline: none; border-color: var(--accent); background: #fff; }}
+  .song-title-remove {{
+    flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: rgba(120,120,128,0.10); color: var(--text-faint); font-size: 16px; line-height: 1;
+    cursor: pointer; transition: background .15s, color .15s;
+  }}
+  .song-title-remove:hover {{ background: rgba(255,59,48,0.12); color: #ff3b30; }}
+  .add-song-btn {{
+    margin-top: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 999px; background: #fff; color: var(--accent); cursor: pointer;
+    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08);
+    transition: background .15s, box-shadow .15s, transform .1s;
+  }}
+  .add-song-btn:hover {{ background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }}
+  .add-song-btn:active {{ transform: scale(0.97); }}
   /* 사용자 요청(2026-09-06): 제목을 더 굵고 크게 + 말씀/찬양·유튜브 링크 입력·업로드
      영역을 전체적으로 약 2배 확대. h1/.seg/#url/.dropzone은 BASE_STYLE(전역)에도 있지만
      아래는 인덱스 페이지 전용 <style> 블록 안이라 다른 페이지(후보 목록 등)에는 영향 없다.
@@ -330,7 +353,7 @@ INDEX_TEMPLATE = f"""
   .wrap {{ max-width: 750px; }}
   .card {{ padding: 32px 35px; border-radius: 19px; }}
   .page-head {{ margin-bottom: 6px; }}
-  #mainTitle {{ font-size: 28px; font-weight: 900; }}
+  #mainTitle {{ font-size: 26px; font-weight: 650; letter-spacing: -0.025em; }}
   .force-toggle {{ padding: 15px 25px; font-size: 13px; }}
   .analyze-btn {{ padding: 15px 28px; font-size: 13px; }}
   .seg {{ padding: 4px; border-radius: 12px; margin-bottom: 16px !important; }}
@@ -366,8 +389,8 @@ INDEX_TEMPLATE = f"""
         <div class="dropzone-text" id="dropzoneText">동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b></div>
       </div>
       <div id="songTitlesWrap" style="display:none;margin-top:10px">
-        <textarea id="songTitles" rows="3" placeholder="부른 찬양 제목을 한 줄에 하나씩, 부른 순서대로 적어주세요."></textarea>
-        <p class="hint" style="margin-top:4px">제목을 넣으면 부정확한 음성인식 대신 <b>정식 가사</b>를 자막으로 넣어요 (전사를 건너뛰어 더 정확하고 빨라요). 비워두면 예전처럼 음성인식으로 가사를 뽑아요.</p>
+        <div id="songTitleRows"></div>
+        <button type="button" id="addSongTitle" class="add-song-btn">+ 찬양 추가</button>
       </div>
       <details class="adv">
         <summary>고급 옵션</summary>
@@ -385,6 +408,30 @@ const statusEl = document.getElementById('status');
 const submitBtn = document.querySelector('.analyze-btn');
 // 찬양 모드일 때만 '곡 제목' 입력란을 보여준다(제목 → 정식 가사 자막).
 const songTitlesWrap = document.getElementById('songTitlesWrap');
+const songTitleRows = document.getElementById('songTitleRows');
+const addSongTitleBtn = document.getElementById('addSongTitle');
+function addSongTitleRow(value) {{
+  const row = document.createElement('div');
+  row.className = 'song-title-row';
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'song-title-input'; input.placeholder = '찬양 제목';
+  input.value = value || '';
+  const remove = document.createElement('button');
+  remove.type = 'button'; remove.className = 'song-title-remove'; remove.setAttribute('aria-label', '삭제');
+  remove.innerHTML = '&times;';
+  remove.addEventListener('click', () => {{ row.remove(); ensureAtLeastOneSongTitleRow(); }});
+  row.appendChild(input); row.appendChild(remove);
+  songTitleRows.appendChild(row);
+}}
+function ensureAtLeastOneSongTitleRow() {{
+  if (!songTitleRows.children.length) addSongTitleRow();
+}}
+function getSongTitlesValue() {{
+  return Array.from(songTitleRows.querySelectorAll('.song-title-input'))
+    .map((i) => i.value.trim()).filter(Boolean).join('\\n');
+}}
+addSongTitleBtn.addEventListener('click', () => addSongTitleRow());
+ensureAtLeastOneSongTitleRow();
 function syncSongTitlesVisibility() {{
   const mode = (f.querySelector('input[name="mode"]:checked') || {{}}).value || 'sermon';
   songTitlesWrap.style.display = (mode === 'praise') ? 'block' : 'none';
@@ -444,11 +491,12 @@ f.addEventListener('submit', async (e) => {{
       // 파일 업로드 경로: multipart로 보내고, 서버가 저장 후 whisper 직접 전사부터 시작한다.
       const fd = new FormData();
       fd.append('file', vf); fd.append('mode', mode); fd.append('model', '');
-      if (mode === 'praise') fd.append('song_titles', document.getElementById('songTitles').value || '');
+      if (mode === 'praise') fd.append('song_titles', getSongTitlesValue());
       res = await fetch('/analyze_upload', {{ method: 'POST', body: fd }});
     }} else {{
+      const song_titles = mode === 'praise' ? getSongTitlesValue() : '';
       res = await fetch('/analyze', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model: '', mode}})
+        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model: '', mode, song_titles}})
       }});
     }}
     const data = await res.json();
@@ -1102,6 +1150,7 @@ def analyze_route():
     mode = (body.get("mode") or "sermon").strip()
     if mode not in ("sermon", "praise"):
         mode = "sermon"
+    song_titles = (body.get("song_titles") or "").strip() if mode == "praise" else ""
     if not url:
         return jsonify({"error": "URL이 비어있습니다"}), 400
 
@@ -1126,7 +1175,8 @@ def analyze_route():
 
     holder = {"id": video_id}
     threading.Thread(
-        target=_run_analyze_job, args=(holder, url, transcript_text, force, model, mode),
+        target=_run_analyze_job,
+        args=(holder, url, transcript_text, force, model, mode, song_titles),
         daemon=True,
     ).start()
     return jsonify({"video_id": video_id})
