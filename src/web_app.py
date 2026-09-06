@@ -3026,6 +3026,8 @@ let selIdx = -1;
 let selSet = new Set();   // 다중 선택(앞으로 트랙 선택 도구)
 let capClipboard = null;  // Ctrl+C로 복사한 소절들: [{off, dur, text}] (off=첫 소절 기준 상대초)
 let dirty = false;
+// 자동 저장 상태. markDirty()가 초기화 도중 불릴 수도 있어(TDZ 방지) 여기서 미리 선언한다.
+let autoSaveTimer = null, saving = false;
 let view = { a: 0, b: 60 }, homeView = { a: 0, b: 60 };
 let dur = 60;
 let tool = 'select';
@@ -3792,7 +3794,7 @@ function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); res
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); setStatus('다시 실행'); }
 
 // ─── 저장/내보내기 ───
-function markDirty() { dirty = true; $('projEdited').textContent = ' - 편집됨'; }
+function markDirty() { dirty = true; $('projEdited').textContent = ' - 편집됨'; scheduleAutoSave(); }
 function payload() {
   const p = { captions: collect(), caption_size: parseInt($('pSize').value, 10), caption_offset_x: parseFloat($('pX').value), caption_offset_y: parseFloat($('pY').value) };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
@@ -3822,16 +3824,46 @@ saveBtnEl.addEventListener('click', async () => {
   saveBtnEl.disabled = false;
   setTimeout(() => { saveBtnEl.textContent = '저장하기'; saveBtnEl.classList.remove('saved'); refreshSaveBtn(); }, 2500);
 });
-// 저장 안 된 편집이 있으면 버튼을 노란색으로 — '저장해야 한다'가 눈에 보이게.
+// 저장 안 된 편집이 있으면 버튼을 노란색으로 — 자동 저장이 끝나면 다시 흰색이 된다.
 function refreshSaveBtn() { saveBtnEl.classList.toggle('dirty', !!dirty); }
-const _markDirtyOrig = markDirty;
-markDirty = function () { _markDirtyOrig(); refreshSaveBtn(); };
-$('modeImport').addEventListener('click', () => { location.href = '/video/' + VIDEO_ID; });
+setInterval(refreshSaveBtn, 600);
+$('modeImport').addEventListener('click', () => saveThenGo('/video/' + VIDEO_ID));
+// 홈(후보 목록) 링크도 저장을 마친 뒤에 이동한다.
+document.querySelector('.hdr .home').addEventListener('click', (e) => {
+  e.preventDefault(); saveThenGo(e.currentTarget.getAttribute('href'));
+});
 $('hFull').addEventListener('click', () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); });
 $('hWorkspace').addEventListener('click', resetWs);
 function resetWs() { ws.style.removeProperty('--colL'); ws.style.removeProperty('--rowT'); fitVideo(); renderAll(); }
 function setStatus(m) { $('status').textContent = m; setTimeout(() => { if ($('status').textContent === m) $('status').textContent = ''; }, 5000); }
-window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+// ─── 자동 저장 ───────────────────────────────────────────────────────────
+// 사용자 요청(2026-09-07): "저장 버튼 따로 안 눌러도, 홈으로 가더라도 자동 저장되게."
+// (1) 편집이 멈추면 1.2초 뒤 자동 저장 — 슬라이더를 끌 때마다 저장하지 않도록 디바운스.
+// (2) 홈/가져오기로 나갈 땐 저장이 끝난 뒤에 이동 — 이동이 저장을 앞질러 값이 날아가지 않게.
+// (3) 탭을 닫거나 뒤로가기처럼 기다릴 수 없는 경우엔 sendBeacon으로 마지막 상태를 밀어넣는다.
+function scheduleAutoSave() {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(async () => {
+    autoSaveTimer = null;
+    if (!dirty || saving) return;
+    saving = true;
+    try { await save(); } finally { saving = false; refreshSaveBtn(); }
+  }, 1200);
+}
+async function saveThenGo(href) {
+  if (dirty && !saving) { saving = true; try { await save(); } catch (e) {} saving = false; }
+  location.href = href;
+}
+function beaconSave() {
+  if (!dirty) return;
+  try {
+    navigator.sendBeacon('/video/' + VIDEO_ID + '/clip/' + IDX + '/position',
+      new Blob([JSON.stringify(payload())], { type: 'application/json' }));
+    dirty = false;
+  } catch (e) {}
+}
+window.addEventListener('pagehide', beaconSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') beaconSave(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); $('hFull').click(); } });
 
 // ─── 배경 음악(A2) — 미리듣기는 별도 <audio>로 근사 동기화, 정밀 반복/페이드는 렌더가 처리 ───
@@ -4571,6 +4603,23 @@ PREVIEW_MODAL_JS = r"""
   .pv-head b { font-size: 16px; letter-spacing: -0.01em; }
   .pv-x { cursor: pointer; border: none; background: none; font-size: 22px; color: #8b95a1; line-height: 1; padding: 2px 6px; }
   .pv-head-r { display: flex; align-items: center; gap: 6px; }
+  /* 스튜디오로 가는 버튼. 예전엔 팝업 맨 아래 작은 링크라 잘 안 보였다(사용자 요청
+     2026-09-07: "구간 재분석 우측으로 올려줘"). 우측 상단 액션 줄에 pill로 둔다. */
+  .pv-studio-btn { display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap;
+    padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 700; letter-spacing: -0.01em;
+    background: #fff; color: #1d1d1f; box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 4px 12px rgba(0,0,0,.08);
+    transition: transform .12s ease, box-shadow .12s ease; }
+  .pv-studio-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 5px rgba(0,0,0,.12), 0 8px 20px rgba(0,0,0,.12); }
+  .pv-studio-btn:active { transform: translateY(0); }
+  .pv-fullbtn { cursor: pointer; border: none; white-space: nowrap;
+    padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 700; letter-spacing: -0.01em;
+    background: #fff; color: #1d1d1f; box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 4px 12px rgba(0,0,0,.08);
+    transition: transform .12s ease, box-shadow .12s ease; }
+  .pv-fullbtn:hover { transform: translateY(-1px); box-shadow: 0 2px 5px rgba(0,0,0,.12), 0 8px 20px rgba(0,0,0,.12); }
+  .pv-fullbtn:active { transform: translateY(0); }
+  /* 전체화면일 때: 카드를 넓히고 화면 높이를 다 쓴다(미리보기 확대는 JS가 캔버스에 scale). */
+  .pv-backdrop:fullscreen { padding: 0; background: rgba(15,23,42,.92); }
+  .pv-backdrop:fullscreen .pv-card { width: min(1280px, 96vw); max-height: 100vh; border-radius: 0; }
   .pv-reanalyze { cursor: pointer; border: none; background: rgba(120,120,128,.12); color: #0a84ff;
     font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px; padding: 6px 10px; white-space: nowrap; }
   .pv-reanalyze:hover { background: rgba(10,132,255,.14); }
@@ -4753,6 +4802,8 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-head-r">' +
       '      <button type="button" class="pv-capedit-btn">자막 수정</button>' +
       '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">구간 재분석</button>' +
+      '      <a class="pv-studio-btn" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio" title="타임라인·트랙이 있는 프리미어식 편집 화면으로 이동합니다">스튜디오(타임라인 편집)</a>' +
+      '      <button type="button" class="pv-fullbtn" title="팝업을 화면 가득 띄우고 미리보기를 크게 봅니다">전체화면</button>' +
       '      <button class="pv-x" title="취소">&times;</button>' +
       '    </div></div>' +
       '  <div class="pv-canvas-wrap"><div class="pv-canvas" style="width:' + W + 'px;height:' + H + 'px">' +
@@ -4801,7 +4852,6 @@ PREVIEW_MODAL_JS = r"""
       '  <div class="pv-foot"><button class="pv-cancel">취소</button><button class="pv-savebtn">저장</button>' +
       '<button class="pv-wide" hidden title="쇼츠 세로 레이아웃 없이 원본 가로 비율 그대로, 자막·제목 없이 이 구간만 잘라냅니다 (곡별 개별 업로드용)">가로 원본</button>' +
       '<button class="pv-ok">이 설정으로 만들기</button></div>' +
-      '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio">스튜디오(타임라인 편집) →</a>' +
       '  <a class="pv-edit-link" href="/video/' + VIDEO_ID + '/clip/' + idx + '/edit">자막 내용·글꼴까지 바꾸려면 상세 편집 →</a>' +
       '</div>';
     document.body.appendChild(back);
@@ -5098,6 +5148,10 @@ PREVIEW_MODAL_JS = r"""
       let fs = parseFloat(getComputedStyle(el).fontSize), guard = 0;
       while (measureEl.scrollWidth > USABLE_W && fs > 5 && guard < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; guard++; }
     }
+    // 전체화면에서 미리보기 캔버스를 CSS scale로 키운다. 화면 px -> 렌더 px 변환은
+    // SC 하나였는데, 확대하면 SC*ZOOM이 된다 — 드래그/크기조절이 확대 배율만큼 어긋나지
+    // 않도록 아래 계산에 전부 ZOOM을 곱한다.
+    let ZOOM = 1;
     function paintBox(el, key) {
       el.style.left = (bases[key].left + state[key].x * SC) + 'px';
       el.style.top = (bases[key].top + state[key].y * SC) + 'px';
@@ -5118,9 +5172,9 @@ PREVIEW_MODAL_JS = r"""
         el.setPointerCapture(e.pointerId);
         const sx = e.clientX, sy = e.clientY, ox = state[key].x, oy = state[key].y;
         const move = (ev) => {
-          let nx = ox + (ev.clientX - sx) / SC;
-          const ny = oy + (ev.clientY - sy) / SC;
-          if (Math.abs(nx * SC) < SNAP_PX) { nx = 0; guideV.classList.add('show'); }
+          let nx = ox + (ev.clientX - sx) / (SC * ZOOM);
+          const ny = oy + (ev.clientY - sy) / (SC * ZOOM);
+          if (Math.abs(nx * SC * ZOOM) < SNAP_PX) { nx = 0; guideV.classList.add('show'); }
           else { guideV.classList.remove('show'); }
           state[key].x = nx; state[key].y = ny;
           paintBox(el, key);
@@ -5197,7 +5251,7 @@ PREVIEW_MODAL_JS = r"""
       const startSize = state.title.size || L.title_size;
       const move = (ev) => {
         const dx = ev.clientX - sx;
-        state.title.size = Math.max(30, Math.min(280, Math.round(startSize + dx / SC)));
+        state.title.size = Math.max(30, Math.min(280, Math.round(startSize + dx / (SC * ZOOM))));
         titleEl.style.fontSize = Math.round(state.title.size * KT * SC) + 'px';
       };
       const up = () => {
@@ -5608,8 +5662,44 @@ PREVIEW_MODAL_JS = r"""
       }
     });
 
+    // ── 전체화면(사용자 요청 2026-09-07) ──────────────────────────────────────
+    // 팝업 전체를 화면 가득 띄우고, 캔버스 밖 UI(헤더·자막 목록·버튼)가 쓰는 높이를 뺀
+    // 남는 공간만큼 미리보기 캔버스를 확대한다. 확대는 CSS scale이라 자막/제목 오버레이가
+    // 캔버스와 함께 정확히 같은 비율로 커진다(좌표계는 ZOOM으로 보정).
+    const fullBtn = $('.pv-fullbtn');
+    const cardEl = $('.pv-card'), wrapEl = $('.pv-canvas-wrap'), canvasEl = $('.pv-canvas');
+    function applyZoom() {
+      if (!document.body.contains(back)) return;
+      const fs = document.fullscreenElement === back;
+      wrapEl.style.height = ''; canvasEl.style.transform = '';   // 원래 크기로 되돌려 실측
+      ZOOM = 1;
+      if (fs) {
+        const other = Math.max(0, cardEl.scrollHeight - wrapEl.offsetHeight);
+        ZOOM = Math.max(1, Math.min(
+          (window.innerHeight - other - 24) / H, (window.innerWidth - 48) / W, 3));
+      }
+      if (ZOOM > 1.001) {
+        canvasEl.style.transformOrigin = 'top center';
+        canvasEl.style.transform = 'scale(' + ZOOM + ')';
+        wrapEl.style.height = Math.round(H * ZOOM) + 'px';
+      }
+      fullBtn.textContent = fs ? '전체화면 해제' : '전체화면';
+    }
+    fullBtn.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else back.requestFullscreen().catch(() => {});
+    });
+    document.addEventListener('fullscreenchange', applyZoom);
+    window.addEventListener('resize', applyZoom);
+
     // ── 닫기/저장/확정 ──
-    function close() { video.pause(); back.remove(); }
+    function close() {
+      video.pause();
+      document.removeEventListener('fullscreenchange', applyZoom);
+      window.removeEventListener('resize', applyZoom);
+      if (document.fullscreenElement === back) { try { document.exitFullscreen(); } catch (e) {} }
+      back.remove();
+    }
     $('.pv-x').addEventListener('click', close);
     $('.pv-cancel').addEventListener('click', close);
     function buildPayload() {
