@@ -2947,6 +2947,7 @@ STUDIO_TEMPLATE = r"""
     <tr><td>Ctrl+K</td><td>재생 헤드에서 선택한 소절 분할</td></tr>
     <tr><td>Enter</td><td>선택한 소절 텍스트 수정</td></tr>
     <tr><td>Delete / Shift+Delete</td><td>지우기 / 잔물결 삭제</td></tr>
+    <tr><td>Ctrl+C / Ctrl+V</td><td>선택한 소절 복사 / 재생 헤드에 붙여넣기</td></tr>
     <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>실행 취소 / 다시 실행</td></tr>
     <tr><td>= / - / \</td><td>확대 / 축소 / 시퀀스에 맞게</td></tr>
     <tr><td>S</td><td>스냅 전환</td></tr>
@@ -2966,6 +2967,7 @@ let caps = [];      // [{start,end,text}] 절대초 (한국어)
 let ens = [];       // 영어(인덱스로 한국어와 짝, 시간은 항상 한국어를 따라감)
 let selIdx = -1;
 let selSet = new Set();   // 다중 선택(앞으로 트랙 선택 도구)
+let capClipboard = null;  // Ctrl+C로 복사한 소절들: [{off, dur, text}] (off=첫 소절 기준 상대초)
 let dirty = false;
 let view = { a: 0, b: 60 }, homeView = { a: 0, b: 60 };
 let dur = 60;
@@ -3561,6 +3563,33 @@ function addCap() {
 }
 $('pjNew').addEventListener('click', addCap); $('pjDel').addEventListener('click', () => deleteSel(false));
 
+// ─── 소절 복사/붙여넣기(Ctrl+C / Ctrl+V) ───
+function copySel() {
+  const idxs = (selSet.size ? [...selSet] : (selIdx >= 0 ? [selIdx] : [])).filter((i) => caps[i]).sort((a, b) => a - b);
+  if (!idxs.length) return;
+  const base = caps[idxs[0]].start;
+  capClipboard = idxs.map((i) => ({ off: caps[i].start - base, dur: caps[i].end - caps[i].start, text: caps[i].text }));
+  setStatus(idxs.length > 1 ? idxs.length + '개 소절 복사됨' : '소절 복사됨');
+}
+function pasteSel() {
+  if (!capClipboard || !capClipboard.length) return;
+  pushUndo();
+  const t0 = v.currentTime;
+  const added = capClipboard.map((c) => {
+    let s = Math.max(0, Math.min(dur, t0 + c.off));
+    let en = Math.max(s + 0.05, Math.min(dur, s + c.dur));
+    return { start: s, end: en, text: c.text };
+  });
+  added.forEach((a) => caps.push(a));
+  caps.sort((a, b) => a.start - b.start);
+  let hadEn = false;
+  if (ens.length) { hadEn = true; ens = []; }
+  selSet = new Set(caps.map((c, i) => i).filter((i) => added.includes(caps[i])));
+  selIdx = selSet.size ? Math.min(...selSet) : -1;
+  markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
+  setStatus((added.length > 1 ? added.length + '개 소절 붙여넣기됨' : '소절 붙여넣기됨') + (hadEn ? ' — 영어 트랙은 다시 번역해 주세요' : ''));
+}
+
 // ─── 효과 컨트롤 우측 키프레임 미니 타임라인 ───
 function renderKf() {
   const r = $('kfRuler'), b = $('kfBody'); if (!C) return;
@@ -3777,6 +3806,7 @@ function menuAct(a) {
   const A = {
     save, render, back: () => location.href = '/video/' + VIDEO_ID,
     undo, redo, 'delete': () => deleteSel(false), 'ripple-delete': () => deleteSel(true),
+    copy: copySel, paste: pasteSel,
     'select-all': () => { selSet = new Set(caps.map((_, i) => i)); selIdx = caps.length ? 0 : -1; renderTracks(); syncSelPanel(); },
     deselect: () => { selSet = new Set(); selIdx = -1; renderTracks(); syncSelPanel(); },
     'edit-text': () => { const b = $('koTrack').querySelector('.blk.sel'); if (b && selIdx >= 0) openEdit(selIdx, b); },
@@ -3825,6 +3855,9 @@ function timelineCtx(e) {
       ctxItem('텍스트 수정…', 'edit-text', { k: 'Enter' }) +
       ctxItem('재생 헤드에서 분할', 'split', { k: 'Ctrl+K' }) +
       ctxSep() +
+      ctxItem('복사', 'copy', { k: 'Ctrl+C' }) +
+      ctxItem('붙여넣기', 'paste', { k: 'Ctrl+V', dis: !capClipboard || !capClipboard.length }) +
+      ctxSep() +
       ctxItem('지우기', 'delete', { k: 'Delete' }) +
       ctxItem('잔물결 삭제', 'ripple-delete', { k: 'Shift+Delete' }) +
       ctxSep() +
@@ -3863,6 +3896,8 @@ document.addEventListener('keydown', (e) => {
     else if (k === 'a' && !e.shiftKey) { e.preventDefault(); menuAct('select-all'); }
     else if (k === 'a' && e.shiftKey) { e.preventDefault(); menuAct('deselect'); }
     else if (k === 'n' && e.shiftKey) { e.preventDefault(); addCap(); }
+    else if (k === 'c') { e.preventDefault(); copySel(); }
+    else if (k === 'v') { e.preventDefault(); pasteSel(); }
     else if (e.altKey && k === 'k') { e.preventDefault(); menuAct('shortcuts'); }
     return;
   }
