@@ -125,6 +125,10 @@ class Clip:
     # 한 번이라도 열면(preview_info 조회 시) 다시 False로 꺼서, 이후엔 보통 클립처럼
     # 트림된 구간 위주로 보이게 한다(일회성 힌트 — 매번 전체로 열리면 오히려 불편).
     show_full_source_once: bool = False
+    # 배경 음악(선택). 스튜디오에서 업로드한 파일을 output/<video_id>/bgm/에 저장하고
+    # 여기엔 참조만 남긴다. 없으면 None(기존 clips.json과 호환). 렌더는 이 파일을 클립
+    # 길이에 맞춰 반복/트림하고 volume 배율로 원본 오디오와 믹싱한다(_add_sfx와 같은 패턴).
+    bgm: Optional[dict] = None
 
 
 def build_prompt(

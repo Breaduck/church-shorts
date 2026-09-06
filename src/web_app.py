@@ -2308,6 +2308,10 @@ STUDIO_TEMPLATE = r"""
   .menu .it:hover .k { color: #e8f0ff; }
   .menu .it.chk::before { content: '✓'; position: absolute; left: 10px; font-size: 10px; }
   .menu .it { position: relative; }
+  /* 타임라인 우클릭 컨텍스트 메뉴(프리미어처럼 클립/빈 영역에서 우클릭 시 뜬다) */
+  .ctxmenu { display: none; position: fixed; min-width: 200px; background: #2b2b2b; border: 1px solid #111;
+    box-shadow: 0 6px 18px rgba(0,0,0,.6); padding: 4px 0; z-index: 200; }
+  .ctxmenu.on { display: block; }
   .menu .sep { height: 1px; background: #444; margin: 4px 8px; }
 
   /* ── 헤더(홈 · 가져오기/편집/내보내기 · 프로젝트명 · 우측 아이콘) ── */
@@ -2774,7 +2778,7 @@ STUDIO_TEMPLATE = r"""
         <button class="tb" id="tbLift" title="들어내기 — 선택한 소절 삭제(빈자리 유지)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 15V4M8 8l4-4 4 4"/></svg></button>
         <button class="tb" id="tbExtract" title="추출 — 선택한 소절 잔물결 삭제(뒤 소절 당김)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 4v11M8 11l4 4 4-4"/></svg></button>
         <button class="tb" id="tbFrame" title="프레임 내보내기(현재 화면 저장)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3"/></svg></button>
-        <button class="tb" id="tbCompare" title="비교 보기 — 안전 여백 표시 전환"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="8" height="14"/><rect x="13" y="5" width="8" height="14"/></svg></button>
+        <button class="tb" id="tbCompare" title="안전 여백 표시 전환"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="8" height="14"/><rect x="13" y="5" width="8" height="14"/></svg></button>
         <button class="tb" id="tbPlus" title="단추 편집기"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
     </div>
@@ -2792,20 +2796,14 @@ STUDIO_TEMPLATE = r"""
     </div>
     <div class="pbody on" data-body="proj">
       <div class="pj-tools">
-        <span class="hb" title="새 저장소"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg></span>
         <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="pjSearch" placeholder="검색"></div>
       </div>
       <div class="pj-cols"><span>이름</span><span>미디어 시작</span><span>미디어 지속 시간</span></div>
       <div class="pj-list" id="pjList"></div>
       <div class="pj-foot">
-        <button class="fi on" title="목록 보기"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-        <button class="fi" title="아이콘 보기"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg></button>
-        <button class="fi" title="자유형 보기"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="9" height="7"/><rect x="12" y="13" width="9" height="7"/></svg></button>
-        <input class="zoom" type="range" min="0" max="100" value="30" title="아이콘 크기">
+        <button class="fi" id="pjSort" title="이름/시작 시간순 정렬 전환"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M4 12h7M4 17h4M17 6v12M14 15l3 3 3-3"/></svg></button>
         <span class="fill"></span>
-        <button class="fi" title="정렬"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M4 12h7M4 17h4M17 6v12M14 15l3 3 3-3"/></svg></button>
-        <button class="fi" title="찾기"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
-        <button class="fi" title="새 저장소"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg></button>
+        <input class="zoom" id="pjZoom" type="range" min="0" max="100" value="50" title="타임라인 확대/축소">
         <button class="fi" id="pjNew" title="새 항목(소절 추가)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M12 11v6M9 14h6"/></svg></button>
         <button class="fi" id="pjDel" title="지우기(선택한 소절)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
       </div>
@@ -2856,8 +2854,8 @@ STUDIO_TEMPLATE = r"""
           <button class="hb on" id="hbSnap" title="타임라인에서 스냅 (S)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 4v8a6 6 0 0012 0V4M6 4h3M15 4h3"/></svg></button>
           <button class="hb on" id="hbLink" title="연결된 선택 — 영어 자막이 한글을 따라감"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007 0l2-2a5 5 0 00-7-7l-1 1M14 11a5 5 0 00-7 0l-2 2a5 5 0 007 7l1-1"/></svg></button>
           <button class="hb" id="hbMarker" title="마커 추가 (M)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l7 7-7 7-7-7z"/></svg></button>
-          <button class="hb" id="hbSettings" title="타임라인 표시 설정"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a4 4 0 00-5 5L4 17v3h3l5.7-5.7a4 4 0 005-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg></button>
-          <button class="hb" id="hbCC" title="캡션 트랙 설정"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 12H6.5M17.5 12H15M6.5 12a2.5 2.5 0 002.5 2.5M15 12a2.5 2.5 0 002.5 2.5"/></svg></button>
+          <button class="hb" id="hbSettings" title="영상 트랙 썸네일 표시/숨기기"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a4 4 0 00-5 5L4 17v3h3l5.7-5.7a4 4 0 005-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg></button>
+          <button class="hb" id="hbCC" title="캡션 트랙 정보"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 12H6.5M17.5 12H15M6.5 12a2.5 2.5 0 002.5 2.5M15 12a2.5 2.5 0 002.5 2.5"/></svg></button>
           <span class="tsep"></span>
           <button class="hb" id="zoomOut" title="축소 (-)">−</button>
           <button class="hb" id="zoomFit" title="시퀀스에 맞게 (\)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -2871,32 +2869,36 @@ STUDIO_TEMPLATE = r"""
               <div class="trk-h h-c" style="height:34px" id="koHead">
                 <span class="patch">C1</span>
                 <button class="th lock" id="koLock" title="트랙 잠금 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 017.8-1.3"/></svg></button>
-                <button class="th on" title="동기화 잠금 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></button>
+                <button class="th on" id="syncLock" title="동기화 잠금 — 잔물결 편집 시 마커도 함께 밀림"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></button>
                 <button class="th on" id="koEye" title="트랙 출력 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 <span class="tn">C1 자막(한글)</span>
               </div>
               <div class="trk-h h-c" style="height:34px;display:none" id="enHead">
                 <span class="patch">C2</span>
                 <button class="th lock on" title="영어 트랙은 항상 한글 시간을 따라갑니다(잠금)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></button>
-                <button class="th on" title="동기화 잠금 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></button>
                 <button class="th on" id="enEye" title="트랙 출력 전환(미리보기 영어 표시)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 <span class="tn">C2 자막(영어)</span>
               </div>
               <div class="trk-h" style="height:56px">
                 <span class="patch">V1</span>
                 <button class="th lock on" title="원본 영상은 잠겨 있습니다"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></button>
-                <button class="th on" title="동기화 잠금 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></button>
                 <button class="th on" title="트랙 출력 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 <span class="tn">V1 원본 영상</span>
               </div>
               <div class="trk-h" style="height:52px">
                 <span class="patch">A1</span>
                 <button class="th lock on" title="원본 오디오는 잠겨 있습니다"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></button>
-                <button class="th on" title="동기화 잠금 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></button>
                 <button class="th mute" id="aMute" title="트랙 음소거">M</button>
-                <button class="th solo" title="솔로 트랙">S</button>
-                <button class="th" title="음성 더빙 녹음"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></button>
+                <button class="th solo" id="aSolo" title="솔로 트랙 — 재생 시 이 트랙만 들림">S</button>
                 <span class="tn">A1 오디오</span>
+              </div>
+              <div class="trk-h" style="height:52px" id="bgmHead">
+                <span class="patch">A2</span>
+                <button class="th mute" id="bgmMute" title="배경 음악 음소거" style="display:none">M</button>
+                <button class="th" id="bgmAdd" title="배경 음악 추가"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="th" id="bgmRemove" title="배경 음악 제거" style="display:none"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+                <input type="range" id="bgmVol" min="0" max="100" value="25" style="width:44px;display:none" title="배경 음악 볼륨">
+                <span class="tn" id="bgmName">A2 배경 음악(없음)</span>
               </div>
             </div>
           </div>
@@ -2907,6 +2909,7 @@ STUDIO_TEMPLATE = r"""
               <div class="trk en h-c" id="enTrack" style="display:none"></div>
               <div class="trk v h-v" id="vTrack"><div class="thumbs" id="thumbs"></div></div>
               <div class="trk a h-a" id="aTrack"><div class="aclip" id="aClip"><canvas id="wave"></canvas><span class="cn">A1 · 원본 오디오</span></div></div>
+              <div class="trk a h-a" id="bgmTrack"><div class="aclip" id="bgmClip" style="display:none"><span class="cn" id="bgmClipCn">A2 · 배경 음악</span></div></div>
             </div>
             <div class="ph-head" id="phHead" style="display:none"></div>
             <div class="ph-line" id="phLine" style="display:none"></div>
@@ -2926,6 +2929,10 @@ STUDIO_TEMPLATE = r"""
     </div>
   </div>
 </div>
+
+<div class="ctxmenu" id="ctxMenu"></div>
+<input type="file" id="bgmFile" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,audio/*" style="display:none">
+<audio id="bgmAudio" preload="auto" loop style="display:none"></audio>
 
 <div class="modal-bg" id="kbModal"><div class="modal">
   <h2>키보드 단축키</h2>
@@ -2963,7 +2970,7 @@ let dirty = false;
 let view = { a: 0, b: 60 }, homeView = { a: 0, b: 60 };
 let dur = 60;
 let tool = 'select';
-let koLocked = false, enVisible = true, koVisible = true, snapOn = true;
+let koLocked = false, enVisible = true, koVisible = true, snapOn = true, syncLock = true;
 let markers = [];
 let clipRangeDirty = false;
 let undoStack = [], redoStack = [];
@@ -3001,7 +3008,7 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   bindNum('pY', 'pYN', C.caption_offset_y || 0);
   v.addEventListener('loadedmetadata', () => { v.currentTime = C.start; fitVideo(); });
   if (v.readyState >= 1) { v.currentTime = C.start; fitVideo(); }
-  fitVideo(); renderProject(); renderAll(); syncSelPanel(); loadPeaks();
+  fitVideo(); renderProject(); renderAll(); syncSelPanel(); loadPeaks(); renderBgm();
 });
 
 // ─── 패널 포커스(클릭한 패널에 파란 테두리) ───
@@ -3122,10 +3129,18 @@ function updateOverlay() {
 // ─── 재생 제어 ───
 function playPause() {
   ensureAudio();
-  if (v.paused) { if (v.currentTime >= C.end - 0.05 || v.currentTime < C.start) v.currentTime = C.start; v.play(); }
+  if (v.paused) {
+    const doPlay = () => { if (v.currentTime >= C.end - 0.05 || v.currentTime < C.start) v.currentTime = C.start; v.play(); };
+    if (v.readyState >= 1) doPlay(); else v.addEventListener('loadedmetadata', doPlay, { once: true });
+  }
   else v.pause();
 }
-function seek(t) { v.currentTime = Math.min(Math.max(t, 0), dur - 0.05); updateOverlay(); renderPlayhead(); renderKf(); }
+function seek(t) {
+  const target = Math.min(Math.max(t, 0), dur - 0.05);
+  if (v.readyState >= 1) v.currentTime = target;
+  else v.addEventListener('loadedmetadata', () => { v.currentTime = target; }, { once: true });
+  updateOverlay(); renderPlayhead(); renderKf();
+}
 $('tbPlay').addEventListener('click', playPause);
 v.addEventListener('click', playPause);
 // 시간 표시 갱신: timeupdate 이벤트만 쓰면 브라우저가 초당 4~10회 정도만 쏴서
@@ -3213,6 +3228,14 @@ function meterLoop() {
   requestAnimationFrame(meterLoop);
 }
 $('aMute').addEventListener('click', () => { v.muted = !v.muted; $('aMute').classList.toggle('on', v.muted); });
+$('aSolo').addEventListener('click', () => {
+  const on = !$('aSolo').classList.contains('on');
+  $('aSolo').classList.toggle('on', on);
+  const bgmA = $('bgmAudio');
+  if (on) { bgmA.dataset.soloMuted = bgmA.muted ? '0' : '1'; bgmA.muted = true; }
+  else if (bgmA.dataset.soloMuted === '1') { bgmA.muted = false; delete bgmA.dataset.soloMuted; }
+});
+$('syncLock').addEventListener('click', () => { syncLock = !syncLock; $('syncLock').classList.toggle('on', syncLock); setStatus(syncLock ? '동기화 잠금 켬 — 잔물결 편집 시 마커도 밀림' : '동기화 잠금 끔 — 마커는 제자리 유지'); });
 
 // ─── 도구 ───
 const TOOL_KEYS = { v: 'select', a: 'trackfwd', b: 'ripple', n: 'roll', c: 'razor', y: 'slip', p: 'pen', h: 'hand', t: 'type' };
@@ -3275,6 +3298,7 @@ function mkBlock(track, item, i, isEn) {
   if (x1 < 0 || x0 > tw()) return;
   const b = document.createElement('div');
   b.className = 'blk' + (!isEn && (i === selIdx || selSet.has(i)) ? ' sel' : '');
+  if (!isEn) b.dataset.idx = i;
   b.style.left = Math.max(-2, x0) + 'px';
   b.style.width = Math.max(10, Math.min(tw() + 2, x1) - Math.max(-2, x0)) + 'px';
   const s = document.createElement('span'); s.className = 'txt'; s.textContent = item.text; b.appendChild(s);
@@ -3283,6 +3307,7 @@ function mkBlock(track, item, i, isEn) {
     const hr = document.createElement('div'); hr.className = 'h r';
     b.appendChild(hl); b.appendChild(hr);
     b.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) { if (!selSet.has(i)) select(i); return; }
       if (tool === 'hand') return;
       if (koLocked) { select(i); return; }
       if (tool === 'razor') { splitBlockAt(i, e); return; }
@@ -3313,6 +3338,7 @@ function renderTracks() {
   vc.style.background = 'transparent'; vc.style.borderColor = '#7f93cf'; vc.style.zIndex = 2;
   const cn = document.createElement('span'); cn.className = 'cn'; cn.textContent = 'V1 · ' + (C.title || ''); vc.appendChild(cn); vt.appendChild(vc);
   const ac = $('aClip'); ac.style.left = '0'; ac.style.width = tw() + 'px';
+  const bc = $('bgmClip'); bc.style.left = t2x(C.start) + 'px'; bc.style.width = Math.max(4, t2x(C.end) - t2x(C.start)) + 'px';
   drawWave();
   renderNavi();
 }
@@ -3410,11 +3436,12 @@ function drawWave() {
 function select(i) { selIdx = i; selSet = new Set(); renderTracks(); syncSelPanel(); }
 let drag = null;
 function startDrag(e, i, mode) {
+  if (e.button !== undefined && e.button !== 0) return;
   e.preventDefault();
   if (!selSet.has(i)) { selIdx = i; if (tool !== 'trackfwd') selSet = new Set(); }
   else selIdx = i;
   renderTracks(); syncSelPanel();
-  drag = { i, mode, x0: e.clientX, snap: caps.map(c => ({ start: c.start, end: c.end })), moved: false };
+  drag = { i, mode, x0: e.clientX, snap: caps.map(c => ({ start: c.start, end: c.end })), markersSnap: markers.slice(), moved: false };
   document.addEventListener('pointermove', onDrag);
   document.addEventListener('pointerup', endDrag, { once: true });
 }
@@ -3445,15 +3472,17 @@ function onDrag(e) {
   } else if (drag.mode === 'rip-r') {
     const ne = Math.min(dur, Math.max(S[i].end + dt, S[i].start + 0.3)); const d = ne - S[i].end;
     c.end = ne; for (let k = i + 1; k < caps.length; k++) { caps[k].start = Math.min(dur, S[k].start + d); caps[k].end = Math.min(dur, S[k].end + d); }
+    if (syncLock) markers = drag.markersSnap.map(m => m >= S[i].end ? Math.min(dur, Math.max(0, m + d)) : m);
   } else if (drag.mode === 'rip-l') {
     const nlen = Math.max(0.3, (S[i].end - S[i].start) - dt); const d = nlen - (S[i].end - S[i].start);
     c.end = Math.min(dur, S[i].end + d); for (let k = i + 1; k < caps.length; k++) { caps[k].start = Math.min(dur, S[k].start + d); caps[k].end = Math.min(dur, S[k].end + d); }
+    if (syncLock) markers = drag.markersSnap.map(m => m >= S[i].end ? Math.min(dur, Math.max(0, m + d)) : m);
   } else if (drag.mode === 'roll-r' && caps[i + 1]) {
     const t = Math.max(S[i].start + 0.3, Math.min(S[i + 1].end - 0.3, S[i].end + dt)); c.end = t; caps[i + 1].start = t;
   } else if (drag.mode === 'roll-l' && caps[i - 1]) {
     const t = Math.max(S[i - 1].start + 0.3, Math.min(S[i].end - 0.3, S[i].start + dt)); c.start = t; caps[i - 1].end = t;
   } else if (drag.mode.startsWith('roll')) { return; }
-  markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
+  markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); renderRuler();
 }
 function endDrag() { drag = null; document.removeEventListener('pointermove', onDrag); }
 
@@ -3472,9 +3501,13 @@ function deleteSel(ripple) {
   pushUndo();
   const idxs = (selSet.size ? [...selSet] : [selIdx]).sort((a, b) => b - a);
   const gap = ripple && idxs.length === 1 ? (caps[idxs[0]].end - caps[idxs[0]].start) : 0;
+  const cutAt = gap ? caps[idxs[0]].end : 0;
   const first = Math.min(...idxs);
   idxs.forEach(k => { caps.splice(k, 1); if (ens.length > k) ens.splice(k, 1); });
-  if (gap) for (let k = first; k < caps.length; k++) { caps[k].start -= gap; caps[k].end -= gap; }
+  if (gap) {
+    for (let k = first; k < caps.length; k++) { caps[k].start -= gap; caps[k].end -= gap; }
+    if (syncLock) { markers = markers.map(m => m >= cutAt ? Math.max(0, m - gap) : m); renderRuler(); }
+  }
   selIdx = -1; selSet = new Set(); markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
 }
 function syncSelPanel() {
@@ -3545,7 +3578,8 @@ function renderKf() {
 }
 
 // ─── 프로젝트 패널 ───
-let pjSel = -1;
+let pjSel = null;
+let pjSortMode = 'time';
 function renderProject() {
   const list = $('pjList'); list.innerHTML = '';
   const q = ($('pjSearch').value || '').trim();
@@ -3555,20 +3589,37 @@ function renderProject() {
     { ico: 'cc', nm: '자막(한글) · ' + caps.length + '소절', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit },
   ];
   if (ens.length) rows.push({ ico: 'cc', nm: '자막(영어) · ' + ens.length + '소절', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit });
+  if (C && C.bgm) rows.push({ ico: 'cc', nm: '배경 음악 · ' + C.bgm.filename, meta: ['', ''], act: () => {} });
+  if (pjSortMode === 'name') rows.sort((a, b) => a.nm.localeCompare(b.nm));
   const ICO = { seq: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14"/><path d="M3 10h18M8 5v14"/></svg>',
     vid: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="13" height="12" rx="1"/><path d="M16 10l5-3v10l-5-3z"/></svg>',
     cc: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 12H6.5M17.5 12H15"/></svg>' };
-  rows.forEach((r, i) => {
+  rows.forEach((r) => {
     if (q && !r.nm.includes(q)) return;
-    const el = document.createElement('div'); el.className = 'pj-row' + (i === pjSel ? ' sel' : '');
+    const el = document.createElement('div'); el.className = 'pj-row' + (r.nm === pjSel ? ' sel' : '');
     el.innerHTML = '<span class="ico">' + ICO[r.ico] + '</span><span class="nm"></span><span class="meta"></span><span class="meta"></span>';
     el.querySelector('.nm').textContent = r.nm; const ms = el.querySelectorAll('.meta'); ms[0].textContent = r.meta[0]; ms[1].textContent = r.meta[1];
-    el.addEventListener('click', () => { pjSel = i; renderProject(); });
+    el.addEventListener('click', () => { pjSel = r.nm; renderProject(); });
     el.addEventListener('dblclick', r.act);
     list.appendChild(el);
   });
 }
 $('pjSearch').addEventListener('input', renderProject);
+$('pjSort').addEventListener('click', () => {
+  pjSortMode = pjSortMode === 'time' ? 'name' : 'time';
+  $('pjSort').classList.toggle('on', pjSortMode === 'name');
+  renderProject();
+});
+$('pjZoom').addEventListener('input', () => {
+  const t = parseFloat($('pjZoom').value) / 100;
+  const minSpan = 1, maxSpan = Math.max(2, dur);
+  const span = maxSpan * Math.pow(minSpan / maxSpan, t);
+  const center = (view.a + view.b) / 2;
+  let a = Math.max(0, center - span / 2);
+  const b = Math.min(dur, a + span);
+  a = Math.max(0, b - span);
+  view = { a, b }; renderAll();
+});
 document.querySelectorAll('.fx-fold > .fh').forEach(h => h.addEventListener('click', () => h.parentElement.classList.toggle('closed')));
 $('fxSearch').addEventListener('input', () => { const q = $('fxSearch').value.trim(); document.querySelectorAll('.fx-item').forEach(it => { if (it.id === 'fxLyrics' && C && C.clip_type !== 'praise') return; it.style.display = (!q || it.querySelector('.nm').textContent.includes(q)) ? '' : 'none'; }); });
 document.querySelectorAll('.fx-item').forEach(it => {
@@ -3616,6 +3667,7 @@ function payload() {
   const p = { captions: collect(), caption_size: parseInt($('pSize').value, 10), caption_offset_x: parseFloat($('pX').value), caption_offset_y: parseFloat($('pY').value) };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   if (clipRangeDirty) { p.clip_start = C.start; p.clip_end = C.end; }
+  if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; }
   return p;
 }
 async function save() {
@@ -3635,6 +3687,60 @@ $('hWorkspace').addEventListener('click', resetWs);
 function resetWs() { ws.style.removeProperty('--colL'); ws.style.removeProperty('--rowT'); fitVideo(); renderAll(); }
 function setStatus(m) { $('status').textContent = m; setTimeout(() => { if ($('status').textContent === m) $('status').textContent = ''; }, 5000); }
 window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); $('hFull').click(); } });
+
+// ─── 배경 음악(A2) — 미리듣기는 별도 <audio>로 근사 동기화, 정밀 반복/페이드는 렌더가 처리 ───
+function renderBgm() {
+  const has = !!C.bgm;
+  $('bgmMute').style.display = has ? '' : 'none';
+  $('bgmRemove').style.display = has ? '' : 'none';
+  $('bgmVol').style.display = has ? '' : 'none';
+  $('bgmClip').style.display = has ? '' : 'none';
+  $('bgmName').textContent = has ? ('A2 · ' + C.bgm.filename) : 'A2 배경 음악(없음)';
+  const a = $('bgmAudio');
+  if (has) {
+    $('bgmClipCn').textContent = 'A2 · ' + C.bgm.filename;
+    $('bgmMute').classList.toggle('on', !!C.bgm.muted);
+    $('bgmVol').value = Math.round((C.bgm.volume != null ? C.bgm.volume : 0.25) * 100);
+    const src = '/media/' + VIDEO_ID + '/bgm/' + encodeURIComponent(C.bgm.filename);
+    if (!a.src || !a.src.endsWith(src)) a.src = src;
+    a.volume = C.bgm.volume != null ? C.bgm.volume : 0.25;
+    a.muted = !!C.bgm.muted;
+  } else {
+    a.pause(); a.removeAttribute('src'); a.load();
+  }
+  renderProject();
+}
+$('bgmAdd').addEventListener('click', () => $('bgmFile').click());
+$('bgmFile').addEventListener('change', async () => {
+  const f = $('bgmFile').files[0]; $('bgmFile').value = '';
+  if (!f) return;
+  setStatus('배경 음악 업로드 중…');
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/bgm', { method: 'POST', body: fd });
+  if (r.ok) { const j = await r.json(); C.bgm = j.bgm; renderBgm(); setStatus('배경 음악 추가됨 — 내보내기(렌더) 결과물에 반영됩니다'); }
+  else setStatus('배경 음악 업로드 실패');
+});
+$('bgmRemove').addEventListener('click', async () => {
+  if (!C.bgm) return;
+  await fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/bgm', { method: 'DELETE' });
+  C.bgm = null; renderBgm(); setStatus('배경 음악 제거됨');
+});
+$('bgmMute').addEventListener('click', () => { if (!C.bgm) return; C.bgm.muted = !C.bgm.muted; renderBgm(); markDirty(); });
+$('bgmVol').addEventListener('input', () => {
+  if (!C.bgm) return;
+  C.bgm.volume = parseInt($('bgmVol').value, 10) / 100; $('bgmAudio').volume = C.bgm.volume; markDirty();
+});
+v.addEventListener('play', () => {
+  const a = $('bgmAudio'); if (!C.bgm || !a.src) return;
+  try { if (a.duration) a.currentTime = Math.max(0, (v.currentTime - C.start) % a.duration); } catch (e) { /* 메타데이터 전이면 무시 */ }
+  a.play().catch(() => {});
+});
+v.addEventListener('pause', () => $('bgmAudio').pause());
+v.addEventListener('seeked', () => {
+  const a = $('bgmAudio'); if (!C.bgm || !a.duration) return;
+  a.currentTime = Math.max(0, (v.currentTime - C.start) % a.duration);
+});
 
 // ─── 소스 모니터(원본 영상, 탭을 열 때 로드) ───
 let sv = null;
@@ -3684,6 +3790,63 @@ function menuAct(a) {
   };
   if (A[a]) A[a]();
 }
+
+// ─── 타임라인 우클릭 컨텍스트 메뉴(프리미어처럼 클립/빈 영역에서 다르게 뜬다) ───
+function ctxItem(label, act, opts) {
+  opts = opts || {};
+  const cls = ['it']; if (opts.dis) cls.push('dis'); if (opts.chk) cls.push('chk');
+  return '<div class="' + cls.join(' ') + '" data-act="' + act + '">' + label + (opts.k ? '<span class="k">' + opts.k + '</span>' : '') + '</div>';
+}
+function ctxSep() { return '<div class="sep"></div>'; }
+function showCtxMenu(x, y, html) {
+  const m = $('ctxMenu');
+  m.innerHTML = html; m.classList.add('on'); m.style.left = '0px'; m.style.top = '0px';
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(2, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
+  m.style.top = Math.max(2, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
+}
+function hideCtxMenu() { $('ctxMenu').classList.remove('on'); }
+$('ctxMenu').addEventListener('click', (e) => {
+  const it = e.target.closest('.it'); hideCtxMenu();
+  if (it && !it.classList.contains('dis')) menuAct(it.dataset.act);
+});
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#ctxMenu')) hideCtxMenu(); });
+window.addEventListener('blur', hideCtxMenu);
+window.addEventListener('resize', hideCtxMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); }, true);
+
+function timelineCtx(e) {
+  e.preventDefault();
+  const blk = e.target.closest('.blk');
+  if (blk && blk.dataset.idx !== undefined) {
+    const i = parseInt(blk.dataset.idx, 10);
+    if (!selSet.has(i)) select(i);
+    showCtxMenu(e.clientX, e.clientY,
+      ctxItem('텍스트 수정…', 'edit-text', { k: 'Enter' }) +
+      ctxItem('재생 헤드에서 분할', 'split', { k: 'Ctrl+K' }) +
+      ctxSep() +
+      ctxItem('지우기', 'delete', { k: 'Delete' }) +
+      ctxItem('잔물결 삭제', 'ripple-delete', { k: 'Shift+Delete' }) +
+      ctxSep() +
+      ctxItem('마커 추가', 'marker', { k: 'M' }) +
+      ctxSep() +
+      ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A' })
+    );
+  } else {
+    showCtxMenu(e.clientX, e.clientY,
+      ctxItem('재생 헤드에 소절 추가', 'add', { k: 'Ctrl+Shift+N' }) +
+      ctxItem('마커 추가', 'marker', { k: 'M' }) +
+      ctxSep() +
+      ctxItem('타임라인에서 스냅', 'snap', { k: 'S', chk: snapOn }) +
+      ctxItem('시퀀스에 맞게 확대/축소', 'zoom-fit', { k: '\\' }) +
+      ctxSep() +
+      ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A', dis: selIdx < 0 && selSet.size === 0 })
+    );
+  }
+}
+$('tracksScroll').addEventListener('contextmenu', timelineCtx);
+$('ruler').addEventListener('contextmenu', timelineCtx);
+
 $('kbClose').addEventListener('click', () => $('kbModal').classList.remove('on'));
 $('kbModal').addEventListener('click', (e) => { if (e.target === $('kbModal')) $('kbModal').classList.remove('on'); });
 
@@ -3915,7 +4078,72 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     for k in ("title_spacing", "caption_spacing"):
         if k in body:
             setattr(clip, k, float(body.get(k) or 0))
+    # 배경 음악 볼륨/음소거(파일은 별도 업로드 라우트에서 받는다).
+    if clip.bgm and ("bgm_volume" in body or "bgm_muted" in body):
+        if "bgm_volume" in body:
+            try:
+                clip.bgm["volume"] = max(0.0, min(1.0, float(body.get("bgm_volume"))))
+            except (TypeError, ValueError):
+                pass
+        if "bgm_muted" in body:
+            clip.bgm["muted"] = bool(body.get("bgm_muted"))
     save_clips_json(clips, clips_path)
+    return jsonify({"ok": True})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/bgm", methods=["POST"])
+def upload_clip_bgm(video_id: str, idx: int):
+    """스튜디오 A2 트랙 '배경 음악 추가'. 파일을 output/<video_id>/bgm/에 저장하고
+    clip.bgm에 참조를 남긴다 — 렌더가 클립 길이에 맞춰 반복/트림해 원본 오디오와 믹싱한다
+    (_add_sfx와 같은 ffmpeg amix 패턴, render._mix_bgm 참고)."""
+    from werkzeug.utils import secure_filename
+
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"error": "업로드된 파일이 없습니다"}), 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"):
+        return jsonify({"error": "mp3/wav/m4a/aac/ogg/flac 파일만 지원합니다"}), 400
+    with CLIPS_LOCK:
+        clips = load_clips_json(clips_path)
+        if idx < 0 or idx >= len(clips):
+            return jsonify({"error": "invalid index"}), 400
+        old = clips[idx].bgm
+        bgm_dir = OUTPUT_ROOT / video_id / "bgm"
+        bgm_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"clip{idx}_{int(time.time())}_{secure_filename(f.filename)}"
+        f.save(bgm_dir / fname)
+        clips[idx].bgm = {"filename": fname, "volume": 0.25, "muted": False}
+        save_clips_json(clips, clips_path)
+        result = clips[idx].bgm
+    if old and old.get("filename"):
+        try:
+            (OUTPUT_ROOT / video_id / "bgm" / old["filename"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return jsonify({"ok": True, "bgm": result})
+
+
+@app.route("/video/<video_id>/clip/<int:idx>/bgm", methods=["DELETE"])
+def remove_clip_bgm(video_id: str, idx: int):
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    with CLIPS_LOCK:
+        clips = load_clips_json(clips_path)
+        if idx < 0 or idx >= len(clips):
+            return jsonify({"error": "invalid index"}), 400
+        old = clips[idx].bgm
+        clips[idx].bgm = None
+        save_clips_json(clips, clips_path)
+    if old and old.get("filename"):
+        try:
+            (OUTPUT_ROOT / video_id / "bgm" / old["filename"]).unlink(missing_ok=True)
+        except OSError:
+            pass
     return jsonify({"ok": True})
 
 
@@ -3988,6 +4216,16 @@ def serve_source_video(video_id: str):
     아이폰식 트림 핸들을 끌 때 브라우저가 필요한 구간만 받아 즉시 탐색된다."""
     p = (OUTPUT_ROOT / video_id / "source.mp4").resolve()
     if not p.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(p, conditional=True)
+
+
+@app.route("/media/<video_id>/bgm/<path:filename>")
+def serve_bgm(video_id: str, filename: str):
+    """스튜디오 미리듣기용 배경 음악 서빙(업로드한 파일 그대로)."""
+    base = (OUTPUT_ROOT / video_id / "bgm").resolve()
+    p = (base / filename).resolve()
+    if base != p.parent or not p.exists():
         return jsonify({"error": "not found"}), 404
     return send_file(p, conditional=True)
 
@@ -4136,6 +4374,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
             "playback_speed": float(getattr(clip, "playback_speed", 1.0) or 1.0),
             "show_full_source_once": bool(getattr(clip, "show_full_source_once", False)),
+            "bgm": (getattr(clip, "bgm", None) or None),
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
@@ -5733,4 +5972,4 @@ if __name__ == "__main__":
     # 반응해 서버를 재시작하면 진행 중이던 작업(및 메모리 상 _jobs 상태)이 통째로 날아간다
     # (실제로 겪은 문제: 관련 없는 스크립트 파일이 바뀌었는데도 분석 작업이 끊김).
     # 코드를 고친 뒤에는 터미널에서 수동으로 재시작해야 한다.
-    app.run(debug=True, use_reloader=False, host="0.0.0.0", port=5000)
+    app.run(debug=True, use_reloader=False, threaded=True, host="0.0.0.0", port=5000)

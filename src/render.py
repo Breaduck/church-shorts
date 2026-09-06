@@ -418,6 +418,57 @@ def _add_sfx(output_path: Path, times: list[float], sfx_cfg: dict) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
+def _probe_duration(path: Path) -> float:
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _mix_bgm(output_path: Path, bgm_path: Path, volume: float) -> None:
+    """스튜디오에서 업로드한 배경 음악을 결과물 오디오 아래로 믹싱한다(외부 파일 있음).
+
+    _add_sfx와 같은 ffmpeg amix 패턴: 클립 길이(이미 완성된 output_path의 실제 길이 —
+    무음 제거/배속을 다 반영한 최종 길이)에 맞춰 반복재생 후 자르고, 시작/끝을 짧게
+    페이드해 튀지 않게 한다. 비디오는 재인코딩하지 않는다(-c:v copy).
+    실패해도 본 렌더는 이미 완성돼 있으므로 호출자가 로그만 남기고 넘어간다."""
+    dur = _probe_duration(output_path)
+    if dur <= 0:
+        return
+    vol = max(0.0, min(1.0, volume))
+    fade_d = min(1.0, dur / 4)
+    filter_complex = (
+        f"[0:a]aformat=sample_rates=48000:channel_layouts=stereo[base];"
+        f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+        f"atrim=0:{dur:.3f},volume={vol:.3f},"
+        f"afade=t=in:d={fade_d:.2f},afade=t=out:st={max(0.0, dur - fade_d):.2f}:d={fade_d:.2f}[bgm];"
+        f"[base][bgm]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
+    )
+    tmp_path = output_path.with_suffix(".bgm.mp4")
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(output_path),
+        "-stream_loop", "-1", "-i", str(bgm_path),
+        "-filter_complex", filter_complex,
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{dur:.3f}",
+        str(tmp_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not tmp_path.exists():
+            raise RuntimeError(f"배경 음악 믹싱 실패:\n{proc.stderr[-2000:]}")
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # 소스 하단 크롭 기본값. 렌더(_build_card_filter_complex)와 편집 미리보기(web_app)가
 # 서로 다른 기본값을 쓰면 config에 이 키가 없을 때 미리보기와 결과물이 어긋난다 — 반드시
 # 이 상수 하나만 참조할 것.
@@ -859,6 +910,16 @@ def render_clip(
             _add_sfx(output_path, sfx_times, sfx_cfg)
         except Exception:  # noqa: BLE001 - 효과음 실패는 치명적이지 않음
             traceback.print_exc()
+
+    # 배경 음악(선택, 스튜디오 A2 트랙에서 업로드): 효과음 믹싱 다음·아웃트로 이전.
+    bgm = getattr(clip, "bgm", None)
+    if bgm and not bgm.get("muted") and bgm.get("filename"):
+        bgm_path = video_path.parent / "bgm" / bgm["filename"]
+        if bgm_path.exists():
+            try:
+                _mix_bgm(output_path, bgm_path, float(bgm.get("volume", 0.25) or 0.25))
+            except Exception:  # noqa: BLE001 - 배경 음악 실패는 치명적이지 않음
+                traceback.print_exc()
 
     # 끝에 로고 이미지 아웃트로(사용자 요청, 2026-09-03). 본 클립은 이미 output_path에
     # 완성됐으므로, 아웃트로 붙이기가 실패해도 렌더 전체를 실패시키지 않고 로그만 남긴다.
