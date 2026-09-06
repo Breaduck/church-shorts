@@ -736,11 +736,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 다 같이 작아져도 전부 한 줄을 유지한다.
         _fitted_all = [_fit_fs(t, caption_size) for t in ko_texts]
         _needed = [f for f in _fitted_all if f is not None]
-        # 균일 크기에 하한(기본의 78%)을 둔다: 예전엔 '가장 긴 한 줄'이 클립 전체 크기를
-        # 끌어내려, 유난히 긴 소절 하나 때문에 모든 자막이 확 작아졌다(실신고 2026-09-06
-        # "한글 자막이 왜이리 작아졌지"). 이제 대부분의 줄은 하한 이상 크기를 유지하고,
-        # 하한으로도 폭을 넘는 극단적으로 긴 줄만 '그 줄에 한해' 제 크기로 더 줄어든다
-        # (한 줄 유지 우선 — 균일성은 그 예외 줄에서만 깨지고 체감상 거의 안 보인다).
+        # 균일 크기 하한(기본의 78%): 유난히 긴 소절 하나가 클립 전체를 확 작게 만드는
+        # 것을 막는다(실신고 2026-09-06 "한글 자막이 왜이리 작아졌지"). 예전엔 하한으로도
+        # 폭을 넘는 초장문 줄을 '그 줄만' 더 줄였는데, 그게 "처음부터 끝까지 한글 크기는
+        # 모두 동일하게" 요청(2026-09-06)과 정면 충돌 — 재생 중 글자가 커졌다 작아졌다
+        # 보였다. 이제 크기는 클립 안에서 예외 없이 하나. 하한에서도 안 들어가는 극단적
+        # 줄은 크기를 유지한 채 libass 자동 줄바꿈(WrapStyle 0)으로 2줄이 된다 — 크기
+        # 균일이 '한 줄 유지'보다 우선한다는 사용자 판단.
         _floor = max(28, int(caption_size * 0.78))
         uniform_ko_size = max(min(_needed), _floor) if _needed else None
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
@@ -752,10 +754,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         _floor_en = max(16, int(base_en_size * 0.78))
         uniform_en_size = max(min(_needed_en), _floor_en) if _needed_en else None
 
-        for line, ko_text, en_text, own_fit in zip(lines, ko_texts, en_texts, _fitted_all):
-            ko_size = uniform_ko_size or caption_size
-            if own_fit is not None and own_fit < ko_size:
-                ko_size = own_fit  # 하한으로도 안 들어가는 초장문 줄만 예외적으로 더 축소
+        for line, ko_text, en_text in zip(lines, ko_texts, en_texts):
+            ko_size = uniform_ko_size or caption_size  # 클립 전체 단일 크기(줄별 예외 없음)
             prefix = f"{{\\fs{ko_size}}}" if ko_size != caption_size else ""
             extra = ""
             if en_text:

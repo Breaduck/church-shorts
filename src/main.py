@@ -564,6 +564,129 @@ def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], 
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _vocal_band_envelope_db(video_path: Path, t0: float, t1: float) -> tuple[list[float], float]:
+    """[t0,t1] 구간의 '목소리 대역(300~3400Hz)' 에너지 곡선(dB, 10ms 간격)을 돌려준다.
+    반환: (dB 리스트, 프레임 간격 초). 실패하면 ([], 0.01)."""
+    import subprocess
+
+    import numpy as np
+    from scipy import signal as _sig
+
+    sr = 16000
+    dur = max(0.0, t1 - t0)
+    if dur <= 0.2:
+        return [], 0.01
+    cmd = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{max(0.0, t0):.3f}", "-t", f"{dur:.3f}", "-i", str(video_path),
+        "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-acodec", "pcm_f32le", "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or len(proc.stdout) < sr:
+        return [], 0.01
+    y = np.frombuffer(proc.stdout[: len(proc.stdout) - (len(proc.stdout) % 4)], dtype=np.float32)
+    b, a = _sig.butter(4, [300 / (sr / 2), 3400 / (sr / 2)], btype="band")
+    yv = _sig.lfilter(b, a, y).astype(np.float32)
+    hop, win = 160, 400  # 10ms / 25ms
+    n = max(0, (len(yv) - win) // hop + 1)
+    if n < 10:
+        return [], 0.01
+    idx = np.arange(win)[None, :] + (np.arange(n) * hop)[:, None]
+    rms = np.sqrt(np.mean(yv[idx] ** 2, axis=1) + 1e-12)
+    db = 20 * np.log10(rms + 1e-6)
+    db = np.convolve(db, np.ones(9) / 9.0, mode="same")  # 90ms 평활(음절 단위 요동 억제)
+    return db.tolist(), hop / sr
+
+
+def _refine_onsets_by_audio(
+    video_path: Path, clip_start: float, clip_end: float,
+    estimates: list[tuple[float, float, float, float]],
+) -> list[float | None]:
+    """각 소절의 추정 시작(estimates: (추정초, 창 앞 여유, 창 뒤 여유, 기대 오프셋))을
+    실제 '발성 시작점'으로 정밀 보정한다.
+
+    원리(실측 2026-09-06, 업로드 찬양 8소절): 회중 찬양은 소절 사이에 숨 쉬는 구간이
+    있어 목소리 대역 에너지에 뚜렷한 '골'(주변 대비 5~11dB)이 파이고, 다음 소절은 그
+    골 직후 급격한 상승으로 시작한다. whisper(large-v3)는 앞 소절 끝음(늘여 부르는
+    음)을 다음 단어에 붙이는 버릇이 있어 단어 시작을 0.7~1.15초 이르게 찍는데(분산이
+    커 고정 오프셋으론 ±0.5초가 남음), 골 직후 상승점을 잡으면 그 오차가 사라진다.
+
+    각 추정마다 [추정-앞여유, 추정+뒤여유] 창 안의 골(국소 최소, 깊이≥4dB)들을 찾고,
+    골 다음 에너지가 '골 깊이의 60%'를 회복하는 시점을 발성 시작 후보로 삼는다. 후보가
+    여럿이면 '골 깊이 − 2×|후보−(추정+기대오프셋)|' 점수가 큰 쪽(더 깊은 골, 기대 위치에
+    가까운 쪽). 골이 없으면 None(호출자가 예전 방식 폴백).
+    반환: 추정별 보정된 절대 시각 또는 None."""
+    import os as _os
+
+    if not estimates:
+        return []
+    pad = 3.5
+    a0 = max(0.0, clip_start - pad)
+    db, dt = _vocal_band_envelope_db(video_path, a0, clip_end + pad)
+    if not db:
+        return [None] * len(estimates)
+    n = len(db)
+
+    def _fi(t: float) -> int:
+        return int(round((t - a0) / dt))
+
+    out: list[float | None] = []
+    MIN_DEPTH = 4.0
+    for est, back, fwd, exp_off in estimates:
+        lo = max(0, _fi(est - back))
+        hi = min(n - 1, _fi(est + fwd))
+        ctx0, ctx1 = max(0, _fi(est - 3.0)), min(n, _fi(est + 3.0))
+        if hi - lo < 5 or ctx1 - ctx0 < 10:
+            out.append(None)
+            continue
+        ctx = sorted(db[ctx0:ctx1])
+        level = ctx[len(ctx) // 2]  # 중앙값 = '노래하는 중' 수준
+        best: tuple[float, float] | None = None  # (score, onset_abs)
+        rad = max(1, int(round(0.15 / dt)))
+        i = lo
+        while i <= hi:
+            v = db[i]
+            depth = level - v
+            if depth >= MIN_DEPTH and v <= min(db[max(0, i - rad): i + rad + 1]):
+                # 골 → 회복점(골 깊이의 60% 회복) 탐색(골에서 0.8초 이내)
+                # 회복은 '지속'되어야 한다: 숨 쉬는 구간 안의 잔물결(두 개의 작은 골)을
+                # 발성으로 오인하지 않게, 회복점 뒤 0.15초 동안 평균이 임계 이상이어야 채택.
+                thr = v + 0.6 * depth
+                hold = max(1, int(round(0.15 / dt)))
+                j = i + 1
+                j_max = min(n - 1, i + int(round(0.9 / dt)))
+                found = False
+                while j <= j_max:
+                    if db[j] >= thr and sum(db[j: j + hold]) / len(db[j: j + hold]) >= thr:
+                        found = True
+                        break
+                    j += 1
+                if found:
+                    onset = a0 + j * dt
+                    # 골의 '너비'(깊이의 절반보다 깊은 구간 길이): 소절 사이 숨 구간은
+                    # 0.4~0.8초로 넓고, 소절 안 음절 사이 요동은 0.1~0.2초로 좁다 — 깊이가
+                    # 비슷한 두 골이 경합할 때(실측: 소절 첫 단어가 오인식돼 창이 둘째
+                    # 단어부터 시작한 경우) 넓은 쪽이 진짜 소절 경계다.
+                    half = v + 0.5 * depth
+                    wl = i
+                    while wl > 0 and db[wl - 1] <= half:
+                        wl -= 1
+                    wr = i
+                    while wr < n - 1 and db[wr + 1] <= half:
+                        wr += 1
+                    width = min(1.0, (wr - wl + 1) * dt)
+                    score = depth + 4.0 * width - 2.0 * abs((onset - est) - exp_off)
+                    if _os.environ.get("PRAISE_SYNC_DEBUG"):
+                        print(f"      cand est={est:.2f} dip@{a0 + i * dt:.2f} depth={depth:.1f} width={width:.2f} onset={onset:.2f} score={score:.2f}")
+                    if best is None or score > best[0]:
+                        best = (score, onset)
+                i = max(i + 1, j)  # 같은 골을 중복 탐색하지 않게 회복점 뒤로 건너뜀
+                continue
+            i += 1
+        out.append(round(best[1], 2) if best else None)
+    return out
+
+
 def map_lines_to_voice_times(
     video_path: Path,
     clip_start: float,
@@ -664,6 +787,12 @@ def map_lines_to_voice_times(
                     if len(acc) > len(target) * 2 + 10:
                         break
                     sc = difflib.SequenceMatcher(None, acc, target).ratio()
+                    # 커버리지 보정: 소절 일부(뒷부분만)에 붙은 짧은 창이 전체 창보다 근소하게
+                    # 높은 점수를 받아 앵커 '시작'이 소절 중간(3초 뒤)에 찍히는 실측 사례
+                    # ("그 무덤의 권세 다 깨뜨렸네"가 '방세 다 깨끄렸네'에 앵커). 창이 소절
+                    # 길이의 75% 미만이면 그 비율만큼 깎아 온전한 창을 우선한다.
+                    if len(acc) < 0.75 * len(target):
+                        sc *= len(acc) / (0.75 * len(target))
                     if sc >= 0.35:
                         cl.append((sc, i, j))
         cl.sort(reverse=True)
@@ -672,37 +801,135 @@ def map_lines_to_voice_times(
     #    보너스는 '한 소절이라도 더 실측에 앉히는' 배치를 선호하게 한다. 상태는 마지막
     #    사용 단어 인덱스별 최고점만 유지(가지치기).
     MATCH_BONUS = 0.25
-    states: list[tuple[int, float, list]] = [(-1, 0.0, [])]  # (last_j, 총점, [(li,i,j)])
-    for li in range(len(texts)):
-        new_states = list(states)  # 이 소절을 매칭 안 하는 선택지(상태 유지)
-        for last_j, tot, path in states:
-            for sc, i, j in cands_per_line[li]:
-                if i > last_j:
-                    new_states.append((j, tot + sc + MATCH_BONUS, path + [(li, i, j)]))
-        by_last: dict[int, tuple[int, float, list]] = {}
-        for st in new_states:
-            if st[0] not in by_last or st[1] > by_last[st[0]][1]:
-                by_last[st[0]] = st
-        states = sorted(by_last.values(), key=lambda s: -s[1])[:60]
-    best_path = max(states, key=lambda s: s[1])[2]
-    anchors: dict[int, tuple[int, int, float, float]] = {
-        li: (i, j, words[i][0], max(words[j][1], words[i][0] + 0.3))
-        for (li, i, j) in best_path
-    }
+    # 템포 일관성 항(2026-09-06 추가): 노래는 한 곡 안에서 '글자당 초'가 대체로 일정한데,
+    # 문자열 점수만으로는 앞 소절 꼬리(whisper가 늘인 끝음을 엉뚱한 단어로 받아적은 것)에
+    # 다음 소절이 근소한 차이로 앉아 그 소절 길이가 3.8초, 다음이 10.8초처럼 뒤틀렸다
+    # (실측: "기뻐 찬송하세 밝은 빛이 왔네"가 4.5초 이르게). 1차 DP로 곡의 중앙값 글자당
+    # 초를 재고, 2차 DP에서 이웃 앵커 간 속도가 중앙값에서 벗어나는 만큼(로그 비율×0.5)
+    # 깎아 '박자에 맞는' 배치를 고른다. 앵커가 1개면 중앙값이 없어 1차 결과 그대로.
+    RATE_W = 0.5
+    _chars = [max(1, len(_norm(t))) for t in texts]
 
-    # 앵커 밀집 정리: 두 앵커 사이 실제 시간 간격이 그 사이 미앵커 소절 수가 최소한으로
-    # 필요한 시간보다 좁으면, 그 구간은 인식 부실/후렴 반복 오탐일 가능성이 크다
+    def _anchor_t(li: int, i: int) -> float:
+        # 첫 소절은 whisper가 여린 도입부를 놓쳐 늦게 찍는 버릇이 있어 아래 '첫 소절 스냅'
+        # 규칙(클립 시작 6초 이내면 클립 시작)과 같은 가정으로 속도를 잰다 — 안 그러면
+        # 첫 구간 속도가 실제보다 빨라 보여 2소절 앵커가 뒤쪽 창으로 밀린다(실측).
+        t = words[i][0]
+        if li == 0 and (t - clip_start) <= 6.0:
+            return clip_start
+        return t
+
+    def _run_dp(median_rate: float | None) -> list:
+        import math as _math
+
+        states: list[tuple[int, float, list]] = [(-1, 0.0, [])]  # (last_j, 총점, [(li,i,j)])
+        for li in range(len(texts)):
+            new_states = list(states)  # 이 소절을 매칭 안 하는 선택지(상태 유지)
+            for last_j, tot, path in states:
+                for sc, i, j in cands_per_line[li]:
+                    if i <= last_j:
+                        continue
+                    pen = 0.0
+                    if path:
+                        pl, pi, _pj = path[-1]
+                        span = sum(_chars[pl:li])
+                        rate = (words[i][0] - _anchor_t(pl, pi)) / span
+                        if rate < 0.08:
+                            continue  # 소절을 물리적으로 부를 수 없는 속도 → 불가
+                        if median_rate:
+                            pen = RATE_W * abs(_math.log(rate / median_rate))
+                    new_states.append((j, tot + sc + MATCH_BONUS - pen, path + [(li, i, j)]))
+            by_last: dict[int, tuple[int, float, list]] = {}
+            for st in new_states:
+                if st[0] not in by_last or st[1] > by_last[st[0]][1]:
+                    by_last[st[0]] = st
+            states = sorted(by_last.values(), key=lambda s: -s[1])[:60]
+        return max(states, key=lambda s: s[1])[2]
+
+    best_path = _run_dp(None)
+    if len(best_path) >= 3:
+        rates = []
+        for (pl, pi, _), (cl, ci, _) in zip(best_path, best_path[1:]):
+            rates.append((words[ci][0] - _anchor_t(pl, pi)) / sum(_chars[pl:cl]))
+        rates.sort()
+        best_path = _run_dp(rates[len(rates) // 2])
+
+    # 창 가장자리 정리: 퍼지 창은 앞 소절의 마지막 단어나 다음 소절의 첫 단어를 곧잘
+    # 물고 들어온다(실측: "주님|할렐루야 찬송하시" — '주님'은 앞 소절). 그러면 앵커
+    # 시작이 1.2초 이르고 오디오 보정 창 밖으로 벗어난다. 실제 매칭된 글자가 하나도
+    # 없는(또는 2자 미만 걸친 다음절) 가장자리 단어를 잘라낸다.
+    def _jamo(txt: str) -> str:
+        # 음절 → 초성·중성·종성 자모열. 노래 오인식은 음소 단위로 비슷한 경우가 많아
+        # ("알레르기야"≈"할렐루야") 음절 비교로는 0자 일치인데 자모로는 절반이 맞는다.
+        out = []
+        for ch in txt:
+            o = ord(ch)
+            if 0xAC00 <= o <= 0xD7A3:
+                o -= 0xAC00
+                out.append(chr(0x1100 + o // 588))
+                out.append(chr(0x1161 + (o % 588) // 28))
+                if o % 28:
+                    out.append(chr(0x11A7 + o % 28))
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _trim_edges(li: int, i: int, j: int) -> tuple[int, int]:
+        target = _jamo(_norm(texts[li]))
+        parts = [_jamo(wnorm[k]) for k in range(i, j + 1)]
+        acc = "".join(parts)
+        if not acc or not target:
+            return i, j
+        matched = [False] * len(acc)
+        for blk in difflib.SequenceMatcher(None, acc, target, autojunk=False).get_matching_blocks():
+            for k in range(blk.a, blk.a + blk.size):
+                matched[k] = True
+        spans = []
+        pos = 0
+        i0 = i
+        for part in parts:
+            spans.append((pos, pos + len(part)))
+            pos += len(part)
+
+        def _keep(k: int) -> bool:
+            # 자모의 절반 이상이 정식 가사와 정렬되면 그 소절의 단어로 본다.
+            a, b = spans[k - i0]
+            if b <= a:
+                return False
+            m = sum(1 for q in range(a, b) if matched[q])
+            return m * 2 >= (b - a)
+
+        while i < j and not _keep(i):
+            i += 1
+        while j > i and not _keep(j):
+            j -= 1
+        return i, j
+
+    anchors: dict[int, tuple[int, int, float, float]] = {}
+    import os as _os
+    _dbg = bool(_os.environ.get("PRAISE_SYNC_DEBUG"))
+    for (li, i, j) in best_path:
+        i2, j2 = _trim_edges(li, i, j)
+        if _dbg:
+            print(f"    path li={li} ({i},{j}) '{' '.join(w[2] for w in words[i:j+1])}' -> ({i2},{j2}) @{words[i2][0]:.2f} | {texts[li]}")
+        i, j = i2, j2
+        anchors[li] = (i, j, words[i][0], max(words[j][1], words[i][0] + 0.3))
+
+    # 앵커 밀집 정리: 두 앵커 '시작' 사이 간격이 그 사이 소절 수(앞 앵커 소절 포함)를
+    # 부르기에 필요한 시간보다 좁으면, 그 구간은 인식 부실/후렴 반복 오탐일 가능성이 크다
     # (실측1: 4소절이 1.2초 안에 욱여넣어짐. 실측2: 후렴 반복곡에서 마지막 두 소절이
     # 1.4~1.6초로 뭉개짐 — "자막이 안 나온다" 체감 신고). 노래에서 한 소절이 1.5초
     # 미만일 수는 사실상 없으므로 기준을 1.5초로 둔다. 좁으면 뒤 앵커를 버리고 재보간.
+    # (예전엔 앞 앵커의 '끝'을 기준으로 재서, 창이 늘인 끝음까지 물면 멀쩡한 이웃 앵커를
+    # 버렸다 — "그 어둠의 권세" 0.82점 앵커가 그렇게 사라졌다. 시작끼리만 비교한다.)
     MIN_SEC_PER_LINE = 1.5
     idxs = sorted(anchors.keys())
     k = 1
     while k < len(idxs):
         prev_i, cur_i = idxs[k - 1], idxs[k]
-        gap_lines = cur_i - prev_i - 1  # 그 사이 미앵커 소절 수
-        gap_sec = anchors[cur_i][2] - anchors[prev_i][3]
-        if gap_sec < (gap_lines + 1) * MIN_SEC_PER_LINE:
+        gap_lines = cur_i - prev_i  # 앞 앵커 소절 + 그 사이 미앵커 소절 수
+        gap_sec = anchors[cur_i][2] - anchors[prev_i][2]
+        if gap_sec < gap_lines * MIN_SEC_PER_LINE:
             del anchors[cur_i]
             idxs.pop(k)
             continue  # k는 그대로 두고 다음(당겨진) 항목과 다시 비교
@@ -713,37 +940,72 @@ def map_lines_to_voice_times(
 
     starts: list[float] = [0.0] * len(texts)
     if anchors:
-        # 앵커된 소절은 실측 위치로, 나머지는 이웃 앵커 사이를 글자수 비례로 보간.
         idxs = sorted(anchors.keys())
+        # (1) 앵커 소절: whisper 단어 시작을 오디오 '발성 시작점'으로 정밀 보정.
+        #     whisper는 앞 소절의 늘인 끝음을 다음 단어에 붙여 0.7~1.15초 이르게 찍으므로
+        #     창은 [-0.5, +1.5], 기대 오프셋 +0.6. 골을 못 찾은 앵커만 예전 고정 +0.7초
+        #     (2026-09-05 "자막이 1초 정도 빠르다" 피드백으로 정한 값) 폴백.
+        est = [(anchors[li][2], 0.5, 1.5, 0.6) for li in idxs]
+        try:
+            refined = _refine_onsets_by_audio(video_path, clip_start, clip_end, est)
+        except Exception as e:  # noqa: BLE001
+            print(f"[praise-sync] 오디오 온셋 보정 실패({e}) → 고정 오프셋 폴백")
+            refined = [None] * len(idxs)
+        n_ref = 0
+        for li, r in zip(idxs, refined):
+            if r is not None:
+                starts[li] = r
+                n_ref += 1
+            else:
+                starts[li] = anchors[li][2] + 0.7
+        # (2) 미앵커 소절: 이웃 앵커 '시작'끼리 사이를 글자수 비례로 보간한다. 예전엔
+        #     앞 앵커의 '끝'에서 시작했는데, 퍼지 매칭이 소절 앞부분만 잡으면(오인식이
+        #     심한 뒷부분 탈락) 그 끝이 실제보다 수 초 이르고 다음 소절도 그만큼 일찍
+        #     떴다(실측: 4.7초 조기). 앵커 시작은 (1)로 정밀하므로 그것만 기준으로 삼는다.
+        interp: list[int] = []
+        interp_win: dict[int, float] = {}
         for li in range(len(texts)):
             if li in anchors:
-                starts[li] = anchors[li][2]
                 continue
             prev_a = max((k for k in idxs if k < li), default=None)
             next_a = min((k for k in idxs if k > li), default=None)
-            t0 = anchors[prev_a][3] if prev_a is not None else clip_start
-            t1 = anchors[next_a][2] if next_a is not None else clip_end
-            lo = prev_a + 1 if prev_a is not None else 0
+            t0 = starts[prev_a] if prev_a is not None else clip_start
+            t1 = starts[next_a] if next_a is not None else clip_end
+            lo = prev_a if prev_a is not None else 0
             hi = next_a if next_a is not None else len(texts)
             span_chars = sum(max(1, len(texts[k])) for k in range(lo, hi)) or 1
             cum = sum(max(1, len(texts[k])) for k in range(lo, li))
             starts[li] = t0 + (t1 - t0) * (cum / span_chars)
-        print(f"[praise-sync] 앵커 {len(anchors)}/{len(texts)}소절 (1차+2차 퍼지 매칭)")
+            interp.append(li)
+            # 양쪽 앵커 사이에 홀로 낀 소절은 보간 오차가 작으므로 창을 ±0.6초로 좁힌다 —
+            # 넓히면 앞 소절의 늘인 끝음 속 잔골(실측: 1.1초 앞)을 잡는다. 여럿이 끼거나
+            # 한쪽이 클립 경계면 ±1.0초.
+            both = prev_a is not None and next_a is not None
+            interp_win[li] = 0.6 if (both and hi - lo <= 2) else 1.0
+        # (3) 보간 소절도 오디오 골로 보정(보간은 편향이 없으니 기대 오프셋 0).
+        if interp:
+            try:
+                refined2 = _refine_onsets_by_audio(
+                    video_path, clip_start, clip_end,
+                    [(starts[li], interp_win[li], interp_win[li], 0.0) for li in interp],
+                )
+            except Exception:  # noqa: BLE001
+                refined2 = [None] * len(interp)
+            for li, r in zip(interp, refined2):
+                if r is not None:
+                    starts[li] = r
+                    n_ref += 1
+        print(f"[praise-sync] 앵커 {len(anchors)}/{len(texts)}소절, 오디오 온셋 보정 {n_ref}/{len(texts)}")
     else:
-        # 전부 매칭 실패(전사가 심하게 뭉개짐) → 예전 글자수 비례 방식 폴백.
+        # 전부 매칭 실패(전사가 심하게 뭉개짐) → 예전 글자수 비례 방식 폴백(+0.7초 리드 보정).
         times = [w[0] for w in words]
         total_chars = sum(max(1, len(t)) for t in texts) or 1
         cum = 0
         for li, t in enumerate(texts):
-            starts[li] = times[min(n - 1, int(cum / total_chars * n))]
+            starts[li] = times[min(n - 1, int(cum / total_chars * n))] + 0.7
             cum += max(1, len(t))
         print("[praise-sync] 퍼지 앵커 0개 → 글자수 비례 폴백")
-
-    # 표시 오프셋: 처음엔 0.3초 '당겼는데'(리드) 실사용 피드백이 "자막이 1초 정도 빠르다"
-    # (2026-09-05) — whisper(large-v3)가 노래에서 단어 시작을 실제 발성보다 이르게 찍는
-    # 경향이 이 클립들에서 우세했다. 앵커 시각에서 0.7초 늦춰 표시한다(체감 제시간).
-    # 또 어긋나면 이 상수 대신 실측 재조정 — 편집기 '전체 밀기'(±0.1초)로 미세 보정도 가능.
-    starts = [max(clip_start, s + 0.7) for s in starts]
+    starts = [max(clip_start, s) for s in starts]
 
     # ── 안 부른 소절 드랍 ────────────────────────────────────────────────────
     # 영상이 항상 곡 처음부터 시작하지는 않는다(후렴부터 찍었거나, 끝까지 안 부르고 끊김).
@@ -795,11 +1057,24 @@ def map_lines_to_voice_times(
     #   - 미앵커 소절: 글자 수 기반 최대 노출(초당 1자 + 3초, 최소 5초)까지만.
     # 단, 다음 소절이 그보다 먼저 시작하면 거기서 끊는다(연속 가창은 기존처럼 이어짐).
     # 상한을 넘는 나머지 구간(간주)엔 자막이 꺼진다 — 노래 없는데 가사가 떠 있지 않게.
+    #   - 앵커 소절의 '부른 끝'은 매칭 창의 끝이 아니라, 그 창에서 이어지는 whisper
+    #     단어 사슬(단어 사이 공백 1초 미만)의 끝으로 본다: 퍼지 창이 소절 앞부분만
+    #     잡으면(뒷부분 오인식) 창 끝이 실제보다 수 초 이르고, 노래가 계속되는데 자막이
+    #     먼저 꺼졌다(실측: "할렐루야 찬송하세 다시 사셨도다"가 2.5초 일찍 사라짐).
+    #     간주에선 whisper 단어가 끊기므로 사슬이 거기서 멈춘다.
+    def _voiced_until(j: int) -> float:
+        t_end = words[j][1]
+        k = j + 1
+        while k < n and words[k][0] - t_end < 1.0:
+            t_end = max(t_end, words[k][1])
+            k += 1
+        return t_end
+
     for i in range(len(out)):
         oi = keep[i]  # 드랍 이후 out 위치 → 원래 소절 인덱스(anchors/texts 키)
         nxt = out[i + 1]["start"] if i + 1 < len(out) else clip_end
         if oi in anchors:
-            cap = anchors[oi][3] + 2.0
+            cap = _voiced_until(anchors[oi][1]) + 2.0
         else:
             cap = out[i]["start"] + max(5.0, len(texts[oi]) * 1.0 + 3.0)
         out[i]["end"] = round(max(out[i]["start"] + 0.5, min(nxt, cap)), 2)
@@ -808,10 +1083,17 @@ def map_lines_to_voice_times(
     # 소절들이 꼬리에 0.5~1.6초로 뭉개지면 사실상 안 보인다. 뒤에서부터 각 소절에 최소
     # 2.5초를 보장하고, 모자라면 앞 소절 시간/앞쪽 공백에서 연쇄적으로 당겨온다 — 어떤
     # 소절도 스쳐 지나가듯 사라지지 않는다(클립이 물리적으로 짧으면 가능한 만큼).
+    # 단, 시작은 오디오로 정밀 보정한 '발성 시작점'이라 앞으로 당기면 자막이 노래보다
+    # 먼저 뜬다("딱 타이트하게 발화 시점에" 요청 2026-09-06). 먼저 끝을 다음 소절 시작
+    # 까지 늘려 확보하고, 그래도 모자랄 때만 시작을 최대 0.4초까지 당긴다.
     MIN_SHOW = 2.5
+    MAX_PULL = 0.4
     for i in range(len(out) - 1, -1, -1):
         if out[i]["end"] - out[i]["start"] < MIN_SHOW:
-            out[i]["start"] = round(max(clip_start, out[i]["end"] - MIN_SHOW), 2)
+            nxt = out[i + 1]["start"] if i + 1 < len(out) else clip_end
+            out[i]["end"] = round(min(nxt, out[i]["start"] + MIN_SHOW), 2)
+        if out[i]["end"] - out[i]["start"] < MIN_SHOW:
+            out[i]["start"] = round(max(clip_start, out[i]["start"] - MAX_PULL, out[i]["end"] - MIN_SHOW), 2)
         if i > 0 and out[i - 1]["end"] > out[i]["start"]:
             out[i - 1]["end"] = out[i]["start"]  # 겹침 제거 → 다음 반복에서 i-1도 최소 노출 확보
     for i in range(len(out)):  # 안전망: 역전/0길이 정리

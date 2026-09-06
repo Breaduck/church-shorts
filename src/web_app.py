@@ -3120,12 +3120,40 @@ function updateOverlay() {
   const scale = v.clientWidth / (L.resolution ? L.resolution[0] : 1080);
   const kc = L.caption_ass_coeff || 1;
   const sz = parseFloat($('pSize').value) * kc * scale;
-  ov.style.fontSize = sz + 'px'; enEl.style.fontSize = (sz * 0.45) + 'px';
   ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
   ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
   const usableW = v.clientWidth * 0.70;
-  const w = koEl.getBoundingClientRect().width;
-  if (w > usableW && w > 0) { const f = Math.max(10, sz * usableW / w); ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px'; }
+  // 렌더(captions.py)와 동일 규칙: 클립 안의 모든 줄이 '하나의 크기'(가장 긴 줄이 한 줄에
+  // 들어가는 크기, 단 기본의 78% 하한). 예전엔 현재 줄만 따로 줄여서 재생 중 글자 크기가
+  // 줄마다 커졌다 작아졌다 했다(실신고 2026-09-06). 하한에서도 넘치는 줄은 2줄로 감싼다.
+  const f = uniformCapSize(sz, usableW);
+  ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px';
+  ov.style.whiteSpace = (f <= sz * 0.78 + 0.01) ? 'normal' : 'nowrap';
+  ov.style.maxWidth = usableW + 'px';
+}
+let _ucsKey = '', _ucsVal = 0;
+function uniformCapSize(sz, usableW) {
+  // 모든 자막 줄의 폭을 같은 폰트로 재서(숨김 측정 엘리먼트) 균일 크기를 구한다. 결과는
+  // (텍스트 목록·기본 크기·폭) 키로 캐시해 매 프레임 재측정을 피한다.
+  const key = caps.map(c => c.text).join('') + '|' + sz.toFixed(2) + '|' + Math.round(usableW);
+  if (key === _ucsKey) return _ucsVal;
+  const ov = $('capOv');
+  let m = document.getElementById('capMeasure');
+  if (!m) {
+    m = document.createElement('span'); m.id = 'capMeasure';
+    m.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-99999px;top:0;font-weight:800;line-height:1.25;pointer-events:none';
+    document.body.appendChild(m);
+  }
+  m.style.fontFamily = getComputedStyle(ov).fontFamily;
+  m.style.fontSize = sz + 'px';
+  let need = sz;
+  for (const c of caps) {
+    m.textContent = c.text || '';
+    const w = m.getBoundingClientRect().width;
+    if (w > usableW && w > 0) need = Math.min(need, sz * usableW / w);
+  }
+  _ucsKey = key; _ucsVal = Math.max(sz * 0.78, need);
+  return _ucsVal;
 }
 
 // ─── 재생 제어 ───
