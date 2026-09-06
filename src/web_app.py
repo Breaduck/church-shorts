@@ -2374,6 +2374,18 @@ STUDIO_TEMPLATE = r"""
     background: transparent; border: none; border-radius: 4px; cursor: pointer; }
   .hdr .hic:hover { background: #2a2a2a; color: #fff; }
   .hdr .hic.export { color: var(--hot); }
+  /* 저장하기: 어두운 프리미어 헤더에서 유일한 애플 스타일 흰 pill(프로젝트 규칙) —
+     Ctrl+S를 모르면 편집한 값(크기·가로·세로)이 저장 안 된 채 내보내기로 가던 문제 해결. */
+  .hdr .savebtn { margin: 0 4px 0 6px; padding: 4px 14px; border: 0; border-radius: 999px;
+    background: #fff; color: #1d1d1f; font-size: 11.5px; font-weight: 700; letter-spacing: -0.01em;
+    cursor: pointer; white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0,0,0,.45), 0 4px 12px rgba(0,0,0,.35);
+    transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
+  .hdr .savebtn:hover { transform: translateY(-1px); box-shadow: 0 2px 5px rgba(0,0,0,.5), 0 8px 20px rgba(0,0,0,.45); }
+  .hdr .savebtn:active { transform: translateY(0); }
+  .hdr .savebtn:disabled { opacity: .65; cursor: default; transform: none; }
+  .hdr .savebtn.saved { background: #34c759; color: #fff; }
+  .hdr .savebtn.dirty { background: #ffd60a; }
 
   /* ── 작업 영역 그리드 ── */
   .ws { flex: 1 1 auto; min-height: 0; display: grid; gap: 0; padding: 3px;
@@ -2717,6 +2729,7 @@ STUDIO_TEMPLATE = r"""
   <div class="mode on">편집</div>
   <div class="mode" id="modeExport">내보내기</div>
   <div class="proj"><span id="projName">클립 {{ idx + 1 }}</span><span class="edited" id="projEdited"></span></div>
+  <button class="savebtn" id="hSave" title="편집한 내용(자막·글씨 크기·가로/세로 위치 등)을 저장합니다 (Ctrl+S)">저장하기</button>
   <button class="hic" id="hWorkspace" title="작업 영역">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 12h18M12 12v9"/></svg>
   </button>
@@ -3798,6 +3811,21 @@ async function render() {
   setStatus(r.ok ? '내보내기 시작 — 후보 목록에서 진행률 확인' : '내보내기 요청 실패');
 }
 $('hExport').addEventListener('click', render); $('modeExport').addEventListener('click', render);
+// 우측 상단 '저장하기'. 예전엔 저장 수단이 Ctrl+S(와 메뉴)뿐이라, 크기·가로·세로를 고쳐도
+// 저장을 안 한 채 내보내면 그 값이 영상에 안 들어갔다(실신고 2026-09-07).
+const saveBtnEl = $('hSave');
+saveBtnEl.addEventListener('click', async () => {
+  saveBtnEl.disabled = true; saveBtnEl.textContent = '저장 중…';
+  const ok = await save();
+  saveBtnEl.textContent = ok ? '저장됨 ✓' : '저장 실패';
+  saveBtnEl.classList.toggle('saved', ok);
+  saveBtnEl.disabled = false;
+  setTimeout(() => { saveBtnEl.textContent = '저장하기'; saveBtnEl.classList.remove('saved'); refreshSaveBtn(); }, 2500);
+});
+// 저장 안 된 편집이 있으면 버튼을 노란색으로 — '저장해야 한다'가 눈에 보이게.
+function refreshSaveBtn() { saveBtnEl.classList.toggle('dirty', !!dirty); }
+const _markDirtyOrig = markDirty;
+markDirty = function () { _markDirtyOrig(); refreshSaveBtn(); };
 $('modeImport').addEventListener('click', () => { location.href = '/video/' + VIDEO_ID; });
 $('hFull').addEventListener('click', () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); });
 $('hWorkspace').addEventListener('click', resetWs);

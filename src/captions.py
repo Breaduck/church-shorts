@@ -593,7 +593,12 @@ def build_ass(
     else:
         y = _y_position(resolution, position, safe_area_bottom_pct, safe_area_top_pct)
         title_margin_v = max(0, int(height * safe_area_top_pct) + title_offset_y)
-        caption_margin_v = max(0, height - y + caption_offset_y)
+        # 하단 기준(Alignment 2)에서 MarginV는 '화면 아래에서 띄우는 거리'라, offset_y를
+        # 더하면 자막이 **위로** 올라간다. 그런데 편집기 미리보기 세 곳(스튜디오·확인 팝업·
+        # 편집 페이지)은 전부 top = 기준선 + y 로 그려 +y를 '아래로'로 보여준다 — 부호가
+        # 반대라 스튜디오에서 자막을 내려도 실제 영상에선 올라갔다("y축이 저장이 안 된다"
+        # 실신고 2026-09-07). 미리보기 쪽이 사용자가 보는 기준이므로 렌더를 맞춘다.
+        caption_margin_v = max(0, height - y - caption_offset_y)
         caption_alignment = 2  # 하단 기준 (기존 방식)
         title_alignment = 8
 
