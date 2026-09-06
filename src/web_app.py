@@ -502,7 +502,23 @@ f.addEventListener('submit', async (e) => {{
       const fd = new FormData();
       fd.append('file', vf); fd.append('mode', mode); fd.append('model', '');
       if (mode === 'praise') fd.append('song_titles', getSongTitlesValue());
-      res = await fetch('/analyze_upload', {{ method: 'POST', body: fd }});
+      // fetch는 업로드 진행률을 알려주지 않아, 수백 MB 영상을 올리는 내내 화면이 멈춘 것처럼
+      // 보였다("초반에 왜 이렇게 오래 분석하냐" — 실은 아직 업로드 중, 2026-09-07).
+      // XHR로 바꿔 실제 업로드 %와 MB를 보여준다.
+      res = await new Promise((resolve, reject) => {{
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/analyze_upload');
+        xhr.upload.onprogress = (ev) => {{
+          if (!ev.lengthComputable) return;
+          const pct = Math.round(ev.loaded / ev.total * 100);
+          const mb = (ev.total / 1048576).toFixed(0);
+          statusEl.innerHTML = '<span class="spinner"></span>동영상 업로드 중… ' + pct + '% (' + mb + 'MB)'
+            + (pct >= 100 ? ' — 업로드 완료, 분석 시작 중…' : '');
+        }};
+        xhr.onload = () => resolve({{ ok: xhr.status >= 200 && xhr.status < 300, json: async () => JSON.parse(xhr.responseText) }});
+        xhr.onerror = () => reject(new Error('업로드 실패 (네트워크)'));
+        xhr.send(fd);
+      }});
     }} else {{
       const song_titles = mode === 'praise' ? getSongTitlesValue() : '';
       res = await fetch('/analyze', {{
@@ -6026,7 +6042,12 @@ def fetch_lyrics_route(video_id: str, idx: int):
         mapped = map_lines_to_voice_times(
             video_dir / "source.mp4", clip.start, clip.end, lines,
             cfg["whisper"], cache_dir=video_dir / "precise_cache",
-            model_override=cfg["whisper"].get("precise_model_size", "large-v3"),
+            # 싱크는 단어 '시각'만 쓰므로 medium이 맞다 — large-v3는 3배 느리고 단어도 덜
+            # 잡는다(실측 2026-09-07: 223초/63단어 vs 68초/73단어). main._sync_praise_clips_bg 참고.
+            model_override=(
+                cfg["whisper"].get("praise_model_size")
+                or cfg["whisper"].get("model_size", "medium")
+            ),
         )
     except Exception:  # noqa: BLE001 - 매핑 실패해도 가사는 반환(균등 분배)
         traceback.print_exc()

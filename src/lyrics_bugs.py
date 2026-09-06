@@ -28,6 +28,10 @@ _TRACK_REF_RE = re.compile(r"bugs\.co\.kr/track/(\d+)")
 _MARKER_LINE_RE = re.compile(
     r"^[\(\[]?\s*(\d+\s*[.절)\]]?|후렴|반복|coda|verse\s*\d*|chorus)\s*[\)\]]?$", re.I
 )
+# 가사 줄 **앞에** 붙은 절 표지("1. ", "2) ", "(후렴) ") — 뒤에 실제 가사가 이어지는 경우.
+_LEADING_MARKER_RE = re.compile(
+    r"^(?:[\(\[]\s*(?:\d+\s*절?|후렴|반복|chorus|verse\s*\d*)\s*[\)\]]|\d+\s*[.)]|\d+\s*절)\s+", re.I
+)
 
 
 def _get(url: str, timeout: int = 15) -> str:
@@ -73,8 +77,24 @@ def fetch_track_lyrics(track_id: int) -> tuple[list[str], dict]:
     if not m:
         return [], meta
     text = html.unescape(m.group(1))
-    lines = [ln.strip() for ln in text.replace("\r", "").split("\n")]
-    return [ln for ln in lines if ln and not _MARKER_LINE_RE.match(ln)], meta
+    return clean_lyric_lines(text.replace("\r", "").split("\n")), meta
+
+
+def clean_lyric_lines(lines: list[str]) -> list[str]:
+    """가사 원문 줄들을 자막에 바로 쓸 수 있게 정리한다.
+
+    벅스 등록본은 절 번호를 줄 앞에 붙여 두는 경우가 많다("1. 하나님 한 번도 나를 …").
+    그대로 자막에 넣으면 화면에 "1."이 뜬다(실측 2026-09-07). 번호만 있는 줄은 통째로 빼고,
+    가사 앞에 붙은 번호/후렴 표지는 떼고, 등록본에 흔한 이중 공백도 하나로 줄인다."""
+    out: list[str] = []
+    for raw in lines:
+        ln = " ".join((raw or "").split())  # 이중 공백/탭 정리
+        if not ln or _MARKER_LINE_RE.match(ln):
+            continue
+        ln = _LEADING_MARKER_RE.sub("", ln).strip()
+        if ln:
+            out.append(ln)
+    return out
 
 
 def search_tracks(query: str) -> list[dict]:

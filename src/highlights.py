@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.audio_peaks import PeakHint, format_hints_for_prompt
-from src.lyrics_bugs import fetch_lyrics_from_bugs, normalize_title_key
+from src.lyrics_bugs import clean_lyric_lines, fetch_lyrics_from_bugs, normalize_title_key
 from src.scoring import compute_scores
 from src.transcribe import Transcript
 
@@ -1108,7 +1108,8 @@ def fetch_praise_lyrics_by_titles(
     for s in songs:
         hit = _cache.get(_ckey(s["title"]))
         if hit:
-            cached_out[s["index"]] = list(hit)
+            # 예전 버전이 절 번호("1. ")째로 저장해 둔 캐시도 여기서 한 번 더 정리한다.
+            cached_out[s["index"]] = clean_lyric_lines(list(hit))
         else:
             pending.append(s)
     if not pending:
@@ -1187,7 +1188,7 @@ def fetch_praise_lyrics_by_titles(
             text = str(item.get("lyrics", "")).strip()
         except (TypeError, ValueError):
             continue
-        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        lines = clean_lyric_lines(text.split("\n"))
         if lines:
             out[idx] = lines
             if idx in title_by_index:

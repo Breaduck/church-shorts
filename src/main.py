@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 import json
 import shutil
 import sys
@@ -533,16 +534,31 @@ def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], 
     }
 
     def _run():
-        precise_model = cfg["whisper"].get("precise_model_size", "large-v3")
+        # 싱크 전사 모델은 medium(praise_model_size)이 정답이다. 이 경로는 단어의 '시각'과
+        # 자모 유사도만 쓰고 텍스트 품질은 안 쓰는데, large-v3는 같은 곡에서 3배 넘게
+        # 느리면서 단어를 오히려 덜 잡았다(실측 2026-09-07, 124초 찬양 클립:
+        # large-v3 순차 223초/63단어 vs medium 순차 68초/73단어). 배치+VAD는 15초로 빠르지만
+        # VAD가 노래를 발화로 안 봐 단어가 1개까지 떨어져 못 쓴다(같은 실측).
+        precise_model = (
+            cfg["whisper"].get("praise_model_size")
+            or cfg["whisper"].get("model_size", "medium")
+        )
+        # 이 정밀 전사는 사용자가 이미 편집기를 보고 있는 동안 도는 백그라운드 작업이다.
+        # cpu_threads를 config 그대로(=코어 수) 쓰면 large-v3가 전 코어를 잡아, 편집기의
+        # 미리보기/렌더/파형이 전부 굼떠진다("분석이 끝났는데도 계속 느리다", 2026-09-07).
+        # 코어 절반만 쓰게 해 UI 응답성을 지킨다 — 싱크는 몇 분 늦어도 자막은 이미 나온다.
+        w = dict(cfg["whisper"])
+        w["cpu_threads"] = max(1, (os.cpu_count() or 4) // 2)
         for sig in sigs:
             texts = texts_by_sig.get(sig)
             if not texts:
                 continue
             start, end = sig
+            t_sync = time.time()
             try:
                 mapped = map_lines_to_voice_times(
                     video_path, start, end, texts,
-                    cfg["whisper"], cache_dir=video_dir / "precise_cache",
+                    w, cache_dir=video_dir / "precise_cache",
                     model_override=precise_model,
                 )
             except Exception:  # noqa: BLE001 - 백그라운드 싱크 실패해도 균등 분배 자막은 유지
@@ -559,7 +575,7 @@ def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], 
                     if (round(cc.start, 2), round(cc.end, 2)) == sig:
                         cc.caption_overrides = mapped
                         save_clips_json(cur, clips_path)
-                        print(f"[praise-sync] 곡 {start:.0f}~{end:.0f}초 정밀 싱크 반영")
+                        print(f"[praise-sync] 곡 {start:.0f}~{end:.0f}초 정밀 싱크 반영 ({time.time() - t_sync:.0f}초 소요)")
                         break
     threading.Thread(target=_run, daemon=True).start()
 
