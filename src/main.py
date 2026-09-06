@@ -420,8 +420,10 @@ def _title_based_praise_clips(
     노래 속도에 맞춘 정밀 싱크는 여기서 하지 않는다 — 호출자가 clips.json을 저장한 뒤
     _sync_praise_clips_bg로 백그라운드 정밀 매핑을 시작해야 한다."""
     p = cfg.get("praise", {}) or {}
+    # 가사 검색/자막 텍스트 확정은 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 항상
+    # Sonnet 고정(2026-09-06, 사용자 결정: 분석은 Opus, 자막 실행은 Sonnet).
     lyrics_by_idx = fetch_praise_lyrics_by_titles(
-        title_lines, model=model or p.get("model", ""),
+        title_lines, model="claude-sonnet-4-5",
         thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
         on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
     )
@@ -1119,8 +1121,9 @@ def analyze(
                         for ci, c in enumerate(clips) if seg_lines[ci]
                     ]
                     if req:
+                        # 자막 교정도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 Sonnet 고정.
                         fixed = correct_praise_lyrics(
-                            req, model=model or p.get("model", ""),
+                            req, model="claude-sonnet-4-5",
                             thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
                         )
                         for ci, c in enumerate(clips):

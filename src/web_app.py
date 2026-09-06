@@ -159,13 +159,14 @@ BASE_STYLE = """
     font-size: 13px; font-family: inherit; border: 1px solid var(--border); border-radius: 8px;
     padding: 4px 6px; background: rgba(255,255,255,.7); color: var(--text);
   }
-  /* YouTube 업로드 */
+  /* 우측 상단 둥근 버튼(YouTube 업로드 · 스튜디오) — 애플식 흰 바탕 + 그림자, 완전한 알약 모양 */
   .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .yt-upload-top { flex: 0 0 auto; padding: 10px 16px; font-size: 13.5px; font-weight: 700; font-family: inherit;
-    border: none; border-radius: 12px; background: #fff; color: var(--accent); cursor: pointer; white-space: nowrap;
-    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08); transition: background .15s, box-shadow .15s; }
-  .yt-upload-top:hover { background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }
-  .yt-upload-top:active { transform: scale(0.98); }
+  .page-head-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pill-btn { flex: 0 0 auto; padding: 10px 18px; font-size: 13.5px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 999px; background: #fff; color: var(--accent); cursor: pointer; white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08); transition: background .15s, box-shadow .15s, transform .1s; }
+  .pill-btn:hover { background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }
+  .pill-btn:active { transform: scale(0.97); }
   .yt-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.32);
     -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); display: none;
     align-items: center; justify-content: center; z-index: 60; }
@@ -269,62 +270,80 @@ INDEX_TEMPLATE = f"""
     padding: 4px 2px; user-select: none; list-style-position: inside;
   }}
   .adv summary:hover {{ color: var(--text); }}
-  .adv-sub {{ font-weight: 500; color: var(--text-faint); margin-left: 4px; }}
-  /* 모델 선택(소넷/오푸스) 세그먼트 버튼 */
-  .model-pick {{ margin: 14px 0 4px; }}
-  .model-pick-lbl {{ font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 7px; }}
   .seg {{ display: flex; gap: 2px; background: rgba(120,120,128,0.12); -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px); padding: 3px; border-radius: 12px; }}
   .seg label {{
     flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 9px 8px;
     font-size: 13.5px; font-weight: 700; color: var(--text-muted); transition: background .2s, color .2s, box-shadow .2s;
   }}
-  .seg label .seg-sub {{ display: block; font-size: 11px; font-weight: 500; color: var(--text-faint); margin-top: 2px; }}
   .seg input {{ position: absolute; opacity: 0; pointer-events: none; }}
   .seg label:has(input:checked) {{ background: #fff; color: var(--accent);
     box-shadow: 0 1px 1px rgba(0,0,0,.04), 0 3px 8px rgba(15,23,42,.10); }}
-  .seg label:has(input:checked) .seg-sub {{ color: var(--text-muted); }}
+  /* 우측 상단 '새로 분석' 토글 — 둥근 흰색 배경 + 그림자(애플 느낌), 켜지면 포인트 컬러 링 */
+  .force-toggle {{
+    flex: 0 0 auto; padding: 16px 26px; font-size: 15px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 999px; background: #fff; color: var(--text-muted); cursor: pointer;
+    box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 10px 26px rgba(15,23,42,.10);
+    transition: color .15s, box-shadow .15s, transform .1s; white-space: nowrap;
+  }}
+  .force-toggle:hover {{ box-shadow: 0 3px 10px rgba(15,23,42,.10), 0 12px 30px rgba(15,23,42,.14); }}
+  .force-toggle:active {{ transform: scale(0.97); }}
+  .force-toggle[aria-pressed="true"] {{
+    color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent) inset, 0 2px 6px rgba(15,23,42,.08), 0 10px 26px rgba(15,23,42,.10);
+  }}
+  /* 파일 드래그앤드롭 박스 — 애플 점선 업로드 카드 */
+  .dropzone {{
+    margin-top: 14px; padding: 36px 20px; text-align: center; cursor: pointer;
+    border: 1.5px dashed rgba(60,60,67,0.28); border-radius: 18px;
+    background: rgba(120,120,128,0.05); transition: border-color .15s, background .15s, box-shadow .15s;
+  }}
+  .dropzone:hover {{ border-color: var(--accent); background: rgba(10,132,255,0.05); }}
+  .dropzone.drag {{ border-color: var(--accent); background: rgba(10,132,255,0.09);
+    box-shadow: 0 0 0 5px rgba(10,132,255,0.08); }}
+  .dropzone-icon {{
+    width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 50%;
+    background: rgba(10,132,255,0.10); color: var(--accent); font-size: 20px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  .dropzone-text {{ font-size: 14.5px; font-weight: 600; color: var(--text); }}
+  .dropzone-text b {{ color: var(--accent); }}
+  .dropzone-hint {{ font-size: 12.5px; color: var(--text-faint); margin-top: 8px; }}
+  .dropzone-file {{ font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>교회 쇼츠 생성기</h1>
-  <p class="subtitle">유튜브 설교 링크를 넣으면 하이라이트 후보를 뽑아드려요.</p>
+  <div class="page-head">
+    <div>
+      <h1>교회 쇼츠 생성기</h1>
+      <p class="subtitle">유튜브 설교 링크를 넣으면 하이라이트 후보를 뽑아드려요.</p>
+    </div>
+    <button type="button" class="force-toggle" id="forceToggle" aria-pressed="false">새로 분석</button>
+  </div>
   <div class="card">
     <form id="f">
-      <div class="model-pick" style="margin:0 0 12px">
-        <div class="seg">
-          <label><input type="radio" name="mode" value="sermon" checked>말씀<span class="seg-sub">설교 하이라이트 쇼츠</span></label>
-          <label><input type="radio" name="mode" value="praise">찬양<span class="seg-sub">전체 예배 실황에서 곡별 통편집</span></label>
-        </div>
+      <div class="seg" style="margin-bottom:14px">
+        <label><input type="radio" name="mode" value="sermon" checked>말씀</label>
+        <label><input type="radio" name="mode" value="praise">찬양</label>
       </div>
-      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." autofocus>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
-        <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="font-size:12.5px">
-      </label>
-      <p class="hint" style="margin-top:4px">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
+      <input type="text" id="url" placeholder="유튜브 링크" autofocus>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="display:none">
+        <div class="dropzone-icon">&#8593;</div>
+        <div class="dropzone-text" id="dropzoneText">동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b></div>
+        <p class="dropzone-hint">직접 찍은 동영상은 링크 대신 파일을 올리면 돼요 (전사부터 직접 하므로 분석이 더 오래 걸려요)</p>
+      </div>
       <div id="songTitlesWrap" style="display:none;margin-top:10px">
-        <textarea id="songTitles" rows="3" placeholder="(찬양 · 파일 업로드 시 권장) 부른 찬양 제목을 한 줄에 하나씩, 부른 순서대로 적어주세요.&#10;예)&#10;주 은혜임을&#10;은혜 아니면"></textarea>
+        <textarea id="songTitles" rows="3" placeholder="부른 찬양 제목을 한 줄에 하나씩, 부른 순서대로 적어주세요."></textarea>
         <p class="hint" style="margin-top:4px">제목을 넣으면 부정확한 음성인식 대신 <b>정식 가사</b>를 자막으로 넣어요 (전사를 건너뛰어 더 정확하고 빨라요). 비워두면 예전처럼 음성인식으로 가사를 뽑아요.</p>
       </div>
       <details class="adv">
-        <summary>고급 옵션 <span class="adv-sub">자막 붙여넣기 · 새로 분석</span></summary>
-        <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기 — 붙여넣으면 자동 전사를 건너뛰고 이걸로 하이라이트를 찾습니다. 유튜브 '스크립트 표시' 복사 또는 SRT/VTT 권장."></textarea>
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);margin-top:10px;cursor:pointer">
-          <input type="checkbox" id="force"> 새로 분석 (저장된 후보 무시하고 다시 뽑기)
-        </label>
+        <summary>고급 옵션</summary>
+        <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기"></textarea>
       </details>
-      <div class="model-pick">
-        <div class="model-pick-lbl">하이라이트 선정 AI 모델</div>
-        <div class="seg">
-          <label><input type="radio" name="model" value="claude-sonnet-4-5" checked>소넷<span class="seg-sub">빠름 · 한도 절약 (기본)</span></label>
-          <label><input type="radio" name="model" value="claude-opus-4-8">오푸스<span class="seg-sub">품질 우선 · 한도 더 씀</span></label>
-          <label><input type="radio" name="model" value="claude-fable-5">페이블<span class="seg-sub">최고 품질 · 한도 많이 씀</span></label>
-        </div>
-      </div>
       <button class="primary" type="submit">분석 시작</button>
     </form>
-    <p class="hint">같은 영상은 저장된 후보를 재사용해 사용량을 아껴요.</p>
   </div>
   <div class="status-box" id="status" style="display:none"></div>
 </div>
@@ -340,6 +359,33 @@ function syncSongTitlesVisibility() {{
 }}
 f.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener('change', syncSongTitlesVisibility));
 syncSongTitlesVisibility();
+// '새로 분석' 토글 — 저장된 후보를 무시하고 다시 뽑을지 여부(우측 상단 버튼으로 이동).
+const forceToggle = document.getElementById('forceToggle');
+forceToggle.addEventListener('click', () => {{
+  const on = forceToggle.getAttribute('aria-pressed') !== 'true';
+  forceToggle.setAttribute('aria-pressed', String(on));
+}});
+// 파일 드래그앤드롭
+const dropzone = document.getElementById('dropzone');
+const vfile = document.getElementById('vfile');
+const dropzoneText = document.getElementById('dropzoneText');
+function showPickedFile(file) {{
+  dropzoneText.innerHTML = file
+    ? '<span class="dropzone-file">' + file.name + '</span>'
+    : '동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b>';
+}}
+dropzone.addEventListener('click', () => vfile.click());
+vfile.addEventListener('change', () => showPickedFile(vfile.files[0] || null));
+['dragenter', 'dragover'].forEach((ev) => dropzone.addEventListener(ev, (e) => {{
+  e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag');
+}}));
+['dragleave', 'drop'].forEach((ev) => dropzone.addEventListener(ev, (e) => {{
+  e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('drag');
+}}));
+dropzone.addEventListener('drop', (e) => {{
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) {{ vfile.files = e.dataTransfer.files; showPickedFile(file); }}
+}});
 f.addEventListener('submit', async (e) => {{
   e.preventDefault();
   if (submitBtn.disabled) return;  // 중복 클릭 방지: 하이라이트 선정은 AI가 실제로 읽고 고르는
@@ -347,31 +393,30 @@ f.addEventListener('submit', async (e) => {{
                                     // 중복 실행돼 진행률이 널뛰고 세션 한도만 낭비된다.
   submitBtn.disabled = true;
   const url = document.getElementById('url').value;
-  const vfile = document.getElementById('vfile').files[0] || null;
+  const vf = vfile.files[0] || null;
   const transcript_text = document.getElementById('transcript').value;
-  const force = document.getElementById('force').checked;  // 기본은 캐시 재사용, 체크 시에만 새로 분석
-  const model = (f.querySelector('input[name="model"]:checked') || {{}}).value || '';
+  const force = forceToggle.getAttribute('aria-pressed') === 'true';  // 기본은 캐시 재사용
   const mode = (f.querySelector('input[name="mode"]:checked') || {{}}).value || 'sermon';
-  if (!url.trim() && !vfile) {{
+  if (!url.trim() && !vf) {{
     statusEl.style.display = 'block';
     statusEl.innerText = '유튜브 링크를 넣거나 동영상 파일을 선택해 주세요.';
     submitBtn.disabled = false; return;
   }}
   statusEl.style.display = 'block';
-  statusEl.innerHTML = vfile
+  statusEl.innerHTML = vf
     ? '<span class="spinner"></span>동영상 업로드 중… (파일이 크면 시간이 걸려요)'
     : '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
   try {{
     let res;
-    if (vfile) {{
+    if (vf) {{
       // 파일 업로드 경로: multipart로 보내고, 서버가 저장 후 whisper 직접 전사부터 시작한다.
       const fd = new FormData();
-      fd.append('file', vfile); fd.append('mode', mode); fd.append('model', model);
+      fd.append('file', vf); fd.append('mode', mode); fd.append('model', '');
       if (mode === 'praise') fd.append('song_titles', document.getElementById('songTitles').value || '');
       res = await fetch('/analyze_upload', {{ method: 'POST', body: fd }});
     }} else {{
       res = await fetch('/analyze', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model, mode}})
+        method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{url, transcript_text, force, model: '', mode}})
       }});
     }}
     const data = await res.json();
@@ -510,7 +555,10 @@ CANDIDATES_TEMPLATE = f"""
       <h1>하이라이트 후보</h1>
       <p class="subtitle">바이럴 예상 순위 순으로 정렬했어요. 만들고 싶은 걸 골라주세요.</p>
     </div>
-    <button type="button" class="yt-upload-top" id="ytUploadTop">YouTube 업로드</button>
+    <div class="page-head-btns">
+      <button type="button" class="pill-btn" id="studioBtn">스튜디오</button>
+      <button type="button" class="pill-btn" id="ytUploadTop">YouTube 업로드</button>
+    </div>
   </div>
   {{% endif %}}
   {{% if analyze_error %}}
@@ -609,17 +657,6 @@ CANDIDATES_TEMPLATE = f"""
   </div>
   {{% endfor %}}
   <div class="actions">
-    <label class="opt-chip"><input type="checkbox" id="outroChk" checked> 끝에 로고 2초 넣기</label>
-    <label class="opt-chip"><input type="checkbox" id="sfxChk"> 효과음(전환 whoosh) 넣기</label>
-    <label class="opt-chip"><input type="checkbox" id="motionChk"> 모션(제목 팝·자막 페이드)</label>
-    <label class="opt-chip"><input type="checkbox" id="boldCapChk"> 레퍼런스 자막(볼드·형광펜)</label>
-    <label class="opt-chip">자막 언어
-      <select id="capLangSel">
-        <option value="bilingual" selected>한글+영어 2줄 (기본)</option>
-        <option value="ko">한글만</option>
-      </select>
-    </label>
-    <label class="opt-chip"><input type="checkbox" id="facetrackChk"> 얼굴 추적(화면 확대·화자 따라감)</label>
     <button class="primary" type="submit" id="renderBtn" {{% if rendering %}}disabled{{% endif %}}>선택한 쇼츠 만들기</button>
   </div>
   </form>
@@ -650,6 +687,24 @@ CANDIDATES_TEMPLATE = f"""
       <p class="sub">만든 쇼츠 중 하나를 골라 업로드하세요. 업로드 후 성과는 매주 자동으로 체크돼요.</p>
       <div id="ytPickList"></div>
       <button type="button" class="yt-modal-close" id="ytModalClose">닫기</button>
+    </div>
+  </div>
+  <div class="yt-modal-back" id="studioModalBack">
+    <div class="yt-modal">
+      <h2>스튜디오</h2>
+      <p class="sub">만들 때 적용할 옵션이에요.</p>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="outroChk" checked> 끝에 로고 2초 넣기</label>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="sfxChk"> 효과음(전환 whoosh) 넣기</label>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="motionChk"> 모션(제목 팝·자막 페이드)</label>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="boldCapChk"> 레퍼런스 자막(볼드·형광펜)</label>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="facetrackChk"> 얼굴 추적(화면 확대·화자 따라감)</label>
+      <label class="opt-chip" style="display:flex;width:100%;margin:0 0 4px;justify-content:space-between">자막 언어
+        <select id="capLangSel">
+          <option value="bilingual" selected>한글+영어 2줄 (기본)</option>
+          <option value="ko">한글만</option>
+        </select>
+      </label>
+      <button type="button" class="yt-modal-close" id="studioModalClose">닫기</button>
     </div>
   </div>
   <script>
@@ -783,6 +838,13 @@ CANDIDATES_TEMPLATE = f"""
   }});
   document.getElementById('ytModalClose').addEventListener('click', () => ytModalBack.classList.remove('show'));
   ytModalBack.addEventListener('click', (e) => {{ if (e.target === ytModalBack) ytModalBack.classList.remove('show'); }});
+
+  // 스튜디오: 로고/효과음/모션/얼굴추적 등 렌더 옵션을 여기 모아둔다(사용자 요청 2026-09-06,
+  // 메인 화면을 간결하게 유지).
+  const studioModalBack = document.getElementById('studioModalBack');
+  document.getElementById('studioBtn').addEventListener('click', () => studioModalBack.classList.add('show'));
+  document.getElementById('studioModalClose').addEventListener('click', () => studioModalBack.classList.remove('show'));
+  studioModalBack.addEventListener('click', (e) => {{ if (e.target === studioModalBack) studioModalBack.classList.remove('show'); }});
   </script>
   {{% endif %}}
 
@@ -4399,6 +4461,8 @@ def correct_captions_route(video_id: str, idx: int):
     _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
     if model and model not in _ALLOWED_MODELS:
         model = ""
+    # 자막 교정은 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
+    model = model or "claude-sonnet-4-5"
 
     from src.highlights import correct_sermon_captions
 
@@ -4450,8 +4514,9 @@ def fetch_lyrics_route(video_id: str, idx: int):
     cfg = _load_config()
     p = cfg.get("praise", {}) or {}
     try:
+        # 가사 검색도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
         lyrics_by_idx = fetch_praise_lyrics_by_titles(
-            [title], model=p.get("model", ""),
+            [title], model="claude-sonnet-4-5",
             thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
         )
     except Exception as e:  # noqa: BLE001
@@ -4495,6 +4560,8 @@ def translate_captions_route(video_id: str, idx: int):
     _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
     if model and model not in _ALLOWED_MODELS:
         model = ""
+    # 번역도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
+    model = model or "claude-sonnet-4-5"
 
     from src.highlights import translate_captions_to_english
 
