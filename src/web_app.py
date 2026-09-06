@@ -1649,6 +1649,32 @@ def _compute_layout(
     }
 
 
+def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict]) -> list[dict]:
+    """자막 목록에서 '남들보다 유난히 긴 줄'만 앞뒤 조각으로 쪼갠다(데이터 단계).
+
+    왜 렌더가 아니라 여기서 하나: 쪼갠 조각이 타임라인에 별도 자막 칸으로 보여야 사용자가
+    각각 고칠 수 있다(실신고 2026-09-06 "쪼갰으면 스튜디오에서도 2칸으로 나와야 수정하지").
+    렌더는 저장된 자막을 그대로 굽는다(WYSIWYG).
+    """
+    from src.captions import caption_usable_width_px, split_outlier_lines
+    from src.render import _probe_display_resolution
+
+    if not lines:
+        return lines
+    try:
+        res = _probe_display_resolution(OUTPUT_ROOT / video_id / "source.mp4")
+        full_frame = _is_upload_praise(video_id, clip)
+        layout = _compute_layout(cfg, clip, res, full_frame=full_frame)
+        width = int((layout.get("resolution") or [1080, 1920])[0])
+        size = int(layout.get("caption_font_size") or cfg["captions"]["font_size"])
+        font = clip.caption_font or cfg["captions"]["font_family"]
+        usable = caption_usable_width_px(width, card_layout=not full_frame)
+        return split_outlier_lines(lines, font, size, usable)
+    except Exception as e:  # noqa: BLE001
+        print(f"[caption-split] 건너뜀({e})")
+        return lines
+
+
 def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
@@ -1676,7 +1702,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
             }
             for o in clip.caption_overrides
         ]
-        return sorted(rows, key=lambda r: r["start"])
+        return _split_long_caption_lines(
+            video_id, clip, cfg, sorted(rows, key=lambda r: r["start"]),
+        )
 
     transcript_path = OUTPUT_ROOT / video_id / "transcript.json"
     if not transcript_path.exists():
@@ -3119,26 +3147,26 @@ function updateOverlay() {
   const scale = v.clientWidth / (L.resolution ? L.resolution[0] : 1080);
   const kc = L.caption_ass_coeff || 1;
   const sz = parseFloat($('pSize').value) * kc * scale;
-  const usableW0 = v.clientWidth * 0.70;
-  // 렌더와 같은 분할: 폭을 넘는 줄은 조각으로 나뉘고, 지금 시각의 조각만 보여준다.
-  const part = capChunkAt(i, v.currentTime, sz, usableW0);
-  koEl.textContent = part.ko;
-  const en = (enVisible && ens[i]) ? enSlice(ens[i].text, part.ci, part.n) : '';
+  const usableW = v.clientWidth * 0.70;
+  koEl.textContent = caps[i].text;
+  const en = (enVisible && ens[i]) ? ens[i].text : '';
   enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
   ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
   ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
-  // 렌더(captions.py)와 동일 규칙: 크기는 항상 설정값 그대로(줄마다·클립마다 안 바뀜),
-  // 안전지대 폭을 넘는 줄은 크기를 줄이는 대신 앞뒤 조각으로 나눠 순서대로 보여준다.
-  ov.style.fontSize = sz + 'px'; enEl.style.fontSize = (sz * 0.45) + 'px';
+  // 렌더(captions.py)와 동일 규칙: 클립 안의 모든 줄이 '하나의 크기'(가장 긴 줄이 안전지대
+  // 안에 한 줄로 들어가는 크기). 줄마다 크기가 달라지면 재생 중 글자가 커졌다 작아졌다
+  // 한다(실신고 2026-09-06). 유난히 긴 줄은 서버가 미리 앞뒤 자막으로 쪼개 보내준다.
+  const f = uniformCapSize(sz, usableW);
+  ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px';
   ov.style.whiteSpace = 'nowrap';
 }
-// ── 자막 조각 분할(렌더 captions.py의 _split_indices와 같은 규칙) ──────────────
-// 크기는 절대 안 바꾸고, 안전지대 폭을 넘는 줄만 단어 경계에서 나눈다. 조각의 시간은
-// 글자 수 비례(렌더의 _distribute_by_chars와 동일)라 미리보기와 결과가 일치한다.
-let _chunkKey = '', _chunkCache = null;
-function capChunks(sz, usableW) {
+// ── 클립 단일 자막 크기(렌더 captions.py와 같은 규칙) ─────────────────────────
+// 모든 줄을 같은 폰트로 재서 '가장 긴 줄이 안전지대에 한 줄로 들어가는 크기'를 구한다.
+// 결과는 (텍스트 목록·기본 크기·폭) 키로 캐시해 매 프레임 재측정을 피한다.
+let _ucsKey = '', _ucsVal = 0;
+function uniformCapSize(sz, usableW) {
   const key = caps.map(c => c.text).join('') + '|' + sz.toFixed(2) + '|' + Math.round(usableW);
-  if (key === _chunkKey) return _chunkCache;
+  if (key === _ucsKey) return _ucsVal;
   let m = document.getElementById('capMeasure');
   if (!m) {
     m = document.createElement('span'); m.id = 'capMeasure';
@@ -3147,48 +3175,14 @@ function capChunks(sz, usableW) {
   }
   m.style.fontFamily = getComputedStyle($('capOv')).fontFamily;
   m.style.fontSize = sz + 'px';
-  const W = (t) => { m.textContent = t; return m.getBoundingClientRect().width; };
-  const pack = (toks, cap) => {  // 폭 상한 cap으로 순서대로 담기 → 각 조각의 시작 인덱스
-    const starts = [0]; let cur = 0, i0 = 0;
-    for (let i = 0; i < toks.length; i++) {
-      const w = W(toks[i]);
-      const add = (i === i0) ? w : W(' ' + toks[i]);
-      if (i > i0 && cur + add > cap) { starts.push(i); i0 = i; cur = w; }
-      else cur += add;
-    }
-    return starts;
-  };
-  _chunkCache = caps.map((c) => {
-    const toks = String(c.text || '').split(/\s+/).filter(Boolean);
-    if (toks.length < 2 || W(c.text) <= usableW) return [{ start: c.start, end: c.end, text: c.text }];
-    const each = toks.map(W);
-    if (Math.max.apply(null, each) > usableW) return [{ start: c.start, end: c.end, text: c.text }];
-    const k = pack(toks, usableW).length;
-    let lo = Math.max.apply(null, each), hi = usableW;   // 조각 폭 고르게(이분 탐색)
-    for (let s = 0; s < 24; s++) { const mid = (lo + hi) / 2; if (pack(toks, mid).length <= k) hi = mid; else lo = mid; }
-    const cuts = pack(toks, hi);
-    const chars = toks.map(t => Math.max(1, t.length));
-    const total = chars.reduce((a, b) => a + b, 0) || 1;
-    const span = Math.max(0.1, c.end - c.start);
-    const at = (idx) => c.start + span * chars.slice(0, idx).reduce((a, b) => a + b, 0) / total;
-    return cuts.map((i0, ci) => {
-      const i1 = (ci + 1 < cuts.length) ? cuts[ci + 1] : toks.length;
-      return { start: ci === 0 ? c.start : at(i0), end: i1 >= toks.length ? c.end : at(i1), text: toks.slice(i0, i1).join(' ') };
-    });
-  });
-  _chunkKey = key;
-  return _chunkCache;
-}
-function capChunkAt(i, t, sz, usableW) {
-  const parts = capChunks(sz, usableW)[i] || [{ text: caps[i].text }];
-  let ci = parts.length - 1;
-  for (let k = 0; k < parts.length; k++) if (t < parts[k].end) { ci = k; break; }
-  return { ko: parts[ci].text, ci: ci, n: parts.length };
-}
-function enSlice(text, ci, n) {  // 영어 번역도 같은 개수로 나눠 조각 아래에
-  const toks = String(text || '').split(/\s+/).filter(Boolean);
-  if (!toks.length || n <= 1) return ci === 0 ? text : '';
-  return toks.slice(Math.round(toks.length * ci / n), Math.round(toks.length * (ci + 1) / n)).join(' ');
+  let need = sz;
+  for (const c of caps) {
+    m.textContent = c.text || '';
+    const w = m.getBoundingClientRect().width;
+    if (w > usableW && w > 0) need = Math.min(need, sz * usableW / w);
+  }
+  _ucsKey = key; _ucsVal = Math.max(10, need);
+  return _ucsVal;
 }
 
 // ─── 재생 제어 ───
@@ -5836,6 +5830,7 @@ def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list, fresh: bool =
         return jsonify({"lines": lines, "matched": 0, "total": len(lines),
                         "source": "전사 단어 부족 — 원래 시각 유지"})
     src = "최고 정밀(large-v3) 재분석" if fresh else "가창 단어 시각 기준(노래 싱크)"
+    mapped = _split_long_caption_lines(video_dir.name, clip, cfg, mapped)
     return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped), "source": src})
 
 
@@ -5937,6 +5932,7 @@ def sync_captions_route(video_id: str, idx: int):
     for k in range(len(out) - 1):
         if out[k]["end"] > out[k + 1]["start"]:
             out[k]["end"] = round(max(out[k]["start"] + 0.2, out[k + 1]["start"] - 0.02), 2)
+    out = _split_long_caption_lines(video_id, clip, cfg, out)
     return jsonify({"lines": out, "matched": matched_n, "total": len(out), "source": used})
 
 

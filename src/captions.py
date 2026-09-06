@@ -714,97 +714,47 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 for ko, en in zip(ko_sorted, en_sorted)
             }
         lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
-        # 한 줄 강제(가급적 한 줄로 — 사용자 요청): 소절이 화면 폭을 넘으면 libass가 멋대로
-        # 2줄로 랩핑한다. 실제 폰트 글리프 폭(fonts.measure_text_width_px)으로 재서 넘치는
-        # 줄만 그 줄에 한해 폰트를 줄인다(\fs). 측정 불가 폰트면 그대로(랩핑 감수).
+        # 한 줄 강제 + 크기는 클립 안에서 하나: 실제 폰트 글리프 폭으로 재서, 가장 긴 줄이
+        # 안전지대 폭에 한 줄로 들어가는 크기를 모든 줄에 똑같이 쓴다. 줄마다 크기를 달리
+        # 하면 재생 중 글자가 커졌다 작아졌다 한다(실신고 2026-09-06). '유난히 긴 줄' 때문에
+        # 전체가 작아지는 건 편집기 단계에서 그 줄만 앞뒤 조각으로 쪼개서 막는다
+        # (split_outlier_lines — 쪼갠 결과가 타임라인에도 별도 자막으로 보여야 수정 가능).
         from src.fonts import measure_text_width_px
 
         usable_px = width - caption_margin_l - caption_margin_r - 24
 
+        def _fit_fs(text: str, base_size: int) -> int | None:
+            """text가 base_size로 폭을 넘으면 들어가는 크기를, 아니면 None을 반환."""
+            w_px = measure_text_width_px(text, font_name, base_size)
+            if w_px and w_px > usable_px:
+                return max(28, int(base_size * usable_px / w_px))
+            return None
+
         ko_texts = [" ".join(_display_text(w.text) for w in line.words) for line in lines]
+        _needed = [f for f in (_fit_fs(t, caption_size) for t in ko_texts) if f is not None]
+        uniform_ko_size = min(_needed) if _needed else None
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
-        en_size = max(16, int(caption_size * 0.45))
-
-        # ── 크기는 절대 안 바꾼다. 대신 폭을 넘는 줄을 '앞뒤 두 자막'으로 쪼갠다 ──────
-        # 사용자 확정(2026-09-06): "자막 크기는 무조건 똑같아야 한다", "그럴 땐 2줄이 아니라
-        # 2부분으로 자동으로 쪼개라". 예전 방식(가장 긴 줄에 맞춰 클립 전체를 축소)은 긴
-        # 소절 하나 때문에 모든 자막이 작아졌고, 그 전 방식(그 줄만 축소)은 재생 중 크기가
-        # 들쭉날쭉했다. 이제 크기는 항상 설정값 그대로고, 안전지대 폭을 넘는 줄만 단어
-        # 경계에서 나눠 순서대로 보여준다(한 조각씩 한 줄).
-        def _w(text: str) -> float:
-            return measure_text_width_px(text, font_name, caption_size) or 0.0
-
-        def _pack(widths: list[float], cap: float) -> list[int]:
-            """단어 폭들을 cap 이하 묶음으로 순서대로 담아 각 묶음의 시작 인덱스를 돌려준다.
-            (단어 사이 공백 폭은 묶음 안에서만 세므로 실제보다 살짝 보수적 = 안전하다.)"""
-            starts, cur, i0 = [0], 0.0, 0
-            for i, wd in enumerate(widths):
-                add = wd if i == i0 else space_px + wd
-                if i > i0 and cur + add > cap:
-                    starts.append(i)
-                    i0, cur = i, wd
-                else:
-                    cur += add
-            return starts
-
-        space_px = _w("  ") - _w(" ") or _w(" ")
-
-        def _split_indices(line: CaptionLine) -> list[int]:
-            """이 줄을 몇 번째 단어에서 끊을지. [0]이면 안 쪼갬."""
-            disp = [_display_text(w.text) for w in line.words]
-            if len(disp) < 2:
-                return [0]
-            total = _w(" ".join(disp))
-            if not total or total <= usable_px:
-                return [0]
-            widths = [_w(d) for d in disp]
-            if max(widths) > usable_px:
-                return [0]  # 단어 하나가 폭을 넘음(초장문 합성어) — 쪼갤 수 없으니 그대로
-            k = len(_pack(widths, usable_px))  # 최소 조각 수
-            # 조각 폭을 고르게: 같은 조각 수를 유지하는 가장 작은 폭 상한을 이분 탐색.
-            lo, hi = max(widths), usable_px
-            for _ in range(24):
-                mid = (lo + hi) / 2
-                if len(_pack(widths, mid)) <= k:
-                    hi = mid
-                else:
-                    lo = mid
-            return _pack(widths, hi)
-
-        def _en_slice(text: str, i: int, k: int) -> str:
-            """영어 번역도 같은 개수로 나눠 각 조각 아래에 붙인다(단어 수 비례)."""
-            toks = text.split()
-            if not toks or k <= 1:
-                return text if i == 0 else ""
-            a0 = round(len(toks) * i / k)
-            a1 = round(len(toks) * (i + 1) / k)
-            return " ".join(toks[a0:a1])
+        base_en_size = max(16, int(caption_size * 0.45))
+        _needed_en = [
+            f for f in (_fit_fs(_display_text(t), base_en_size) for t in en_texts if t)
+            if f is not None
+        ]
+        uniform_en_size = min(_needed_en) if _needed_en else None
 
         for line, en_text in zip(lines, en_texts):
-            cuts = _split_indices(line)
-            for ci, i0 in enumerate(cuts):
-                i1 = cuts[ci + 1] if ci + 1 < len(cuts) else len(line.words)
-                part = line.words[i0:i1]
-                if not part:
-                    continue
-                # 조각의 표시 구간: 첫 조각은 줄의 시작에서, 마지막 조각은 줄의 끝까지.
-                # 중간 경계는 '다음 조각 첫 단어가 시작하는 순간'에 바뀐다(발화와 일치).
-                seg = CaptionLine(
-                    start=line.start if ci == 0 else part[0].start,
-                    end=line.end if i1 >= len(line.words) else line.words[i1].start,
-                    words=part,
+            ko_size = uniform_ko_size or caption_size  # 클립 전체 단일 크기(줄별 예외 없음)
+            prefix = f"{{\\fs{ko_size}}}" if ko_size != caption_size else ""
+            extra = ""
+            if en_text:
+                # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
+                # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
+                # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
+                en_size = uniform_en_size or base_en_size
+                extra = (
+                    f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}"
+                    f"{_display_text(en_text)}{{\\r}}"
                 )
-                en_part = _en_slice(en_text, ci, len(cuts)) if en_text else ""
-                extra = ""
-                if en_part:
-                    # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
-                    # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
-                    # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
-                    extra = (
-                        f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}"
-                        f"{_display_text(en_part)}{{\\r}}"
-                    )
-                _emit_line(seg, extra_text=extra)
+            _emit_line(line, extra_text=extra, prefix_text=prefix)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
@@ -839,6 +789,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     return header + "\n".join(events) + "\n"
 
+
+
+def caption_usable_width_px(width: int, card_layout: bool) -> float:
+    """자막이 한 줄로 들어갈 수 있는 폭(px). build_ass의 여백 계산과 같은 공식이어야 한다
+    (카드형은 좌우 40px, 영상 위 오버레이는 좌우 15% — 쇼츠 우측 버튼 기둥 회피)."""
+    base_margin_lr = 40 if card_layout else max(40, int(width * 0.15))
+    return max(80.0, width - 2 * base_margin_lr - 24)
+
+
+def split_outlier_lines(
+    lines: list[dict], font_family: str, caption_size: int, usable_px: float,
+    ratio: float = 1.6,
+) -> list[dict]:
+    """'유난히 긴 줄'만 앞뒤 조각으로 쪼갠 자막 목록을 돌려준다(다른 줄은 그대로).
+
+    왜: 자막 크기는 클립 안에서 하나여야 하는데(사용자 확정), 그 크기는 '가장 긴 줄'이
+    결정하므로 남들보다 훨씬 긴 줄 하나가 클립 전체를 작게 만든다. 그 한 줄만 나누면
+    나머지는 제 크기를 지킨다. 반대로 모든 줄이 고르게 길면(가사처럼) 아무것도 안 쪼갠다
+    — "정말 긴 것만 쪼개라, 이것저것 다 쪼개지 마라"(2026-09-06 실신고).
+
+    판정: 폭이 (그 클립 줄들의 중앙값 × ratio)를 넘고 안전지대 폭도 넘는 줄. 조각 수는
+    중앙값 대비 몇 배인지로 정하고, 조각 폭이 고르도록 단어 경계에서 나눈다. 시간은 글자
+    수 비례(렌더의 카라오케 분배와 같은 규칙).
+    """
+    from src.fonts import measure_text_width_px
+
+    if not lines:
+        return lines
+    texts = [str(l.get("text", "")).strip() for l in lines]
+    widths = [measure_text_width_px(t, font_family, caption_size) or 0.0 for t in texts]
+    if not any(widths):
+        return lines  # 폰트 측정 불가 → 손대지 않는다
+    ordered = sorted(w for w in widths if w > 0)
+    med = ordered[len(ordered) // 2]
+    out: list[dict] = []
+    for ln, text, w in zip(lines, texts, widths):
+        toks = text.split()
+        if w <= max(usable_px, med * ratio) or len(toks) < 2:
+            out.append(dict(ln))
+            continue
+        k = max(2, min(len(toks), int(round(w / max(med, 1.0)))))
+        # 조각 폭이 고르게: 글자 수 기준 목표 구간에 가장 가까운 단어 경계에서 자른다.
+        chars = [max(1, len(t)) for t in toks]
+        total = sum(chars)
+        cuts = [0]
+        cum = 0
+        for i, c in enumerate(chars[:-1]):
+            cum += c
+            target = total * len(cuts) / k
+            nxt = cum + chars[i + 1]
+            if cum >= target or abs(cum - target) < abs(nxt - target) <= 0:
+                if len(cuts) < k and cum >= target:
+                    cuts.append(i + 1)
+        start, end = float(ln.get("start", 0)), float(ln.get("end", 0))
+        span = max(0.1, end - start)
+        for ci, i0 in enumerate(cuts):
+            i1 = cuts[ci + 1] if ci + 1 < len(cuts) else len(toks)
+            if i0 >= i1:
+                continue
+            a0 = sum(chars[:i0]) / total
+            a1 = sum(chars[:i1]) / total
+            out.append({
+                "start": round(start + span * a0, 2) if ci else round(start, 2),
+                "end": round(start + span * a1, 2) if i1 < len(toks) else round(end, 2),
+                "text": " ".join(toks[i0:i1]),
+            })
+    return out
 
 def build_ass_for_clip(
     segments: list[Segment],
