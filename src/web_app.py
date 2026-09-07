@@ -2474,6 +2474,13 @@ STUDIO_TEMPLATE = r"""
     transition: transform .12s ease, background .12s ease; }
   .prm .stp:hover { background: #fff; transform: translateY(-1px); }
   .prm .stp:active { background: #e5e5ea; transform: translateY(0); }
+  /* 자막 스타일(글꼴·정렬·자간) — 캡컷처럼 스튜디오 안에서 바로 고를 수 있게(2026-09-08 요청) */
+  #pFont { flex: 1 1 auto; min-width: 0; background: #151515; border: 1px solid #333; color: #e6e6e6;
+    border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: 12px; }
+  #pFont:focus { outline: none; border-color: var(--blue); }
+  .pv.align3 { gap: 6px; }
+  .align-btn { border-radius: 50%; font-size: 12px; }
+  .align-btn.on { background: var(--blue); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.45), 0 0 0 2px rgba(75,155,255,.4); }
   .prm .chk { accent-color: var(--hot); }
   .prm .dimtxt { color: #7a7a7a; }
   .ec-none { padding: 10px 30px; color: #6a6a6a; }
@@ -2848,6 +2855,13 @@ STUDIO_TEMPLATE = r"""
             <div class="fx" id="fxStyle">
               <div class="fx-h"><span class="tri">▼</span><span class="fxi">fx</span><span class="fxn">텍스트 스타일</span><span class="rst" data-reset="style">재설정</span></div>
               <div class="fx-b">
+                <div class="prm"><span class="stop"></span><span class="pn">글꼴</span><div class="pv"><select class="hot wide" id="pFont"></select></div></div>
+                <div class="prm"><span class="stop"></span><span class="pn">정렬</span><div class="pv align3">
+                  <button type="button" class="stp align-btn" data-align="left" title="왼쪽 정렬">◧</button>
+                  <button type="button" class="stp align-btn" data-align="center" title="가운데 정렬">▣</button>
+                  <button type="button" class="stp align-btn" data-align="right" title="오른쪽 정렬">◨</button>
+                </div></div>
+                <div class="prm"><span class="stop"></span><span class="pn">자간</span><div class="pv"><button class="stp" data-nudge="pSpacing:-0.5" title="좁게">&minus;</button><input class="hot" type="number" id="pSpacing" min="-4" max="20" step="0.5"><button class="stp" data-nudge="pSpacing:0.5" title="넓게">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">크기</span><div class="pv"><button class="stp" data-nudge="pSize:-2" title="작게">&minus;</button><input class="hot" type="number" id="pSize" min="28" max="240" step="1"><button class="stp" data-nudge="pSize:2" title="크게">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">가로 위치</span><div class="pv"><button class="stp" data-nudge="pX:-6" title="왼쪽으로">&minus;</button><input class="hot" type="number" id="pX" min="-400" max="400" step="1"><button class="stp" data-nudge="pX:6" title="오른쪽으로">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">세로 위치</span><div class="pv"><button class="stp" data-nudge="pY:-6" title="위로">&minus;</button><input class="hot" type="number" id="pY" min="-700" max="700" step="1"><button class="stp" data-nudge="pY:6" title="아래로">+</button><span class="unit">px</span></div></div>
@@ -3167,7 +3181,9 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   bindNum('pX', C.caption_offset_x || 0);
   bindNum('pY', C.caption_offset_y || 0);
   bindNum('pSizeEn', C.caption_size_en || 0);
+  bindNum('pSpacing', C.caption_spacing || 0);
   applyPreviewFonts(info);
+  initCaptionStyleUi(info);
   v.addEventListener('loadedmetadata', () => { v.currentTime = C.start; fitVideo(); });
   if (v.readyState >= 1) { v.currentTime = C.start; fitVideo(); }
   fitVideo(); renderProject(); renderAll(); syncSelPanel(); loadPeaks(); renderBgm();
@@ -3238,6 +3254,35 @@ function applyPreviewFonts(info) {
   if (css) { const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st); }
   if (info.caption_font) $('capOv').style.fontFamily = "'" + info.caption_font.family + "', sans-serif";
   if (info.title_font) $('ttlOv').style.fontFamily = "'" + info.title_font.family + "', sans-serif";
+}
+// 자막 글꼴/정렬/자간 — 캡컷처럼 스튜디오에서 바로 고른다(2026-09-08 요청). 렌더(build_ass)가
+// 이미 caption_font/caption_align/caption_spacing을 지원해서(예전 편집기·팝업에서만 노출됐음),
+// 여기선 값만 채우고 저장(payload)에 실어 보내면 된다.
+let capFont = '', capAlign = 'center';
+function initCaptionStyleUi(info) {
+  capFont = C.caption_font || (info.caption_font && info.caption_font.family) || '';
+  capAlign = C.caption_align || 'center';
+  const sel = $('pFont'); sel.innerHTML = '';
+  (info.fonts || []).forEach((f) => {
+    const opt = document.createElement('option');
+    opt.value = f.family; opt.textContent = f.name || f.family;
+    opt.style.fontFamily = "'" + f.family + "', sans-serif";
+    if (f.family === capFont) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => {
+    capFont = sel.value;
+    $('capOv').style.fontFamily = "'" + capFont + "', sans-serif";
+    markDirty(); updateOverlay();
+  });
+  document.querySelectorAll('.align-btn').forEach((b) => {
+    b.classList.toggle('on', b.dataset.align === capAlign);
+    b.addEventListener('click', () => {
+      capAlign = b.dataset.align;
+      document.querySelectorAll('.align-btn').forEach((x) => x.classList.toggle('on', x === b));
+      markDirty(); updateOverlay();
+    });
+  });
 }
 // 제목(카드형에서만 존재). 스튜디오에서 편집하지는 않고, 자막 위치를 잡을 때 기준이
 // 되도록 실제 크기·위치 그대로 보여준다.
@@ -3312,7 +3357,9 @@ setSafe(true);
 document.querySelectorAll('.fx-h').forEach(h => h.addEventListener('click', (e) => { if (e.target.classList.contains('rst')) return; h.parentElement.classList.toggle('closed'); }));
 document.querySelector('[data-reset="style"]').addEventListener('click', () => {
   $('pSize').value = Math.round((L && L.caption_font_size) || 72);
-  $('pX').value = 0; $('pY').value = 0;
+  $('pX').value = 0; $('pY').value = 0; $('pSpacing').value = 0;
+  capAlign = 'center';
+  document.querySelectorAll('.align-btn').forEach((x) => x.classList.toggle('on', x.dataset.align === 'center'));
   markDirty(); updateOverlay();
 });
 document.querySelector('[data-reset="styleEn"]').addEventListener('click', () => {
@@ -3335,6 +3382,8 @@ function updateOverlay() {
   if (i < 0 || !koVisible) { ov.style.display = 'none'; return; }
   ov.style.display = 'block';
   ov.classList.toggle('onvideo', !!L.no_title);
+  ov.style.textAlign = capAlign || 'center';
+  ov.style.letterSpacing = ((parseFloat($('pSpacing').value) || 0) * SC) + 'px';
   const koEl = ov.querySelector('.ko');
   const enEl = ov.querySelector('.en');
   const kc = L.caption_ass_coeff || 1;
@@ -4428,6 +4477,9 @@ function payload() {
     caption_size_en: parseInt($('pSizeEn').value, 10) || 0,
     caption_offset_x: parseFloat($('pX').value),
     caption_offset_y: parseFloat($('pY').value),
+    caption_font: capFont,
+    caption_align: capAlign,
+    caption_spacing: parseFloat($('pSpacing').value) || 0,
   };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
@@ -5306,6 +5358,9 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
             "caption_highlights": (getattr(clip, "caption_highlights", None) or []),
             "free_texts": (getattr(clip, "free_texts", None) or []),
+            "caption_font": getattr(clip, "caption_font", "") or "",
+            "caption_align": getattr(clip, "caption_align", "") or "",
+            "caption_spacing": float(getattr(clip, "caption_spacing", 0) or 0),
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
