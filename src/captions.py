@@ -598,6 +598,7 @@ def build_ass(
     animate: bool = False,
     highlight_style: str = "fill",
     bilingual_overrides: list | None = None,
+    free_texts: list | None = None,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -687,12 +688,34 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,{font_name},{caption_size},{cap_primary},{cap_secondary},{outline_color},&H00000000,-1,0,0,0,100,100,{caption_spacing},0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
 Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,{title_spacing},0,1,{outline_width + 1},0,{title_alignment},{title_margin_l},{title_margin_r},{title_margin_v},1
+Style: FreeText,{font_name},{caption_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,8,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
+
+    # 자유 텍스트 트랙(스튜디오 '+' 로 만든 요소들). 자막 줄과 달리 자기 화면 위치(x,y)를
+    # \pos로 직접 지정한다 — Alignment 8(상단 중앙) 기준으로 미리보기(top=y, 중앙정렬)와
+    # 픽셀 좌표를 그대로 맞춘다. cx = 화면 가로 중앙 + x(미리보기 pX와 같은 규약).
+    for ft in (free_texts or []):
+        try:
+            ft_start = float(ft["start"]) - clip_start
+            ft_end = float(ft["end"]) - clip_start
+        except (KeyError, TypeError, ValueError):
+            continue
+        ft_text = _clean_word_text(str(ft.get("text", "")))
+        if not ft_text or ft_end - ft_start <= 0.05:
+            continue
+        cx = width / 2 + float(ft.get("x", 0) or 0)
+        cy = float(ft.get("y", 0) or 0)
+        fsz = int(ft.get("size", 0) or 0) or caption_size
+        disp = "\\N".join(_display_text(ln) for ln in ft_text.split("\n"))
+        override = "{\\an8\\pos(%.1f,%.1f)\\fs%d}" % (cx, cy, fsz)
+        events.append(
+            f"Dialogue: 0,{_ass_time(max(0.0, ft_start))},{_ass_time(max(0.0, ft_end))},FreeText,,0,0,0,,{override}{disp}"
+        )
 
     # 무음 제거 후 실제 최종 영상 길이 (keep_segments가 있으면 원본 clip_duration보다 짧다)
     final_duration = (
@@ -955,6 +978,7 @@ def build_ass_for_clip(
     hook_speedup: tuple[float, float] | None = None,
     highlight_keywords: list[str] | None = None,
     bilingual_overrides: list | None = None,
+    free_texts: list | None = None,
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -1013,4 +1037,5 @@ def build_ass_for_clip(
         animate=bool(config_captions.get("animate", False)),
         highlight_style=str(config_captions.get("highlight_style", "fill") or "fill"),
         bilingual_overrides=bilingual_overrides,
+        free_texts=free_texts,
     )

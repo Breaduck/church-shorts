@@ -132,6 +132,11 @@ class Clip:
     # 여기엔 참조만 남긴다. 없으면 None(기존 clips.json과 호환). 렌더는 이 파일을 클립
     # 길이에 맞춰 반복/트림하고 volume 배율로 원본 오디오와 믹싱한다(_add_sfx와 같은 패턴).
     bgm: Optional[dict] = None
+    # 자유 텍스트(캡컷식). 스튜디오에서 '+'로 만든 텍스트 트랙 위의 요소들이다.
+    # 자막(caption_overrides)과 달리 겹쳐도 되고, 요소마다 자기 시간·화면 위치·크기를 갖는다.
+    # [{"start": 절대초, "end": 절대초, "text": str, "x": 렌더px(중앙 기준 오프셋),
+    #   "y": 렌더px(위에서부터), "size": 렌더px, "track": 트랙번호}]
+    free_texts: list = field(default_factory=list)
 
 
 def build_prompt(

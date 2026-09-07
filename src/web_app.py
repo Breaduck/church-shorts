@@ -2494,6 +2494,13 @@ STUDIO_TEMPLATE = r"""
       실제 추출물과 전혀 달랐다 — 실신고 2026-09-07.) 좌표는 확인 팝업과 같은 공식:
      프레임 = layout.resolution, 영상 = layout.video_box, 자막 top = caption_base_margin_v + y. */
   .stage { flex: 1 1 auto; min-height: 0; position: relative; background: #101010; overflow: hidden; }
+  /* 영상만 전체화면(우측 하단) — 상단 메뉴의 '전체 화면'(hFull, 앱 전체 F11)과는 별개다. */
+  .stageFullBtn { position: absolute; right: 10px; bottom: 10px; z-index: 6; width: 28px; height: 28px;
+    border-radius: 8px; border: none; background: rgba(30,30,30,.72); color: #ddd; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+  .stageFullBtn:hover { background: rgba(60,60,60,.9); color: #fff; }
+  .stage:fullscreen { background: #000; }
+  .stage:fullscreen .stageFullBtn { background: rgba(30,30,30,.55); }
   .frame { position: absolute; background: #fff; overflow: hidden; box-shadow: 0 0 0 1px #303030; }
   .vbox { position: absolute; background: #000; overflow: hidden; }
   .vbox video { width: 100%; height: 100%; display: block; background: #000; }
@@ -2648,7 +2655,7 @@ STUDIO_TEMPLATE = r"""
   .tl-panel.tool-type .trk.ko .blk { cursor: text; }
   .tl-panel.tool-trackfwd .trk.ko .blk { cursor: e-resize; }
   .trk.locked .blk { cursor: not-allowed; opacity: .7; }
-  /* 자막 사이 빈 구간: 점선 + '+' 를 두어 그 자리에 바로 소절을 만든다(사용자 요청). */
+  /* 자막 사이 빈 구간: 점선 + '+' 를 두어 그 자리에 바로 자막을 만든다(사용자 요청). */
   .blk-add { position: absolute; top: 5px; bottom: 5px; border: 1px dashed #6b6b6b; border-radius: 3px;
     display: flex; align-items: center; justify-content: center; color: #8e8e8e; font-size: 13px;
     font-weight: 700; cursor: pointer; background: rgba(255,255,255,.02); }
@@ -2656,6 +2663,29 @@ STUDIO_TEMPLATE = r"""
   .blk-edit { position: absolute; z-index: 9; background: #2b2b2b; border: 1px solid var(--blue); border-radius: 4px; padding: 5px; display: flex; gap: 5px; align-items: center; }
   .blk-edit input { width: 340px; background: #151515; color: #e6e6e6; border: 1px solid #333; border-radius: 3px; padding: 5px 8px; font-family: inherit; font-size: 12px; }
   .blk-edit button { padding: 4px 9px; font-size: 11.5px; border-radius: 3px; border: 1px solid #444; background: #3a3a3a; color: #e6e6e6; cursor: pointer; }
+  /* 자유 텍스트 트랙(캡컷식): 자막과 달리 겹쳐도 되고, 요소마다 화면 위치·크기를 갖는다. */
+  .trk.tx { height: 30px; background: #23202c; }
+  .txblk { position: absolute; top: 3px; bottom: 3px; background: #2f6f5e; border: 1px solid #58b39a;
+    border-radius: 2px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
+  .txblk.sel { background: #3d8f78; border-color: #fff; box-shadow: inset 0 0 0 1px #fff; z-index: 3; }
+  .txblk .txt { padding: 0 8px; font-size: 11px; color: #e6fff7; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; pointer-events: none; width: 100%; }
+  .txblk .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+  .txblk .h.l { left: 0; } .txblk .h.r { right: 0; }
+  .txblk .h:hover { background: rgba(255,255,255,.3); }
+  .trk-h.addtrk { height: 26px; cursor: pointer; }
+  .trk-h.addtrk:hover .tn { color: var(--hot); }
+  .trk-h .addbtn { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+    background: #333; color: #ddd; border: none; border-radius: 4px; font-size: 13px; line-height: 1; cursor: pointer; }
+  .trk-h .addbtn:hover { background: var(--blue); color: #fff; }
+  .trk.drop-hint { box-shadow: inset 0 0 0 2px var(--hot); }
+  /* 미리보기(프로그램 모니터) 위의 자유 텍스트 — 끌어서 위치를 옮기고 더블클릭으로 고친다. */
+  .tx-ov { position: absolute; text-align: center; width: max-content; max-width: 96%; font-weight: 800;
+    color: #191f28; line-height: 1.25; z-index: 5; cursor: grab; touch-action: none; transform: translateX(-50%);
+    padding: 1px 5px; border-radius: 7px; border: 1.5px dashed transparent; white-space: pre-wrap; }
+  .tx-ov:hover, .tx-ov.sel, .tx-ov.dragging { border-color: var(--hot); background: rgba(75,155,255,.16); }
+  .tx-ov.dragging { cursor: grabbing; }
+  .tx-ov.editing { cursor: text; background: rgba(75,155,255,.22); outline: none; }
   .tl-scroll { flex: 0 0 16px; display: flex; align-items: center; background: #1e1e1e; border-top: 1px solid #000; }
   .tl-scroll .pad { flex: 0 0 168px; }
   .navi { flex: 1 1 auto; position: relative; height: 10px; margin: 0 8px; background: #2a2a2a; border-radius: 5px; }
@@ -2710,7 +2740,7 @@ STUDIO_TEMPLATE = r"""
     <div class="menu">
       <div class="it" data-act="edit-text">텍스트 수정… <span class="k">Enter</span></div>
       <div class="it" data-act="split">재생 헤드에서 분할 <span class="k">Ctrl+K</span></div>
-      <div class="it" data-act="add">재생 헤드에 소절 추가 <span class="k">Ctrl+Shift+N</span></div>
+      <div class="it" data-act="add">재생 헤드에 자막 추가 <span class="k">Ctrl+Shift+N</span></div>
     </div>
   </div>
   <div class="mi" data-menu="seq">시퀀스
@@ -2823,14 +2853,14 @@ STUDIO_TEMPLATE = r"""
                 <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn"></span><div class="pv"><span class="dimtxt">0이면 한글 크기의 45%로 자동 · 한글 자막 바로 아래에 붙습니다</span></div></div>
               </div>
             </div>
-            <div class="ec-sec">선택한 소절</div>
+            <div class="ec-sec">선택한 자막</div>
             <div class="fx" id="fxSel">
               <div class="fx-h"><span class="tri">▼</span><span class="fxi">fx</span><span class="fxn" id="fxSelName">(선택 없음)</span></div>
               <div class="fx-b">
                 <div class="prm"><span class="stop"></span><span class="pn">시작</span><div class="pv"><input class="hot wide" type="number" id="selStart" step="0.001" disabled><span class="unit">초</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">끝</span><div class="pv"><input class="hot wide" type="number" id="selEnd" step="0.001" disabled><span class="unit">초</span></div></div>
                 <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">지속 시간</span><div class="pv"><span class="dimtxt" id="selDur">-</span></div></div>
-                <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">텍스트</span><div class="pv"><input class="txt" type="text" id="selText" disabled placeholder="타임라인에서 소절을 선택하세요"></div></div>
+                <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">텍스트</span><div class="pv"><input class="txt" type="text" id="selText" disabled placeholder="타임라인에서 자막을 선택하세요"></div></div>
                 <div class="prm" id="selEnRow" style="display:none"><span class="stop" style="visibility:hidden"></span><span class="pn">영어</span><div class="pv"><input class="txt" type="text" id="selTextEn"></div></div>
               </div>
             </div>
@@ -2862,6 +2892,9 @@ STUDIO_TEMPLATE = r"""
           <div class="ttl-ov" id="ttlOv"></div>
           <div class="cap-ov" id="capOv" style="display:none"><span class="ko"></span><span class="en"></span></div>
         </div>
+        <button class="stageFullBtn" id="stageFullBtn" title="영상만 전체화면으로 보기">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
       </div>
       <div class="mon-bar">
         <span class="tc" id="tCurT">00:00:00.000</span>
@@ -2880,8 +2913,8 @@ STUDIO_TEMPLATE = r"""
         <button class="tb" id="tbStepF" title="한 프레임 앞으로(→)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M14 5h2v14h-2zM5 5v14l8-7z"/></svg></button>
         <button class="tb" id="tbGoOut" title="종료 지점으로 이동(End)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17 5h2v14h-2zM5 5v14l11-7z"/></svg></button>
         <span class="tsep"></span>
-        <button class="tb" id="tbLift" title="들어내기 — 선택한 소절 삭제(빈자리 유지)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 15V4M8 8l4-4 4 4"/></svg></button>
-        <button class="tb" id="tbExtract" title="추출 — 선택한 소절 잔물결 삭제(뒤 소절 당김)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 4v11M8 11l4 4 4-4"/></svg></button>
+        <button class="tb" id="tbLift" title="들어내기 — 선택한 자막 삭제(빈자리 유지)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 15V4M8 8l4-4 4 4"/></svg></button>
+        <button class="tb" id="tbExtract" title="추출 — 선택한 자막 잔물결 삭제(뒤 자막 당김)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h16M12 4v11M8 11l4 4 4-4"/></svg></button>
         <button class="tb" id="tbFrame" title="프레임 내보내기(현재 화면 저장)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3"/></svg></button>
         <button class="tb" id="tbCompare" title="안전 여백 표시 전환"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="8" height="14"/><rect x="13" y="5" width="8" height="14"/></svg></button>
         <button class="tb" id="tbPlus" title="단추 편집기"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
@@ -2909,8 +2942,8 @@ STUDIO_TEMPLATE = r"""
         <button class="fi" id="pjSort" title="이름/시작 시간순 정렬 전환"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M4 12h7M4 17h4M17 6v12M14 15l3 3 3-3"/></svg></button>
         <span class="fill"></span>
         <input class="zoom" id="pjZoom" type="range" min="0" max="100" value="50" title="타임라인 확대/축소">
-        <button class="fi" id="pjNew" title="새 항목(소절 추가)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M12 11v6M9 14h6"/></svg></button>
-        <button class="fi" id="pjDel" title="지우기(선택한 소절)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
+        <button class="fi" id="pjNew" title="새 항목(자막 추가)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M12 11v6M9 14h6"/></svg></button>
+        <button class="fi" id="pjDel" title="지우기(선택한 자막)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
       </div>
     </div>
     <div class="pbody" data-body="media">
@@ -2961,7 +2994,7 @@ STUDIO_TEMPLATE = r"""
           <button class="hb" id="hbMarker" title="마커 추가 (M)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l7 7-7 7-7-7z"/></svg></button>
           <button class="hb" id="hbSettings" title="영상 트랙 썸네일 표시/숨기기"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a4 4 0 00-5 5L4 17v3h3l5.7-5.7a4 4 0 005-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg></button>
           <button class="hb" id="hbCC" title="캡션 트랙 정보"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 12H6.5M17.5 12H15M6.5 12a2.5 2.5 0 002.5 2.5M15 12a2.5 2.5 0 002.5 2.5"/></svg></button>
-          <button class="hb" id="hbAddCap" title="재생 헤드에 자막(소절) 추가 (Ctrl+Shift+N)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg></button>
+          <button class="hb" id="hbAddCap" title="재생 헤드에 자막 추가 (Ctrl+Shift+N)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg></button>
           <span class="tsep"></span>
           <button class="hb" id="zoomOut" title="축소 (-)">−</button>
           <button class="hb" id="zoomFit" title="시퀀스에 맞게 (\)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -2985,7 +3018,7 @@ STUDIO_TEMPLATE = r"""
                 <button class="th on" id="enEye" title="트랙 출력 전환(미리보기 영어 표시)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 <span class="tn">C2 자막(영어)</span>
               </div>
-              <div class="trk-h" style="height:56px">
+              <div class="trk-h" style="height:56px" id="vHead">
                 <span class="patch">V1</span>
                 <button class="th lock on" title="원본 영상은 잠겨 있습니다"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></button>
                 <button class="th on" title="트랙 출력 전환"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
@@ -3006,6 +3039,10 @@ STUDIO_TEMPLATE = r"""
                 <input type="range" id="bgmVol" min="0" max="100" value="25" style="width:44px;display:none" title="배경 음악 볼륨">
                 <span class="tn" id="bgmName">A2 배경 음악(없음)</span>
               </div>
+              <div class="trk-h addtrk" id="addTrkRow" title="텍스트 트랙 추가 — 자막과 따로 노는 자유 텍스트를 올립니다">
+                <button class="addbtn" id="btnAddTrack">+</button>
+                <span class="tn">트랙 추가</span>
+              </div>
             </div>
           </div>
           <div class="tl-tracks" id="tlTracks">
@@ -3016,6 +3053,7 @@ STUDIO_TEMPLATE = r"""
               <div class="trk v h-v" id="vTrack"><div class="thumbs" id="thumbs"></div></div>
               <div class="trk a h-a" id="aTrack"><div class="aclip" id="aClip"><canvas id="wave"></canvas><span class="cn">A1 · 원본 오디오</span></div></div>
               <div class="trk a h-a" id="bgmTrack"><div class="aclip" id="bgmClip" style="display:none"><span class="cn" id="bgmClipCn">A2 · 배경 음악</span></div></div>
+              <div class="trk" id="addTrkSpacer" style="height:26px;background:#1a1a1a"></div>
             </div>
             <div class="ph-head" id="phHead" style="display:none"></div>
             <div class="ph-line" id="phLine" style="display:none"></div>
@@ -3050,10 +3088,10 @@ STUDIO_TEMPLATE = r"""
     <tr><td>Home / End</td><td>클립 시작 / 끝으로</td></tr>
     <tr><td>I / O</td><td>클립 시작 / 끝을 재생 헤드 위치로</td></tr>
     <tr><td>M</td><td>마커 추가</td></tr>
-    <tr><td>Ctrl+K</td><td>재생 헤드에서 선택한 소절 분할</td></tr>
-    <tr><td>Enter</td><td>선택한 소절 텍스트 수정</td></tr>
+    <tr><td>Ctrl+K</td><td>재생 헤드에서 선택한 자막 분할</td></tr>
+    <tr><td>Enter</td><td>선택한 자막 텍스트 수정</td></tr>
     <tr><td>Delete / Shift+Delete</td><td>지우기 / 잔물결 삭제</td></tr>
-    <tr><td>Ctrl+C / Ctrl+V</td><td>선택한 소절 복사 / 재생 헤드에 붙여넣기</td></tr>
+    <tr><td>Ctrl+C / Ctrl+V</td><td>선택한 자막 복사 / 재생 헤드에 붙여넣기</td></tr>
     <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>실행 취소 / 다시 실행</td></tr>
     <tr><td>= / - / \</td><td>확대 / 축소 / 시퀀스에 맞게</td></tr>
     <tr><td>S</td><td>스냅 전환</td></tr>
@@ -3073,7 +3111,7 @@ let caps = [];      // [{start,end,text}] 절대초 (한국어)
 let ens = [];       // 영어(인덱스로 한국어와 짝, 시간은 항상 한국어를 따라감)
 let selIdx = -1;
 let selSet = new Set();   // 다중 선택(앞으로 트랙 선택 도구)
-let capClipboard = null;  // Ctrl+C로 복사한 소절들: [{off, dur, text}] (off=첫 소절 기준 상대초)
+let capClipboard = null;  // Ctrl+C로 복사한 자막들: [{off, dur, text}] (off=첫 자막 기준 상대초)
 let dirty = false;
 // 자동 저장 상태. markDirty()가 초기화 도중 불릴 수도 있어(TDZ 방지) 여기서 미리 선언한다.
 let autoSaveTimer = null, saving = false;
@@ -3104,6 +3142,7 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   dur = info.source_duration || (C.end + 10);
   caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
   ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  initTexts();
   const title = (C.title || ('클립 ' + (IDX + 1)));
   ['projName', 'projName2', 'progName', 'tlName'].forEach(id => $(id).textContent = title);
   $('ecMaster').textContent = '마스터 * ' + title; $('ecSeq').textContent = title + ' * 자막';
@@ -3280,6 +3319,7 @@ function capUsablePx() {
 }
 function updateOverlay() {
   const ov = $('capOv'); if (!L) return;
+  renderTextOverlays();
   const i = activeCapIdx(v.currentTime);
   if (i < 0 || !koVisible) { ov.style.display = 'none'; return; }
   ov.style.display = 'block';
@@ -3448,21 +3488,83 @@ $('tbLift').addEventListener('click', () => deleteSel(false));
 $('tbExtract').addEventListener('click', () => deleteSel(true));
 $('tbCompare').addEventListener('click', () => setSafe(!$('pSafe').checked));
 $('tbPlus').addEventListener('click', () => setStatus('단추 편집기는 지원하지 않아요'));
+// 현재 화면 내보내기: 예전엔 <video> 픽셀만 그대로 캔버스에 떠서 제목·자막이 하나도
+// 안 찍혔다(실사고 2026-09-08 — "자막까지 포함되게"). 이제 렌더 해상도(L.resolution)
+// 캔버스에 영상 박스(L.video_box) 위치로 영상을 그린 뒤, 화면에 떠 있는 제목·자막·자유
+// 텍스트 오버레이를 (이미 정확히 배치·줄바꿈된) 화면 좌표에서 SC로 나눠 렌더 좌표로
+// 되돌려 같은 자리에 겹쳐 그린다 — 새 자막 wrap 로직을 다시 구현할 필요가 없다.
+function roundRectPath(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function drawOverlayToCanvas(ctx, el) {
+  if (!el || !el.isConnected) return;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || parseFloat(cs.opacity || '1') <= 0) return;
+  const frameRect = $('frame').getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  if (!elRect.width && !elRect.height) return;
+  const fontPx = parseFloat(cs.fontSize) / SC;
+  const lineH = fontPx * 1.25;
+  const cx = (elRect.left + elRect.width / 2 - frameRect.left) / SC;
+  const topY = (elRect.top - frameRect.top) / SC;
+  const lines = (el.innerText || el.textContent || '').split('\n').filter((_, i, a) => a.length > 1 || a[0]);
+  if (!lines.length) return;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.font = cs.fontWeight + ' ' + fontPx.toFixed(1) + 'px ' + cs.fontFamily;
+  const stroke = el.classList.contains('onvideo');
+  lines.forEach((ln, i) => {
+    const y = topY + i * lineH;
+    if (stroke) { ctx.lineWidth = Math.max(1, fontPx * 0.09); ctx.strokeStyle = '#000'; ctx.strokeText(ln, cx, y); }
+    ctx.fillStyle = stroke ? '#fff' : cs.color;
+    ctx.fillText(ln, cx, y);
+  });
+}
 $('tbFrame').addEventListener('click', () => {
   try {
-    const cv = document.createElement('canvas'); cv.width = v.videoWidth; cv.height = v.videoHeight;
-    cv.getContext('2d').drawImage(v, 0, 0);
+    const RW = (L.resolution || [1080, 1920])[0], RH = (L.resolution || [1080, 1920])[1];
+    const cv = document.createElement('canvas'); cv.width = RW; cv.height = RH;
+    const ctx = cv.getContext('2d');
+    const vb = L.video_box || { x: 0, y: 0, w: RW, h: RH, r: 0 };
+    ctx.fillStyle = (vb.w < RW - 1 || vb.h < RH - 1) ? '#fff' : '#000';
+    ctx.fillRect(0, 0, RW, RH);
+    ctx.save();
+    roundRectPath(ctx, vb.x, vb.y, vb.w, vb.h, vb.r || 0);
+    ctx.clip();
+    const vw = v.videoWidth || RW, vh = v.videoHeight || RH;
+    const scale = Math.max(vb.w / vw, vb.h / vh);
+    const dw = vw * scale, dh = vh * scale;
+    ctx.drawImage(v, vb.x + (vb.w - dw) / 2, vb.y + (vb.h - dh) / 2, dw, dh);
+    ctx.restore();
+    drawOverlayToCanvas(ctx, $('ttlOv'));
+    drawOverlayToCanvas(ctx, $('capOv'));
+    document.querySelectorAll('.tx-ov').forEach((el) => drawOverlayToCanvas(ctx, el));
     const a = document.createElement('a'); a.href = cv.toDataURL('image/png');
     a.download = 'frame_' + tc(v.currentTime).replace(/[:.]/g, '-') + '.png'; a.click();
-    setStatus('프레임 저장');
+    setStatus('프레임 저장(자막 포함)');
   } catch (e) { setStatus('프레임 저장 실패'); }
 });
-function markIn() {
-  const t = v.currentTime; if (C.end - t < 1) { setStatus('클립은 최소 1초'); return; }
+// 영상만 전체화면(우측 하단 버튼) — 상단 메뉴의 '전체 화면'(hFull, 앱 전체)과는 별개로
+// stage 하나만 브라우저 전체화면으로 띄운다. fitVideo가 stage 크기 변화에 맞춰 다시
+// 계산하므로 fullscreenchange에서 한 번 더 불러 확대 배율을 갱신한다.
+$('stageFullBtn').addEventListener('click', () => {
+  const stage = $('stage');
+  if (document.fullscreenElement === stage) document.exitFullscreen();
+  else stage.requestFullscreen().catch(() => {});
+});
+document.addEventListener('fullscreenchange', () => { if (document.fullscreenElement === $('stage') || !document.fullscreenElement) fitVideo(); });
+function markIn(at) {
+  const t = (typeof at === 'number') ? at : v.currentTime; if (C.end - t < 1) { setStatus('클립은 최소 1초'); return; }
   pushUndo(); C.start = t; clipRangeDirty = true; markDirty(); renderAll(); setStatus('클립 시작 = ' + tc(t));
 }
-function markOut() {
-  const t = v.currentTime; if (t - C.start < 1) { setStatus('클립은 최소 1초'); return; }
+function markOut(at) {
+  const t = (typeof at === 'number') ? at : v.currentTime; if (t - C.start < 1) { setStatus('클립은 최소 1초'); return; }
   pushUndo(); C.end = t; clipRangeDirty = true; markDirty(); renderAll(); setStatus('클립 끝 = ' + tc(t));
 }
 function addMarker() { markers.push(v.currentTime); renderRuler(); setStatus('마커 추가'); }
@@ -3530,7 +3632,7 @@ $('miEn').classList.add('chk');
 $('hbSnap').addEventListener('click', () => setSnap(!snapOn));
 function setSnap(on) { snapOn = on; $('hbSnap').classList.toggle('on', on); $('miSnap').classList.toggle('chk', on); }
 setSnap(true);
-$('hbLink').addEventListener('click', () => setStatus('영어 자막은 항상 한글 소절과 연결돼 있어요'));
+$('hbLink').addEventListener('click', () => setStatus('영어 자막은 항상 한글 자막과 연결돼 있어요'));
 $('hbSettings').addEventListener('click', () => { const th = $('thumbs'); th.style.display = th.style.display === 'none' ? '' : 'none'; });
 $('hbCC').addEventListener('click', () => setStatus('캡션 트랙: C1 한글' + (ens.length ? ' · C2 영어' : '')));
 
@@ -3594,7 +3696,7 @@ function mkBlock(track, item, i, isEn) {
   }
   track.appendChild(b);
 }
-// 자막이 없는 빈 구간마다 점선 '+' 칸을 둔다 — 누르면 그 구간을 채우는 소절이 생긴다.
+// 자막이 없는 빈 구간마다 점선 '+' 칸을 둔다 — 누르면 그 구간을 채우는 자막이 생긴다.
 function renderAddSlots(track) {
   const gaps = [];
   const ordered = caps.map((c, i) => ({ ...c, i })).sort((a, b) => a.start - b.start);
@@ -3621,15 +3723,15 @@ function renderAddSlots(track) {
 function addCapAt(a, b) {
   pushUndo();
   const end = Math.min(b, a + Math.max(0.6, Math.min(b - a, 5)));
-  caps.push({ start: a, end: end, text: '새 소절' });
+  caps.push({ start: a, end: end, text: '새 자막' });
   caps.sort((x, y) => x.start - y.start);
-  if (ens.length) { ens = []; setStatus('소절 추가 — 영어 트랙은 다시 번역해 주세요'); }
+  if (ens.length) { ens = []; setStatus('자막 추가 — 영어 트랙은 다시 번역해 주세요'); }
   selIdx = caps.findIndex((c) => c.start === a); selSet = new Set();
   markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
   const blk = $('koTrack').querySelector('.blk.sel');
   if (blk) openEdit(selIdx, blk);
 }
-// 자막을 끌거나 늘렸을 때 옆 소절과 겹치지 않도록 옆 소절을 같이 밀어낸다(길이는 유지).
+// 자막을 끌거나 늘렸을 때 옆 자막과 겹치지 않도록 옆 자막을 같이 밀어낸다(길이는 유지).
 // 겹치면 두 자막이 한 화면에 같이 떠서 화면이 엉킨다 — 밀어내는 편이 항상 옳다.
 function pushNeighbors(i) {
   for (let k = i + 1; k < caps.length; k++) {
@@ -3666,7 +3768,206 @@ function renderTracks() {
   const bc = $('bgmClip'); bc.style.left = t2x(C.start) + 'px'; bc.style.width = Math.max(4, t2x(C.end) - t2x(C.start)) + 'px';
   drawWave();
   renderNavi();
+  renderTextTracks();
 }
+// ─── 자유 텍스트 트랙(캡컷식) ──────────────────────────────────────────────
+// 자막(caps)은 한 트랙에 시간순으로 늘어서고 서로 겹칠 수 없다. 그와 별개로, 캡컷처럼
+// "아무 데나 놓고 아무 때나 띄우는 텍스트"가 필요하다는 요청(2026-09-08). 그래서 요소마다
+// 자기 시간·화면 위치·크기를 갖는 자유 텍스트를 별도 트랙(T1, T2 …)에 둔다. 트랙은 좌측
+// '+ 트랙 추가'로 늘리고, 블록을 아래로 끌면 새 트랙이 자동으로 생긴다.
+let texts = [], nTxTracks = 0, selTx = -1;
+const TX_LANE_H = 30;
+function txDefSize() { return Math.round((L && L.caption_font_size) || 72); }
+function initTexts() {
+  texts = ((C && C.free_texts) || []).map(t => ({
+    start: +t.start, end: +t.end, text: String(t.text || ''),
+    x: +t.x || 0, y: +t.y || 0, size: +t.size || 0, track: Math.max(0, t.track | 0),
+  }));
+  nTxTracks = texts.reduce((m, t) => Math.max(m, t.track + 1), 0);
+}
+// 트랙 개수(nTxTracks)에 맞춰 헤더 줄과 레인을 만든다/지운다.
+function ensureTxLanes() {
+  const heads = $('headsScroll'), lanes = $('tracksScroll');
+  for (let i = 0; i < nTxTracks; i++) {
+    if (!$('txHead' + i)) {
+      const h = document.createElement('div');
+      h.className = 'trk-h'; h.id = 'txHead' + i; h.style.height = TX_LANE_H + 'px';
+      h.innerHTML = '<span class="patch">T' + (i + 1) + '</span>' +
+        '<button class="addbtn" data-txadd="' + i + '" title="재생 헤드에 텍스트 추가">+</button>' +
+        '<button class="addbtn" data-txdel="' + i + '" title="이 텍스트 트랙 삭제">×</button>' +
+        '<span class="tn">T' + (i + 1) + ' 텍스트</span>';
+      heads.insertBefore(h, $('vHead'));
+    }
+    if (!$('txTrack' + i)) {
+      const l = document.createElement('div');
+      l.className = 'trk tx'; l.id = 'txTrack' + i; l.dataset.tx = i;
+      lanes.insertBefore(l, $('vTrack'));
+    }
+  }
+  for (let i = nTxTracks; $('txHead' + i); i++) { $('txHead' + i).remove(); const t = $('txTrack' + i); if (t) t.remove(); }
+}
+function renderTextTracks() {
+  ensureTxLanes();
+  for (let i = 0; i < nTxTracks; i++) {
+    const lane = $('txTrack' + i); if (!lane) continue;
+    lane.querySelectorAll('.txblk').forEach(el => el.remove());
+  }
+  texts.forEach((t, i) => {
+    const lane = $('txTrack' + t.track); if (!lane) return;
+    const x0 = t2x(t.start), x1 = t2x(t.end);
+    if (x1 < 0 || x0 > tw()) return;
+    const b = document.createElement('div');
+    b.className = 'txblk' + (i === selTx ? ' sel' : '');
+    b.dataset.tx = i;
+    b.style.left = Math.max(-2, x0) + 'px';
+    b.style.width = Math.max(10, Math.min(tw() + 2, x1) - Math.max(-2, x0)) + 'px';
+    const sp = document.createElement('span'); sp.className = 'txt'; sp.textContent = t.text || '(빈 텍스트)';
+    const hl = document.createElement('div'); hl.className = 'h l';
+    const hr = document.createElement('div'); hr.className = 'h r';
+    b.appendChild(sp); b.appendChild(hl); b.appendChild(hr);
+    b.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) { selectTx(i); return; }
+      if (tool === 'hand') return;
+      if (tool === 'razor') { const rect = tlTracks.getBoundingClientRect(); splitTxAt(i, x2t(e.clientX - rect.left)); return; }
+      const edge = e.target === hl ? 'l' : e.target === hr ? 'r' : 'm';
+      startTxDrag(e, i, edge);
+    });
+    b.addEventListener('dblclick', (e) => { e.stopPropagation(); selectTx(i); seek(Math.max(t.start + 0.01, Math.min(v.currentTime, t.end - 0.01))); focusTxOverlay(i); });
+    lane.appendChild(b);
+  });
+}
+function selectTx(i) { selTx = i; selIdx = -1; selSet = new Set(); renderTracks(); syncSelPanel(); updateOverlay(); }
+function addTextAt(track, t) {
+  const a = Math.max(C.start, Math.min(t, C.end - 1));
+  pushUndo();
+  texts.push({ start: a, end: Math.min(a + 3, C.end), text: '새 텍스트', x: 0, y: Math.round((L.resolution[1] || 1920) * 0.45), size: txDefSize(), track: track });
+  selTx = texts.length - 1;
+  markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
+  focusTxOverlay(selTx);
+}
+function addTextTrack() {
+  nTxTracks += 1;
+  addTextAt(nTxTracks - 1, v.currentTime);
+  setStatus('텍스트 트랙 T' + nTxTracks + ' 추가');
+}
+function deleteTextTrack(i) {
+  pushUndo();
+  texts = texts.filter(t => t.track !== i).map(t => (t.track > i ? { ...t, track: t.track - 1 } : t));
+  nTxTracks = Math.max(0, nTxTracks - 1); selTx = -1;
+  markDirty(); renderTracks(); updateOverlay();
+}
+function splitTxAt(i, t) {
+  const c = texts[i]; if (!c || t <= c.start + 0.05 || t >= c.end - 0.05) return;
+  pushUndo();
+  texts.splice(i + 1, 0, { ...c, start: t });
+  c.end = t; selTx = i;
+  markDirty(); renderTracks(); updateOverlay(); setStatus('텍스트 분할');
+}
+let txDrag = null;
+function startTxDrag(e, i, mode) {
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  selectTx(i);
+  txDrag = { i, mode, x0: e.clientX, y0: e.clientY, snap: texts.map(t => ({ start: t.start, end: t.end, track: t.track })), moved: false };
+  document.addEventListener('pointermove', onTxDrag);
+  document.addEventListener('pointerup', endTxDrag, { once: true });
+}
+function onTxDrag(e) {
+  if (!txDrag) return;
+  if (!txDrag.moved) {
+    if (Math.abs(e.clientX - txDrag.x0) < 2 && Math.abs(e.clientY - txDrag.y0) < 2) return;
+    txDrag.moved = true;
+  }
+  const dt = (e.clientX - txDrag.x0) / tw() * (view.b - view.a);
+  const i = txDrag.i, S = txDrag.snap[i], t = texts[i];
+  if (txDrag.mode === 'm') {
+    let ns = snapT(S.start + dt, -1);
+    const len = S.end - S.start;
+    ns = Math.max(0, Math.min(dur - len, ns));
+    t.start = ns; t.end = ns + len;
+    // 세로로 끌면 트랙 이동 — 마지막 트랙보다 아래로 내리면 새 트랙이 생긴다.
+    const steps = Math.round((e.clientY - txDrag.y0) / TX_LANE_H);
+    let nt = Math.max(0, S.track + steps);
+    if (nt >= nTxTracks) { nt = nTxTracks; nTxTracks = nt + 1; }
+    t.track = nt;
+  } else if (txDrag.mode === 'l') {
+    t.start = Math.max(0, Math.min(snapT(S.start + dt, -1), t.end - 0.3));
+  } else {
+    t.end = Math.min(dur, Math.max(snapT(S.end + dt, -1), t.start + 0.3));
+  }
+  markDirty(); renderTracks(); updateOverlay();
+}
+function endTxDrag() { txDrag = null; document.removeEventListener('pointermove', onTxDrag); }
+
+// ── 미리보기 위의 자유 텍스트(끌어서 위치, 더블클릭으로 수정) ──
+function renderTextOverlays() {
+  const frame = $('frame');
+  const now = v.currentTime;
+  const live = new Set();
+  texts.forEach((t, i) => {
+    if (now < t.start || now > t.end) return;
+    live.add(i);
+    let el = frame.querySelector('.tx-ov[data-tx="' + i + '"]');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tx-ov'; el.dataset.tx = String(i);
+      bindTxOverlay(el);
+      frame.appendChild(el);
+    }
+    if (document.activeElement !== el) el.textContent = t.text;
+    el.classList.toggle('sel', i === selTx);
+    const kc = (L.caption_ass_coeff || 1);
+    el.style.fontSize = ((t.size || txDefSize()) * kc * SC) + 'px';
+    el.style.left = (((L.resolution[0] / 2) + (t.x || 0)) * SC) + 'px';
+    el.style.top = ((t.y || 0) * SC) + 'px';
+  });
+  frame.querySelectorAll('.tx-ov').forEach(el => { if (!live.has(+el.dataset.tx)) el.remove(); });
+}
+function bindTxOverlay(el) {
+  el.addEventListener('pointerdown', (e) => {
+    const i = +el.dataset.tx; const t = texts[i]; if (!t) return;
+    if (el.classList.contains('editing')) return;      // 편집 중엔 커서 이동이 우선
+    e.preventDefault(); selectTx(i);
+    el.classList.add('dragging'); el.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, ox = t.x || 0, oy = t.y || 0;
+    const move = (ev) => {
+      t.x = Math.round(ox + (ev.clientX - sx) / SC);
+      t.y = Math.round(oy + (ev.clientY - sy) / SC);
+      markDirty(); renderTextOverlays();
+    };
+    const up = () => { el.classList.remove('dragging'); document.removeEventListener('pointermove', move); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  });
+  el.addEventListener('dblclick', (e) => { e.stopPropagation(); startTxEdit(el); });
+  el.addEventListener('blur', () => {
+    const i = +el.dataset.tx; if (!texts[i]) return;
+    el.classList.remove('editing'); el.contentEditable = 'false';
+    const val = el.textContent.trim();
+    if (val !== texts[i].text) { texts[i].text = val; markDirty(); renderTracks(); }
+  });
+  el.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); el.blur(); }
+  });
+}
+function startTxEdit(el) {
+  el.classList.add('editing'); el.contentEditable = 'true'; el.focus();
+  const r = document.createRange(); r.selectNodeContents(el);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+}
+function focusTxOverlay(i) {
+  renderTextOverlays();
+  const el = $('frame').querySelector('.tx-ov[data-tx="' + i + '"]');
+  if (el) startTxEdit(el);
+}
+$('btnAddTrack').addEventListener('click', addTextTrack);
+$('addTrkRow').addEventListener('click', (e) => { if (e.target.id !== 'btnAddTrack') addTextTrack(); });
+$('headsScroll').addEventListener('click', (e) => {
+  const add = e.target.closest('[data-txadd]'); if (add) { addTextAt(+add.dataset.txadd, v.currentTime); return; }
+  const del = e.target.closest('[data-txdel]'); if (del) deleteTextTrack(+del.dataset.txdel);
+});
+
 function renderAll() { if (!C) return; renderRuler(); renderThumbs(); renderTracks(); renderPlayhead(); renderKf(); }
 $('tracksScroll').addEventListener('scroll', () => { $('headsScroll').scrollTop = $('tracksScroll').scrollTop; });
 
@@ -3679,10 +3980,10 @@ $('ruler').addEventListener('pointerdown', (e) => {
   document.addEventListener('pointermove', go); document.addEventListener('pointerup', up, { once: true });
 });
 $('tracksScroll').addEventListener('pointerdown', (e) => {
-  if (e.target.closest('.blk')) return;
+  if (e.target.closest('.blk, .txblk')) return;
   if (tool === 'hand') { panDrag(e); return; }
   if (e.target.closest('.trk.v, .trk.a')) { const rect = tlTracks.getBoundingClientRect(); seek(x2t(e.clientX - rect.left)); }
-  if (e.target.closest('.trk.ko, .trk.en')) { selIdx = -1; selSet = new Set(); renderTracks(); syncSelPanel(); }
+  if (e.target.closest('.trk.ko, .trk.en, .trk.tx')) { selIdx = -1; selSet = new Set(); selTx = -1; renderTracks(); syncSelPanel(); updateOverlay(); }
 });
 function panDrag(e) {
   const x0 = e.clientX, a0 = view.a, span = view.b - view.a;
@@ -3758,7 +4059,7 @@ function drawWave() {
 }
 
 // ─── 선택/드래그/편집 ───
-function select(i) { selIdx = i; selSet = new Set(); renderTracks(); syncSelPanel(); }
+function select(i) { selIdx = i; selSet = new Set(); selTx = -1; renderTracks(); syncSelPanel(); updateOverlay(); }
 let drag = null;
 function startDrag(e, i, mode) {
   if (e.button !== undefined && e.button !== 0) return;
@@ -3820,9 +4121,10 @@ function splitAtTime(i, t) {
   pushUndo();
   const second = { start: t, end: c.end, text: c.text }; c.end = t; caps.splice(i + 1, 0, second);
   if (ens[i]) ens.splice(i + 1, 0, { start: second.start, end: second.end, text: ens[i].text });
-  selIdx = i; selSet = new Set(); markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); setStatus('소절 분할');
+  selIdx = i; selSet = new Set(); markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); setStatus('자막 분할');
 }
 function deleteSel(ripple) {
+  if (selTx >= 0) { pushUndo(); texts.splice(selTx, 1); selTx = -1; markDirty(); renderTracks(); updateOverlay(); return; }
   if (selIdx < 0 && !selSet.size) return;
   pushUndo();
   const idxs = (selSet.size ? [...selSet] : [selIdx]).sort((a, b) => b - a);
@@ -3840,7 +4142,7 @@ function syncSelPanel() {
   const has = selIdx >= 0 && !!caps[selIdx];
   ['selStart', 'selEnd'].forEach(id => $(id).disabled = !has || koLocked);
   $('selText').disabled = !has;
-  $('fxSelName').textContent = has ? ('소절 ' + (selIdx + 1) + (selSet.size > 1 ? ' 외 ' + (selSet.size - 1) : '')) : '(선택 없음)';
+  $('fxSelName').textContent = has ? ('자막 ' + (selIdx + 1) + (selSet.size > 1 ? ' 외 ' + (selSet.size - 1) : '')) : '(선택 없음)';
   if (has) {
     if (document.activeElement !== $('selStart')) $('selStart').value = caps[selIdx].start.toFixed(3);
     if (document.activeElement !== $('selEnd')) $('selEnd').value = caps[selIdx].end.toFixed(3);
@@ -3880,21 +4182,21 @@ function closeEdit() { const el = $('blkEdit'); if (el) el.remove(); }
 function addCap() {
   pushUndo();
   const t = Math.max(C.start, Math.min(v.currentTime, C.end - 2));
-  caps.push({ start: t, end: Math.min(t + 3, C.end), text: '새 소절' });
+  caps.push({ start: t, end: Math.min(t + 3, C.end), text: '새 자막' });
   caps.sort((a, b) => a.start - b.start);
-  if (ens.length) { ens = []; setStatus('소절 추가 — 영어 트랙은 다시 번역해 주세요'); }
+  if (ens.length) { ens = []; setStatus('자막 추가 — 영어 트랙은 다시 번역해 주세요'); }
   selIdx = caps.findIndex((c) => c.start === t); selSet = new Set(); markDirty(); renderTracks(); syncSelPanel();
 }
 $('pjNew').addEventListener('click', addCap); $('pjDel').addEventListener('click', () => deleteSel(false));
 $('hbAddCap').addEventListener('click', addCap);
 
-// ─── 소절 복사/붙여넣기(Ctrl+C / Ctrl+V) ───
+// ─── 자막 복사/붙여넣기(Ctrl+C / Ctrl+V) ───
 function copySel() {
   const idxs = (selSet.size ? [...selSet] : (selIdx >= 0 ? [selIdx] : [])).filter((i) => caps[i]).sort((a, b) => a - b);
   if (!idxs.length) return;
   const base = caps[idxs[0]].start;
   capClipboard = idxs.map((i) => ({ off: caps[i].start - base, dur: caps[i].end - caps[i].start, text: caps[i].text }));
-  setStatus(idxs.length > 1 ? idxs.length + '개 소절 복사됨' : '소절 복사됨');
+  setStatus(idxs.length > 1 ? idxs.length + '개 자막 복사됨' : '자막 복사됨');
 }
 function pasteSel() {
   if (!capClipboard || !capClipboard.length) return;
@@ -3912,7 +4214,7 @@ function pasteSel() {
   selSet = new Set(caps.map((c, i) => i).filter((i) => added.includes(caps[i])));
   selIdx = selSet.size ? Math.min(...selSet) : -1;
   markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
-  setStatus((added.length > 1 ? added.length + '개 소절 붙여넣기됨' : '소절 붙여넣기됨') + (hadEn ? ' — 영어 트랙은 다시 번역해 주세요' : ''));
+  setStatus((added.length > 1 ? added.length + '개 자막 붙여넣기됨' : '자막 붙여넣기됨') + (hadEn ? ' — 영어 트랙은 다시 번역해 주세요' : ''));
 }
 
 // ─── 효과 컨트롤 우측 키프레임 미니 타임라인 ───
@@ -3926,7 +4228,7 @@ function renderKf() {
   for (let t = Math.ceil(a / step) * step; t <= z; t += step) { const el = document.createElement('div'); el.className = 'tk'; el.style.left = ((t - a) / span * W) + 'px'; el.textContent = tcShort(t); r.appendChild(el); }
   const has = selIdx >= 0 && caps[selIdx];
   const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.style.top = '38px';
-  lbl.textContent = has ? '선택한 소절 구간' : '(소절을 선택하면 구간이 표시됩니다)'; b.appendChild(lbl);
+  lbl.textContent = has ? '선택한 자막 구간' : '(자막을 선택하면 구간이 표시됩니다)'; b.appendChild(lbl);
   if (has) { const s = document.createElement('div'); s.className = 'span'; s.style.left = ((caps[selIdx].start - a) / span * W) + 'px'; s.style.width = Math.max(2, (caps[selIdx].end - caps[selIdx].start) / span * W) + 'px'; s.style.top = '58px'; b.appendChild(s); }
   const t = v.currentTime; if (t >= a && t <= z) { const p1 = document.createElement('div'); p1.className = 'ph'; p1.style.left = ((t - a) / span * W) + 'px'; r.appendChild(p1); const p2 = p1.cloneNode(); b.appendChild(p2); }
 }
@@ -3940,9 +4242,9 @@ function renderProject() {
   const rows = [
     { ico: 'seq', nm: (C.title || '클립') , meta: [tc(C.start), tc(C.end - C.start)], act: () => seek(C.start) },
     { ico: 'vid', nm: 'source.mp4 (원본 영상)', meta: ['00:00:00.000', tc(dur)], act: () => { view = { a: 0, b: dur }; renderAll(); } },
-    { ico: 'cc', nm: '자막(한글) · ' + caps.length + '소절', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit },
+    { ico: 'cc', nm: '자막(한글) · ' + caps.length + '개', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit },
   ];
-  if (ens.length) rows.push({ ico: 'cc', nm: '자막(영어) · ' + ens.length + '소절', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit });
+  if (ens.length) rows.push({ ico: 'cc', nm: '자막(영어) · ' + ens.length + '개', meta: [caps.length ? tc(caps[0].start) : '-', ''], act: zoomFit });
   if (C && C.bgm) rows.push({ ico: 'cc', nm: '배경 음악 · ' + C.bgm.filename, meta: ['', ''], act: () => {} });
   if (pjSortMode === 'name') rows.sort((a, b) => a.nm.localeCompare(b.nm));
   const ICO = { seq: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14"/><path d="M3 10h18M8 5v14"/></svg>',
@@ -4014,7 +4316,7 @@ function applyFx(kind) {
   else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); });
   else if (kind === 'lyrics') {
     const t = prompt('곡 제목 또는 벅스 트랙 URL (music.bugs.co.kr에서 가사를 가져옵니다)', (C && C.title) || ''); if (t == null || !t.trim()) return;
-    aiCall(kind, base + 'fetch_lyrics', { title: t.trim() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); ens = []; setStatus('가사 ' + j.lines.length + '소절'); });
+    aiCall(kind, base + 'fetch_lyrics', { title: t.trim() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); ens = []; setStatus('가사 ' + j.lines.length + '줄'); });
   }
 }
 
@@ -4040,6 +4342,7 @@ function payload() {
     caption_offset_y: parseFloat($('pY').value),
   };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
+  p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
   if (clipRangeDirty) { p.clip_start = C.start; p.clip_end = C.end; }
   if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; }
   return p;
@@ -4198,10 +4501,13 @@ function menuAct(a) {
     undo, redo, 'delete': () => deleteSel(false), 'ripple-delete': () => deleteSel(true),
     copy: copySel, paste: pasteSel,
     'select-all': () => { selSet = new Set(caps.map((_, i) => i)); selIdx = caps.length ? 0 : -1; renderTracks(); syncSelPanel(); },
-    deselect: () => { selSet = new Set(); selIdx = -1; renderTracks(); syncSelPanel(); },
+    deselect: () => { selSet = new Set(); selIdx = -1; selTx = -1; renderTracks(); syncSelPanel(); updateOverlay(); },
     'edit-text': () => { const b = $('koTrack').querySelector('.blk.sel'); if (b && selIdx >= 0) openEdit(selIdx, b); },
     split: () => { const i = selIdx >= 0 ? selIdx : activeCapIdx(v.currentTime); if (i >= 0) splitAtTime(i, v.currentTime); },
-    add: addCap, 'mark-in': markIn, 'mark-out': markOut,
+    add: addCap, 'mark-in': () => markIn(), 'mark-out': () => markOut(),
+    'ctx-mark-in': () => markIn(ctxTime), 'ctx-mark-out': () => markOut(ctxTime),
+    'tx-edit-text': () => focusTxOverlay(selTx),
+    'tx-split': () => { if (selTx >= 0) splitTxAt(selTx, v.currentTime); },
     'zoom-in': () => zoomBy(0.75, (view.a + view.b) / 2), 'zoom-out': () => zoomBy(1.34, (view.a + view.b) / 2), 'zoom-fit': zoomFit,
     snap: () => setSnap(!snapOn), marker: addMarker, 'marker-clear': () => { markers = []; renderRuler(); },
     'fx-correct': () => applyFx('correct'), 'fx-translate': () => applyFx('translate'), 'fx-sync': () => applyFx('sync'),
@@ -4237,6 +4543,20 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMen
 
 function timelineCtx(e) {
   e.preventDefault();
+  const txblk = e.target.closest('.txblk');
+  if (txblk && txblk.dataset.tx !== undefined) {
+    const i = parseInt(txblk.dataset.tx, 10);
+    selectTx(i);
+    showCtxMenu(e.clientX, e.clientY,
+      ctxItem('텍스트 수정…', 'tx-edit-text', { k: '더블클릭' }) +
+      ctxItem('재생 헤드에서 분할', 'tx-split', { k: 'Ctrl+K' }) +
+      ctxSep() +
+      ctxItem('지우기', 'delete', { k: 'Delete' }) +
+      ctxSep() +
+      ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A' })
+    );
+    return;
+  }
   const blk = e.target.closest('.blk');
   if (blk && blk.dataset.idx !== undefined) {
     const i = parseInt(blk.dataset.idx, 10);
@@ -4256,8 +4576,23 @@ function timelineCtx(e) {
       ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A' })
     );
   } else {
+    // 클립이 아닌 곳(영상/오디오 트랙·빈 자막 구간·눈금자)에서도 '분할'이 보여야 한다.
+    // 예전엔 자막 막대 위에서만 떠서 "우클릭해도 분할이 없다"는 말이 나왔다(2026-09-08).
+    // 재생 헤드 아래에 자막이 있으면 그걸 자르고, 없으면 비활성으로 보여만 준다.
+    const rect = tlTracks.getBoundingClientRect();
+    const t = x2t(e.clientX - rect.left);
+    const overV = !!e.target.closest('.trk.v');
+    const overA = !!e.target.closest('.trk.a');
+    const canSplit = (selIdx >= 0 && caps[selIdx] && v.currentTime > caps[selIdx].start + 0.05 && v.currentTime < caps[selIdx].end - 0.05)
+      || activeCapIdx(v.currentTime) >= 0;
     showCtxMenu(e.clientX, e.clientY,
-      ctxItem('재생 헤드에 소절 추가', 'add', { k: 'Ctrl+Shift+N' }) +
+      ctxItem('재생 헤드에서 분할', 'split', { k: 'Ctrl+K', dis: !canSplit }) +
+      ctxItem('재생 헤드에 자막 추가', 'add', { k: 'Ctrl+Shift+N' }) +
+      ctxSep() +
+      ((overV || overA) ? (
+        ctxItem('여기를 클립 시작(In)으로', 'ctx-mark-in', { k: 'I' }) +
+        ctxItem('여기를 클립 끝(Out)으로', 'ctx-mark-out', { k: 'O' }) +
+        ctxSep()) : '') +
       ctxItem('마커 추가', 'marker', { k: 'M' }) +
       ctxSep() +
       ctxItem('타임라인에서 스냅', 'snap', { k: 'S', chk: snapOn }) +
@@ -4265,8 +4600,10 @@ function timelineCtx(e) {
       ctxSep() +
       ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A', dis: selIdx < 0 && selSet.size === 0 })
     );
+    ctxTime = t;
   }
 }
+let ctxTime = 0;   // 마지막 우클릭 지점의 시각(트랙 메뉴의 In/Out이 쓴다)
 $('tracksScroll').addEventListener('contextmenu', timelineCtx);
 $('ruler').addEventListener('contextmenu', timelineCtx);
 
@@ -4481,6 +4818,25 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         clip.caption_highlights = [
             str(h).strip() for h in (body.get("caption_highlights") or []) if str(h).strip()
         ]
+    # 자유 텍스트 트랙(스튜디오 '+' 로 만든 텍스트들). 자막과 달리 겹쳐도 되고
+    # 요소마다 화면 위치·크기를 갖는다. 렌더는 ASS에 \pos로 따로 얹는다.
+    if "free_texts" in body:
+        _ft = []
+        for t in (body.get("free_texts") or []):
+            try:
+                a, b = float(t["start"]), float(t["end"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            txt = str(t.get("text", "")).strip()
+            if not txt or b - a <= 0.05:
+                continue
+            _ft.append({
+                "start": a, "end": b, "text": txt,
+                "x": float(t.get("x", 0) or 0), "y": float(t.get("y", 0) or 0),
+                "size": int(float(t.get("size", 0) or 0)),
+                "track": max(0, int(float(t.get("track", 0) or 0))),
+            })
+        clip.free_texts = sorted(_ft, key=lambda o: (o["track"], o["start"]))
     # 영어 자막 트랙(번역). 한국어는 그대로 두고 별도 저장 → 렌더 옵션으로 전환.
     if "caption_overrides_en" in body:
         clip.caption_overrides_en = sorted(
@@ -4794,6 +5150,7 @@ def clip_preview_info(video_id: str, idx: int):
             "fill_mode": (getattr(clip, "fill_mode", "") or cfg["render"]["card_layout"].get("fill_mode", "fit")),
             "caption_karaoke": bool(getattr(clip, "caption_karaoke", False)),
             "caption_highlights": (getattr(clip, "caption_highlights", None) or []),
+            "free_texts": (getattr(clip, "free_texts", None) or []),
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
@@ -4860,9 +5217,10 @@ PREVIEW_MODAL_JS = r"""
     transition: transform .12s ease, box-shadow .12s ease; }
   .pv-fullbtn:hover { transform: translateY(-1px); box-shadow: 0 2px 5px rgba(0,0,0,.12), 0 8px 20px rgba(0,0,0,.12); }
   .pv-fullbtn:active { transform: translateY(0); }
-  /* 전체화면일 때: 카드를 넓히고 화면 높이를 다 쓴다(미리보기 확대는 JS가 캔버스에 scale). */
-  .pv-backdrop:fullscreen { padding: 0; background: rgba(15,23,42,.92); }
-  .pv-backdrop:fullscreen .pv-card { width: min(1280px, 96vw); max-height: 100vh; border-radius: 0; }
+  /* '전체화면'은 실제 OS/브라우저 풀스크린(F11류)이 아니라 팝업 카드 자체를 화면 가득 키우는
+     CSS 확대다(사용자 요청: 진짜 풀스크린 API는 쓰지 말 것). 미리보기 확대는 JS가 캔버스에 scale. */
+  .pv-backdrop.pv-maxed { padding: 0; background: rgba(15,23,42,.92); }
+  .pv-backdrop.pv-maxed .pv-card { width: min(1280px, 96vw); max-height: 100vh; border-radius: 0; }
   .pv-reanalyze { cursor: pointer; border: none; background: rgba(120,120,128,.12); color: #0a84ff;
     font-size: 12.5px; font-weight: 700; font-family: inherit; border-radius: 9px; padding: 6px 10px; white-space: nowrap; }
   .pv-reanalyze:hover { background: rgba(10,132,255,.14); }
@@ -5045,7 +5403,7 @@ PREVIEW_MODAL_JS = r"""
       '    <div class="pv-head-r">' +
       '      <button type="button" class="pv-capedit-btn">자막 수정</button>' +
       '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">구간 재분석</button>' +
-      '      <a class="pv-studio-btn" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio" title="타임라인·트랙이 있는 프리미어식 편집 화면으로 이동합니다">스튜디오(타임라인 편집)</a>' +
+      '      <a class="pv-studio-btn" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio" title="타임라인·트랙이 있는 프리미어식 편집 화면으로 이동합니다">스튜디오</a>' +
       '      <button type="button" class="pv-fullbtn" title="팝업을 화면 가득 띄우고 미리보기를 크게 봅니다">전체화면</button>' +
       '      <button class="pv-x" title="취소">&times;</button>' +
       '    </div></div>' +
@@ -5851,7 +6209,7 @@ PREVIEW_MODAL_JS = r"""
         j.lines.forEach((c2) => addCapRow(c2.start - C.start, c2.end - C.start, c2.text));
         capsDirty = true;
         capSec.classList.remove('hidden');
-        lyricsBtn.textContent = '✓ ' + j.lines.length + '소절 (저장 필요)';
+        lyricsBtn.textContent = '✓ ' + j.lines.length + '줄 (저장 필요)';
         setTimeout(() => { lyricsBtn.textContent = '가사 자동 가져오기'; }, 5000);
       });
     }
@@ -5912,18 +6270,21 @@ PREVIEW_MODAL_JS = r"""
       }
     });
 
-    // ── 전체화면(사용자 요청 2026-09-07) ──────────────────────────────────────
+    // ── 전체화면(사용자 요청 2026-09-07, 2026-09-08: 진짜 풀스크린 API 아님) ──────
     // 팝업 전체를 화면 가득 띄우고, 캔버스 밖 UI(헤더·자막 목록·버튼)가 쓰는 높이를 뺀
     // 남는 공간만큼 미리보기 캔버스를 확대한다. 확대는 CSS scale이라 자막/제목 오버레이가
     // 캔버스와 함께 정확히 같은 비율로 커진다(좌표계는 ZOOM으로 보정).
+    // document.requestFullscreen()은 쓰지 않는다 — 브라우저 실제 풀스크린으로 들어가면
+    // 탭/주소창이 사라지고 Esc로만 빠져나올 수 있어 사용자가 원하는 "팝업만 크게"와 다르다.
+    // 대신 .pv-maxed 클래스로 카드를 뷰포트 전체에 고정 배치하는 순수 CSS 확대만 쓴다.
     const fullBtn = $('.pv-fullbtn');
     const cardEl = $('.pv-card'), wrapEl = $('.pv-canvas-wrap'), canvasEl = $('.pv-canvas');
+    let maxed = false;
     function applyZoom() {
       if (!document.body.contains(back)) return;
-      const fs = document.fullscreenElement === back;
       wrapEl.style.height = ''; canvasEl.style.transform = '';   // 원래 크기로 되돌려 실측
       ZOOM = 1;
-      if (fs) {
+      if (maxed) {
         const other = Math.max(0, cardEl.scrollHeight - wrapEl.offsetHeight);
         ZOOM = Math.max(1, Math.min(
           (window.innerHeight - other - 24) / H, (window.innerWidth - 48) / W, 3));
@@ -5933,21 +6294,19 @@ PREVIEW_MODAL_JS = r"""
         canvasEl.style.transform = 'scale(' + ZOOM + ')';
         wrapEl.style.height = Math.round(H * ZOOM) + 'px';
       }
-      fullBtn.textContent = fs ? '전체화면 해제' : '전체화면';
+      fullBtn.textContent = maxed ? '전체화면 해제' : '전체화면';
     }
     fullBtn.addEventListener('click', () => {
-      if (document.fullscreenElement) document.exitFullscreen();
-      else back.requestFullscreen().catch(() => {});
+      maxed = !maxed;
+      back.classList.toggle('pv-maxed', maxed);
+      applyZoom();
     });
-    document.addEventListener('fullscreenchange', applyZoom);
     window.addEventListener('resize', applyZoom);
 
     // ── 닫기/저장/확정 ──
     function close() {
       video.pause();
-      document.removeEventListener('fullscreenchange', applyZoom);
       window.removeEventListener('resize', applyZoom);
-      if (document.fullscreenElement === back) { try { document.exitFullscreen(); } catch (e) {} }
       back.remove();
     }
     $('.pv-x').addEventListener('click', close);
@@ -6211,7 +6570,7 @@ def retranscribe_status(video_id: str, idx: int):
 
 
 def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list, fresh: bool = False) -> "Response":
-    """노래(찬양) 자막 싱크: 클립을 온디맨드 전사해 '가창 단어 시각'을 얻고, 가사 소절을
+    """노래(찬양) 자막 싱크: 클립을 온디맨드 전사해 '가창 단어 시각'을 얻고, 가사 자막을
     퍼지 앵커링으로 그 위치에 매핑한다(내용이 틀려도 타이밍은 맞음). 결과는 캐시.
 
     fresh=True(같은 팝업에서 두 번째 이상 누름): 캐시 재사용이 아니라 최고 정밀 모델

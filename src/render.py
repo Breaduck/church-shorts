@@ -749,6 +749,7 @@ def render_clip(
         bilingual_overrides=(
             getattr(clip, "caption_overrides_en", None) if render_cfg.get("caption_bilingual") else None
         ),
+        free_texts=getattr(clip, "free_texts", None) or None,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
