@@ -371,29 +371,33 @@ def _rounded_rect_path(w: float, h: float, r: float) -> str:
 
 
 def _split_words_by_wrap(word_texts: list[str], wrap_after: "set[int] | list[int] | None") -> list[str]:
-    """단어 목록을 wrap_after(그 인덱스 다음에 줄바꿈) 기준으로 나눠 줄 텍스트 목록을 만든다
-    — 실제 화면 표시(\\N 분할)와 같은 규칙이라야 박스가 텍스트와 같은 자리에 그려진다."""
-    cuts = sorted(set(wrap_after or ()))
-    bounds = [0, *[c + 1 for c in cuts], len(word_texts)]
+    """단어 목록을 wrap_after 기준으로 나눠 줄 텍스트 목록을 만든다 — _karaoke_text/비카라오케
+    분기와 같은 규칙(wrap_after의 각 인덱스가 '그 단어부터 새 줄 시작', 인덱스 자체가 경계)을
+    써야 실제 화면 \\N 분할과 같은 자리에 박스가 그려진다. (예전엔 인덱스+1을 경계로 써서
+    항상 마지막 줄 하나로 뭉쳐버리는 버그가 있었다 — 박스가 한 줄만 그려지던 원인.)"""
+    bounds = [0, *sorted(set(wrap_after or ())), len(word_texts)]
     return [" ".join(word_texts[bounds[i]:bounds[i + 1]]) for i in range(len(bounds) - 1) if bounds[i] < bounds[i + 1]]
 
 
 def _emit_caption_box_events(
     events: list, word_texts: list[str], wrap_after, font_size: int, font_name: str,
     center_x: float, alignment: int, edge_v: float, start_t: str, end_t: str,
-    box_color: str, box_opacity: float, box_radius: int,
+    box_color: str, box_opacity: float, box_radius_pct: float,
+    box_width_pct: float = 28.0, box_height_pct: float = 28.0,
+    box_offset_x: float = 0.0, box_offset_y: float = 0.0,
 ) -> None:
     """자막 한 줄(경우에 따라 \\N으로 여러 줄) 뒤에 색 있는 둥근 박스를 깐다. 텍스트는 Layer 1로
     올리고 박스는 Layer 0으로 깔아서(빌드 시 캡션 이벤트 Layer를 1로 바꿔둠) 항상 글자 밑에
     깔리게 한다. 위치는 스타일의 자동 배치를 안 쓰고 직접 계산한다(정렬 2=하단/8=상단 기준
-    caption_margin_v와 같은 규칙 — build_ass 본문 주석 참고)."""
+    caption_margin_v와 같은 규칙 — build_ass 본문 주석 참고). 여백·둥글기는 캡컷 '텍스트
+    배경' 패널과 같은 % 단위(사용자가 넣어준 캡컷 스크린샷 기준: 둥근 직사각형/높이/너비)."""
     from src.fonts import measure_text_width_px
 
     sublines = _split_words_by_wrap(word_texts, wrap_after)
     if not sublines:
         return
     line_h = font_size * 1.25
-    pad_x, pad_y = font_size * 0.28, font_size * 0.16
+    pad_x, pad_y = font_size * (box_width_pct / 100), font_size * (box_height_pct / 100)
     fill = _css_hex_to_ass_color(box_color)
     alpha = _css_hex_to_ass_alpha(box_opacity)
     n = len(sublines)
@@ -402,9 +406,10 @@ def _emit_caption_box_events(
         tw = measure_text_width_px(sub, font_name, font_size) or (len(sub) * font_size * 0.55)
         box_w = tw + pad_x * 2
         box_h = font_size * 1.02 + pad_y * 2
-        box_top = top + (line_h - box_h) / 2
-        box_left = center_x - box_w / 2
-        path = _rounded_rect_path(box_w, box_h, box_radius)
+        box_top = top + (line_h - box_h) / 2 + box_offset_y
+        box_left = center_x - box_w / 2 + box_offset_x
+        radius_px = min(box_w, box_h) / 2 * (max(0.0, min(100.0, box_radius_pct)) / 100)
+        path = _rounded_rect_path(box_w, box_h, radius_px)
         events.append(
             f"Dialogue: 0,{start_t},{end_t},CapBox,,0,0,0,,"
             f"{{\\an7\\pos({box_left:.1f},{box_top:.1f})\\p1\\c{fill}\\1a{alpha}\\bord0\\shad0}}{path}{{\\p0}}"
@@ -678,7 +683,11 @@ def build_ass(
     caption_box: bool = False,
     caption_box_color: str = "#000000",
     caption_box_opacity: float = 0.55,
-    caption_box_radius: int = 14,
+    caption_box_radius: float = 40.0,
+    caption_box_width_pct: float = 28.0,
+    caption_box_height_pct: float = 28.0,
+    caption_box_offset_x: float = 0.0,
+    caption_box_offset_y: float = 0.0,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -886,6 +895,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             events, word_texts, wrap_after, size, font_name,
             cap_center_x, caption_alignment, cap_edge_v, start_t, end_t,
             caption_box_color, caption_box_opacity, caption_box_radius,
+            caption_box_width_pct, caption_box_height_pct, caption_box_offset_x, caption_box_offset_y,
         )
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
@@ -1144,5 +1154,9 @@ def build_ass_for_clip(
         caption_box=bool(fs.get("caption_box", False)),
         caption_box_color=fs.get("caption_box_color", "") or "#000000",
         caption_box_opacity=float(fs.get("caption_box_opacity", 0.55) or 0.55),
-        caption_box_radius=int(fs.get("caption_box_radius", 14) or 14),
+        caption_box_radius=float(fs.get("caption_box_radius", 40.0) or 40.0),
+        caption_box_width_pct=float(fs.get("caption_box_width_pct", 28.0) or 28.0),
+        caption_box_height_pct=float(fs.get("caption_box_height_pct", 28.0) or 28.0),
+        caption_box_offset_x=float(fs.get("caption_box_offset_x", 0.0) or 0.0),
+        caption_box_offset_y=float(fs.get("caption_box_offset_y", 0.0) or 0.0),
     )

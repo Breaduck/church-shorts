@@ -137,7 +137,12 @@ class Clip:
     caption_box: bool = False          # 자막 글자 뒤에 색 있는 박스를 깔지 여부.
     caption_box_color: str = "#000000"  # CSS hex.
     caption_box_opacity: float = 0.55   # 0(투명)~1(불투명).
-    caption_box_radius: int = 14        # 박스 모서리 둥글기(렌더 해상도 px).
+    # 캡컷 '텍스트 배경' 패널과 같은 단위(전부 %, 사용자가 넣어준 캡컷 스크린샷 기준).
+    caption_box_radius: float = 40.0    # 모서리 둥글기 0~100%(박스 반높이 기준).
+    caption_box_width_pct: float = 28.0   # 좌우 여백(글자 대비 %).
+    caption_box_height_pct: float = 28.0  # 상하 여백(글자 대비 %).
+    caption_box_offset_x: float = 0.0   # 박스를 글자 중심에서 좌우로 미는 px.
+    caption_box_offset_y: float = 0.0   # 박스를 글자 중심에서 위아래로 미는 px.
     # 자유 텍스트(캡컷식). 스튜디오에서 '+'로 만든 텍스트 트랙 위의 요소들이다.
     # 자막(caption_overrides)과 달리 겹쳐도 되고, 요소마다 자기 시간·화면 위치·크기를 갖는다.
     # [{"start": 절대초, "end": 절대초, "text": str, "x": 렌더px(중앙 기준 오프셋),
