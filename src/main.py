@@ -1511,18 +1511,43 @@ def analyze(
         # 실제 진행을 반영한다. set_fraction은 단조 증가라 티커와 섞여도 뒤로 튀지 않는다.
         sp.advance("AI가 설교 전사본을 읽는 중...")
         t_selection = time.time()
-        clips = select_highlights_auto(
-            transcript=transcript, peak_hints=peak_hints,
-            min_clips=h["min_clips"], max_clips=h["max_clips"],
-            min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
-            categories=h["categories"],
-            feedback_block=feedback_block,
-            # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
-            model=model or h.get("model", ""),
-            transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
-            thinking_tokens=int(h.get("thinking_tokens", 2048)),
-            on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
-        )
+        clips = []
+        # v2 엔진(2026-09-08): 문장 단위 재조립 → 명제 지도+컷(Opus) → 결정론적 검증 → 채점(Sonnet).
+        # "핵심을 못 잡아낸다"의 구조적 원인(단일 프롬프트에 8가지 일·조각 전사본·검증 부재) 해결.
+        # 실패하면 예전 단일 프롬프트(v1)로 폴백해 결과 없이 끝나지 않게 한다.
+        if str(h.get("engine", "v2")).lower() == "v2":
+            try:
+                from src.sermon_cut import select_highlights_v2
+                clips = select_highlights_v2(
+                    transcript=transcript,
+                    min_clips=h["min_clips"], max_clips=h["max_clips"],
+                    min_duration_sec=float(h["min_duration_sec"]),
+                    max_duration_sec=float(h["max_duration_sec"]),
+                    hard_max_duration_sec=float(h.get("hard_max_duration_sec", 90)),
+                    model=model or h.get("model", ""),
+                    score_model=str(h.get("score_model", "sonnet")),
+                    thinking_tokens=int(h.get("thinking_tokens", 8192)),
+                    score_thinking_tokens=int(h.get("score_thinking_tokens", 1024)),
+                    extra_block=feedback_block,
+                    on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+                )
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                print("[main] v2 선정 실패 — v1 단일 프롬프트로 폴백", flush=True)
+                clips = []
+        if not clips:
+            clips = select_highlights_auto(
+                transcript=transcript, peak_hints=peak_hints,
+                min_clips=h["min_clips"], max_clips=h["max_clips"],
+                min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
+                categories=h["categories"],
+                feedback_block=feedback_block,
+                # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
+                model=model or h.get("model", ""),
+                transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
+                thinking_tokens=int(h.get("thinking_tokens", 2048)),
+                on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+            )
         _record_stage_time("selection", time.time() - t_selection)
         # 경계 인용문 앵커링: 모델이 인용한 첫/끝 문장을 전사본에서 문자열로 찾아
         # start/end를 그 문장의 실제 발화 시각으로 확정한다. (모델이 읽은 것과 같은
@@ -1532,6 +1557,9 @@ def analyze(
         )
         anchored_n = 0
         for c in clips:
+            if c.anchored:
+                anchored_n += 1  # v2: 문장 시각으로 이미 확정
+                continue
             try:
                 if anchor_clip_to_quotes(
                     c, transcript.segments, hard_len_cfg, min_duration_sec=float(h["min_duration_sec"])

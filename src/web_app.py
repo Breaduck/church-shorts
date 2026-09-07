@@ -722,6 +722,9 @@ CANDIDATES_TEMPLATE = f"""
       {{% if c.appeal or c.hook_line %}}
       <p class="reason-hashtags">{{% if c.appeal %}}{{{{ c.appeal }}}}{{% endif %}}{{% if c.hook_line %}} · 첫 문장: “{{{{ c.hook_line }}}}”{{% endif %}}{{% if c.payoff_line %}} · 끝 문장: “{{{{ c.payoff_line }}}}”{{% endif %}}</p>
       {{% endif %}}
+      {{% if c.core_line %}}
+      <p class="reason-hashtags">핵심 문장: “{{{{ c.core_line }}}}”</p>
+      {{% endif %}}
       {{% if c.insight %}}
       <p class="reason-hashtags">{{{{ c.insight }}}}</p>
       {{% endif %}}
