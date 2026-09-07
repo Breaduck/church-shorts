@@ -132,6 +132,12 @@ class Clip:
     # 여기엔 참조만 남긴다. 없으면 None(기존 clips.json과 호환). 렌더는 이 파일을 클립
     # 길이에 맞춰 반복/트림하고 volume 배율로 원본 오디오와 믹싱한다(_add_sfx와 같은 패턴).
     bgm: Optional[dict] = None
+    # 자막 스타일(캡컷식 박스·색상). 기본은 전부 꺼짐/빈 값 = config 기본 스타일 그대로.
+    caption_text_color: str = ""       # CSS hex(#RRGGBB). 빈 값 = config 기본 색.
+    caption_box: bool = False          # 자막 글자 뒤에 색 있는 박스를 깔지 여부.
+    caption_box_color: str = "#000000"  # CSS hex.
+    caption_box_opacity: float = 0.55   # 0(투명)~1(불투명).
+    caption_box_radius: int = 14        # 박스 모서리 둥글기(렌더 해상도 px).
     # 자유 텍스트(캡컷식). 스튜디오에서 '+'로 만든 텍스트 트랙 위의 요소들이다.
     # 자막(caption_overrides)과 달리 겹쳐도 되고, 요소마다 자기 시간·화면 위치·크기를 갖는다.
     # [{"start": 절대초, "end": 절대초, "text": str, "x": 렌더px(중앙 기준 오프셋),

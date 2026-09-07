@@ -336,6 +336,81 @@ def _highlight_wrap(disp: str, hi_color: str, style: str = "fill") -> str:
     return f"{{\\c{hi_color}\\b1}}{disp}{{\\r}}"
 
 
+def _css_hex_to_ass_color(hex_color: str) -> str:
+    """CSS #RRGGBB -> ASS 색(순수, 알파 없음) &HBBGGRR&. 스튜디오 색상 피커가 CSS 표기라
+    변환이 필요하다(ASS는 BGR 순서 + 알파 반전이라 그대로 못 쓴다)."""
+    h = (hex_color or "").lstrip("#")
+    if len(h) != 6:
+        h = "FFFFFF"
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H{b}{g}{r}&".upper()
+
+
+def _css_hex_to_ass_alpha(opacity: float) -> str:
+    """0(투명)~1(불투명) -> ASS 알파(00=불투명, FF=투명 — CSS와 반대라 뒤집는다)."""
+    op = max(0.0, min(1.0, opacity))
+    return f"&H{round((1 - op) * 255):02X}&".upper()
+
+
+def _rounded_rect_path(w: float, h: float, r: float) -> str:
+    """(0,0)-(w,h) 사각형 안에 둥근 모서리(반지름 r) 벡터 경로를 그린다(ASS \\p 드로잉).
+    베지어 근사 상수 0.5523(원을 4개의 3차 베지어로 근사할 때 표준 계수)."""
+    r = max(0.0, min(r, w / 2, h / 2))
+    k = r * 0.5523
+    return (
+        f"m {r:.1f} 0 "
+        f"l {w - r:.1f} 0 "
+        f"b {w - r + k:.1f} 0 {w:.1f} {r - k:.1f} {w:.1f} {r:.1f} "
+        f"l {w:.1f} {h - r:.1f} "
+        f"b {w:.1f} {h - r + k:.1f} {w - r + k:.1f} {h:.1f} {w - r:.1f} {h:.1f} "
+        f"l {r:.1f} {h:.1f} "
+        f"b {r - k:.1f} {h:.1f} 0 {h - r + k:.1f} 0 {h - r:.1f} "
+        f"l 0 {r:.1f} "
+        f"b 0 {r - k:.1f} {r - k:.1f} 0 {r:.1f} 0"
+    )
+
+
+def _split_words_by_wrap(word_texts: list[str], wrap_after: "set[int] | list[int] | None") -> list[str]:
+    """단어 목록을 wrap_after(그 인덱스 다음에 줄바꿈) 기준으로 나눠 줄 텍스트 목록을 만든다
+    — 실제 화면 표시(\\N 분할)와 같은 규칙이라야 박스가 텍스트와 같은 자리에 그려진다."""
+    cuts = sorted(set(wrap_after or ()))
+    bounds = [0, *[c + 1 for c in cuts], len(word_texts)]
+    return [" ".join(word_texts[bounds[i]:bounds[i + 1]]) for i in range(len(bounds) - 1) if bounds[i] < bounds[i + 1]]
+
+
+def _emit_caption_box_events(
+    events: list, word_texts: list[str], wrap_after, font_size: int, font_name: str,
+    center_x: float, alignment: int, edge_v: float, start_t: str, end_t: str,
+    box_color: str, box_opacity: float, box_radius: int,
+) -> None:
+    """자막 한 줄(경우에 따라 \\N으로 여러 줄) 뒤에 색 있는 둥근 박스를 깐다. 텍스트는 Layer 1로
+    올리고 박스는 Layer 0으로 깔아서(빌드 시 캡션 이벤트 Layer를 1로 바꿔둠) 항상 글자 밑에
+    깔리게 한다. 위치는 스타일의 자동 배치를 안 쓰고 직접 계산한다(정렬 2=하단/8=상단 기준
+    caption_margin_v와 같은 규칙 — build_ass 본문 주석 참고)."""
+    from src.fonts import measure_text_width_px
+
+    sublines = _split_words_by_wrap(word_texts, wrap_after)
+    if not sublines:
+        return
+    line_h = font_size * 1.25
+    pad_x, pad_y = font_size * 0.28, font_size * 0.16
+    fill = _css_hex_to_ass_color(box_color)
+    alpha = _css_hex_to_ass_alpha(box_opacity)
+    n = len(sublines)
+    for i, sub in enumerate(sublines):
+        top = (edge_v - (n - i) * line_h) if alignment == 2 else (edge_v + i * line_h)
+        tw = measure_text_width_px(sub, font_name, font_size) or (len(sub) * font_size * 0.55)
+        box_w = tw + pad_x * 2
+        box_h = font_size * 1.02 + pad_y * 2
+        box_top = top + (line_h - box_h) / 2
+        box_left = center_x - box_w / 2
+        path = _rounded_rect_path(box_w, box_h, box_radius)
+        events.append(
+            f"Dialogue: 0,{start_t},{end_t},CapBox,,0,0,0,,"
+            f"{{\\an7\\pos({box_left:.1f},{box_top:.1f})\\p1\\c{fill}\\1a{alpha}\\bord0\\shad0}}{path}{{\\p0}}"
+        )
+
+
 def _ass_time(sec: float) -> str:
     if sec < 0:
         sec = 0
@@ -599,6 +674,11 @@ def build_ass(
     highlight_style: str = "fill",
     bilingual_overrides: list | None = None,
     free_texts: list | None = None,
+    caption_text_color: str = "",
+    caption_box: bool = False,
+    caption_box_color: str = "#000000",
+    caption_box_opacity: float = 0.55,
+    caption_box_radius: int = 14,
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -673,6 +753,9 @@ def build_ass(
     # 따라서 '말소리를 따라 강조색으로 켜지게' 하려면 카라오케일 때 Primary=강조색(연두),
     # Secondary=기본색(검정)이어야 한다. (기존엔 반대로 되어 있어 단어가 연두로 떴다가 검정으로
     # 꺼지는 반전 버그가 있었음.) 비카라오케 템플릿은 Primary=기본색 그대로 둔다.
+    # 스튜디오에서 고른 자막 글자색(캡컷 스타일 프리셋). 빈 값이면 config 기본 색 그대로.
+    if caption_text_color:
+        primary_color = _css_hex_to_ass_color(caption_text_color)
     if template == "karaoke":
         cap_primary, cap_secondary = karaoke_highlight_color, primary_color
     else:
@@ -689,6 +772,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Caption,{font_name},{caption_size},{cap_primary},{cap_secondary},{outline_color},&H00000000,-1,0,0,0,100,100,{caption_spacing},0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
 Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,{title_spacing},0,1,{outline_width + 1},0,{title_alignment},{title_margin_l},{title_margin_r},{title_margin_v},1
 Style: FreeText,{font_name},{caption_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,8,0,0,0,1
+Style: CapBox,{font_name},{caption_size},&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -786,7 +870,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if animate:
             # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
             text = "{\\fad(120,80)}" + text
-        events.append(f"Dialogue: 0,{start_t},{end_t},Caption,,0,0,0,,{text}")
+        # Layer 1: 박스(Layer 0, _emit_caption_box_events)가 켜져 있으면 그 위에 겹쳐 그려진다.
+        events.append(f"Dialogue: 1,{start_t},{end_t},Caption,,0,0,0,,{text}")
+
+    cap_center_x = width / 2 + caption_offset_x
+    cap_edge_v = (height - caption_margin_v) if caption_alignment == 2 else caption_margin_v
+
+    def _emit_box(line: CaptionLine, word_texts: list[str], wrap_after, size: int) -> None:
+        if not caption_box:
+            return
+        wline = _warp_line(line)
+        start_t = _ass_time(max(0.0, wline.start + sync_offset_sec))
+        end_t = _ass_time(max(0.0, wline.end + sync_offset_sec))
+        _emit_caption_box_events(
+            events, word_texts, wrap_after, size, font_name,
+            cap_center_x, caption_alignment, cap_edge_v, start_t, end_t,
+            caption_box_color, caption_box_opacity, caption_box_radius,
+        )
 
     # 사용자가 편집기에서 확정한 자막이 있으면 그것을 최우선으로 쓴다(재전사 결과 무시).
     # 시간도 선언된 값 그대로(WYSIWYG) — 참조 전사로 리듬을 빌리거나 무음 보정을 다시
@@ -855,6 +955,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     f"\\N{{\\fs{uniform_en_size}\\c{en_color}\\bord0}}"
                     f"{en_disp}{{\\r}}"
                 )
+            _emit_box(line, word_texts, wrap_after, ko_size)
             _emit_line(line, extra_text=extra, prefix_text=prefix, wrap_after=wrap_after)
         return header + "\n".join(events) + "\n"
 
@@ -886,6 +987,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     )
 
     for line in lines:
+        _emit_box(line, [_display_text(w.text) for w in line.words], None, caption_size)
         _emit_line(line)
 
     return header + "\n".join(events) + "\n"
@@ -1038,4 +1140,9 @@ def build_ass_for_clip(
         highlight_style=str(config_captions.get("highlight_style", "fill") or "fill"),
         bilingual_overrides=bilingual_overrides,
         free_texts=free_texts,
+        caption_text_color=fs.get("caption_text_color", "") or "",
+        caption_box=bool(fs.get("caption_box", False)),
+        caption_box_color=fs.get("caption_box_color", "") or "#000000",
+        caption_box_opacity=float(fs.get("caption_box_opacity", 0.55) or 0.55),
+        caption_box_radius=int(fs.get("caption_box_radius", 14) or 14),
     )

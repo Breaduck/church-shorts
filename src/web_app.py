@@ -2481,6 +2481,11 @@ STUDIO_TEMPLATE = r"""
   .pv.align3 { gap: 6px; }
   .align-btn { border-radius: 50%; font-size: 12px; }
   .align-btn.on { background: var(--blue); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.45), 0 0 0 2px rgba(75,155,255,.4); }
+  input.swatch[type="color"] { width: 26px; height: 20px; padding: 0; border: 1px solid #444; border-radius: 5px; background: none; cursor: pointer; }
+  #capPresets { flex-wrap: wrap; gap: 6px; }
+  .cap-preset { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #444; cursor: pointer; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; flex: 0 0 auto; }
+  .cap-preset.on { border-color: #fff; box-shadow: 0 0 0 2px var(--blue); }
   .prm .chk { accent-color: var(--hot); }
   .prm .dimtxt { color: #7a7a7a; }
   .ec-none { padding: 10px 30px; color: #6a6a6a; }
@@ -2855,12 +2860,17 @@ STUDIO_TEMPLATE = r"""
             <div class="fx" id="fxStyle">
               <div class="fx-h"><span class="tri">▼</span><span class="fxi">fx</span><span class="fxn">텍스트 스타일</span><span class="rst" data-reset="style">재설정</span></div>
               <div class="fx-b">
+                <div class="prm"><span class="stop"></span><span class="pn">스타일</span><div class="pv" id="capPresets"></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">글꼴</span><div class="pv"><select class="hot wide" id="pFont"></select></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">정렬</span><div class="pv align3">
                   <button type="button" class="stp align-btn" data-align="left" title="왼쪽 정렬">◧</button>
                   <button type="button" class="stp align-btn" data-align="center" title="가운데 정렬">▣</button>
                   <button type="button" class="stp align-btn" data-align="right" title="오른쪽 정렬">◨</button>
                 </div></div>
+                <div class="prm"><span class="stop"></span><span class="pn">글자색</span><div class="pv"><input type="color" id="pTextColor" class="swatch"><button type="button" class="stp txt-reset" id="pTextColorReset" title="기본색으로">↺</button></div></div>
+                <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">박스</span><div class="pv"><input class="chk" type="checkbox" id="pBoxOn"><span class="dimtxt">글자 뒤에 색 박스 깔기</span></div></div>
+                <div class="prm" id="pBoxRow1"><span class="stop"></span><span class="pn">박스 색</span><div class="pv"><input type="color" id="pBoxColor" class="swatch"><input class="hot" type="number" id="pBoxOpacity" min="0" max="100" step="5"><span class="unit">% 진하기</span></div></div>
+                <div class="prm" id="pBoxRow2"><span class="stop"></span><span class="pn">둥글기</span><div class="pv"><button class="stp" data-nudge="pBoxRadius:-2" title="각지게">&minus;</button><input class="hot" type="number" id="pBoxRadius" min="0" max="60" step="1"><button class="stp" data-nudge="pBoxRadius:2" title="둥글게">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">자간</span><div class="pv"><button class="stp" data-nudge="pSpacing:-0.5" title="좁게">&minus;</button><input class="hot" type="number" id="pSpacing" min="-4" max="20" step="0.5"><button class="stp" data-nudge="pSpacing:0.5" title="넓게">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">크기</span><div class="pv"><button class="stp" data-nudge="pSize:-2" title="작게">&minus;</button><input class="hot" type="number" id="pSize" min="28" max="240" step="1"><button class="stp" data-nudge="pSize:2" title="크게">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop"></span><span class="pn">가로 위치</span><div class="pv"><button class="stp" data-nudge="pX:-6" title="왼쪽으로">&minus;</button><input class="hot" type="number" id="pX" min="-400" max="400" step="1"><button class="stp" data-nudge="pX:6" title="오른쪽으로">+</button><span class="unit">px</span></div></div>
@@ -3258,10 +3268,48 @@ function applyPreviewFonts(info) {
 // 자막 글꼴/정렬/자간 — 캡컷처럼 스튜디오에서 바로 고른다(2026-09-08 요청). 렌더(build_ass)가
 // 이미 caption_font/caption_align/caption_spacing을 지원해서(예전 편집기·팝업에서만 노출됐음),
 // 여기선 값만 채우고 저장(payload)에 실어 보내면 된다.
+function hexToRgba(hex, opacity) {
+  const h = (hex || '#000000').replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16) || 0, g = parseInt(h.slice(2, 4), 16) || 0, b = parseInt(h.slice(4, 6), 16) || 0;
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + (opacity == null ? 1 : opacity) + ')';
+}
 let capFont = '', capAlign = 'center';
+let capTextColor = '', capBox = false, capBoxColor = '#000000', capBoxOpacity = 0.55, capBoxRadius = 14;
+// 캡컷처럼 클릭 한 번으로 색 조합을 통째로 적용하는 프리셋(2026-09-08: "다양한 스타일이
+// 있고 우리가 설정할 수 있게" — 글꼴만으론 부족하다는 요청). 각 항목이 곧 텍스트색·박스
+// 유무·박스색·불투명도·둥글기 전부를 한 번에 정한다.
+const CAP_PRESETS = [
+  { name: '기본', sw: '#ffffff', text: '', box: false },
+  { name: '화이트박스', sw: '#ffffff', text: '#111111', box: true, boxColor: '#ffffff', boxOpacity: 0.92, boxRadius: 10 },
+  { name: '블랙박스', sw: '#000000', text: '#ffffff', box: true, boxColor: '#000000', boxOpacity: 0.62, boxRadius: 10 },
+  { name: '옐로우', sw: '#ffd400', text: '#111111', box: true, boxColor: '#ffd400', boxOpacity: 0.95, boxRadius: 20 },
+  { name: '핑크팝', sw: '#ff2d78', text: '#ffffff', box: true, boxColor: '#ff2d78', boxOpacity: 0.9, boxRadius: 20 },
+  { name: '민트', sw: '#00d9a3', text: '#0a2b22', box: true, boxColor: '#00d9a3', boxOpacity: 0.9, boxRadius: 8 },
+];
+function applyCapPreset(p) {
+  capTextColor = p.text || '';
+  capBox = !!p.box;
+  if (p.box) { capBoxColor = p.boxColor; capBoxOpacity = p.boxOpacity; capBoxRadius = p.boxRadius; }
+  syncCapStyleInputs();
+  markDirty(); updateOverlay();
+}
+function syncCapStyleInputs() {
+  $('pTextColor').value = capTextColor || '#ffffff';
+  $('pBoxOn').checked = capBox;
+  $('pBoxColor').value = capBoxColor;
+  $('pBoxOpacity').value = Math.round(capBoxOpacity * 100);
+  $('pBoxRadius').value = capBoxRadius;
+  $('pBoxRow1').style.display = capBox ? '' : 'none';
+  $('pBoxRow2').style.display = capBox ? '' : 'none';
+}
 function initCaptionStyleUi(info) {
   capFont = C.caption_font || (info.caption_font && info.caption_font.family) || '';
   capAlign = C.caption_align || 'center';
+  capTextColor = C.caption_text_color || '';
+  capBox = !!C.caption_box;
+  capBoxColor = C.caption_box_color || '#000000';
+  capBoxOpacity = (C.caption_box_opacity != null) ? C.caption_box_opacity : 0.55;
+  capBoxRadius = (C.caption_box_radius != null) ? C.caption_box_radius : 14;
   const sel = $('pFont'); sel.innerHTML = '';
   (info.fonts || []).forEach((f) => {
     const opt = document.createElement('option');
@@ -3283,6 +3331,25 @@ function initCaptionStyleUi(info) {
       markDirty(); updateOverlay();
     });
   });
+  const presetsEl = $('capPresets');
+  presetsEl.innerHTML = '';
+  CAP_PRESETS.forEach((p) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'cap-preset'; b.title = p.name;
+    b.style.background = p.sw;
+    b.addEventListener('click', () => {
+      applyCapPreset(p);
+      document.querySelectorAll('.cap-preset').forEach((x) => x.classList.toggle('on', x === b));
+    });
+    presetsEl.appendChild(b);
+  });
+  $('pTextColor').addEventListener('input', () => { capTextColor = $('pTextColor').value; markDirty(); updateOverlay(); });
+  $('pTextColorReset').addEventListener('click', () => { capTextColor = ''; syncCapStyleInputs(); markDirty(); updateOverlay(); });
+  $('pBoxOn').addEventListener('change', () => { capBox = $('pBoxOn').checked; syncCapStyleInputs(); markDirty(); updateOverlay(); });
+  $('pBoxColor').addEventListener('input', () => { capBoxColor = $('pBoxColor').value; markDirty(); updateOverlay(); });
+  $('pBoxOpacity').addEventListener('input', () => { capBoxOpacity = (parseFloat($('pBoxOpacity').value) || 0) / 100; markDirty(); updateOverlay(); });
+  bindNum('pBoxRadius', capBoxRadius);
+  syncCapStyleInputs();
 }
 // 제목(카드형에서만 존재). 스튜디오에서 편집하지는 않고, 자막 위치를 잡을 때 기준이
 // 되도록 실제 크기·위치 그대로 보여준다.
@@ -3360,6 +3427,8 @@ document.querySelector('[data-reset="style"]').addEventListener('click', () => {
   $('pX').value = 0; $('pY').value = 0; $('pSpacing').value = 0;
   capAlign = 'center';
   document.querySelectorAll('.align-btn').forEach((x) => x.classList.toggle('on', x.dataset.align === 'center'));
+  document.querySelectorAll('.cap-preset').forEach((x) => x.classList.remove('on'));
+  applyCapPreset(CAP_PRESETS[0]);
   markDirty(); updateOverlay();
 });
 document.querySelector('[data-reset="styleEn"]').addEventListener('click', () => {
@@ -3394,6 +3463,17 @@ function updateOverlay() {
   const koPx = uniformFontPx(caps, want * kc * SC, usable);
   setWrapped(koEl, caps[i].text, koPx, usable);
   ov.style.fontSize = koPx + 'px';
+  koEl.style.color = capTextColor || '';
+  // 박스(캡컷 스타일): inline 요소에 배경+box-decoration-break:clone을 주면 줄바꿈된 자막도
+  // 줄마다 따로 박스가 둘러진다 — 실제 렌더(_emit_caption_box_events, 줄마다 별도 도형)와 같은 느낌.
+  if (capBox) {
+    koEl.style.background = hexToRgba(capBoxColor, capBoxOpacity);
+    koEl.style.borderRadius = ((parseFloat($('pBoxRadius').value) || 0) * SC) + 'px';
+    koEl.style.padding = (koPx * 0.16) + 'px ' + (koPx * 0.28) + 'px';
+    koEl.style.boxDecorationBreak = 'clone'; koEl.style.webkitBoxDecorationBreak = 'clone';
+  } else {
+    koEl.style.background = ''; koEl.style.borderRadius = ''; koEl.style.padding = '';
+  }
   const enWant = parseFloat($('pSizeEn').value) || Math.max(16, Math.round((koPx / (kc * SC)) * 0.45));
   const en = (enVisible && ens[i]) ? ens[i].text : '';
   enEl.style.display = en ? 'block' : 'none';
@@ -4480,6 +4560,11 @@ function payload() {
     caption_font: capFont,
     caption_align: capAlign,
     caption_spacing: parseFloat($('pSpacing').value) || 0,
+    caption_text_color: capTextColor,
+    caption_box: capBox,
+    caption_box_color: capBoxColor,
+    caption_box_opacity: capBoxOpacity,
+    caption_box_radius: parseFloat($('pBoxRadius').value) || 0,
   };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
@@ -5059,6 +5144,23 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     for k in ("title_spacing", "caption_spacing"):
         if k in body:
             setattr(clip, k, float(body.get(k) or 0))
+    # 자막 스타일 프리셋(캡컷식 박스·색상, 2026-09-08 요청). caption_text_color/box_color는
+    # CSS #RRGGBB 문자열 그대로 저장하고, ASS 변환(BGR·알파 반전)은 렌더 시점에 한다.
+    for k in ("caption_text_color", "caption_box_color"):
+        if k in body:
+            setattr(clip, k, str(body.get(k, "") or ""))
+    if "caption_box" in body:
+        clip.caption_box = bool(body.get("caption_box"))
+    if "caption_box_opacity" in body:
+        try:
+            clip.caption_box_opacity = max(0.0, min(1.0, float(body.get("caption_box_opacity"))))
+        except (TypeError, ValueError):
+            pass
+    if "caption_box_radius" in body:
+        try:
+            clip.caption_box_radius = max(0, int(float(body.get("caption_box_radius"))))
+        except (TypeError, ValueError):
+            pass
     # 배경 음악 볼륨/음소거/시작 오프셋(파일은 별도 업로드 라우트에서 받는다).
     # 오프셋은 타임라인에서 BGM 막대를 끌어 정한, 음원 파일 안에서 재생을 시작할 지점(초)
     # — 무한 반복 위에서 자르는 창(atrim)만 옮기므로 클립 길이·다른 트랙과는 무관하다.
@@ -5361,6 +5463,11 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_font": getattr(clip, "caption_font", "") or "",
             "caption_align": getattr(clip, "caption_align", "") or "",
             "caption_spacing": float(getattr(clip, "caption_spacing", 0) or 0),
+            "caption_text_color": getattr(clip, "caption_text_color", "") or "",
+            "caption_box": bool(getattr(clip, "caption_box", False)),
+            "caption_box_color": getattr(clip, "caption_box_color", "") or "#000000",
+            "caption_box_opacity": float(getattr(clip, "caption_box_opacity", 0.55) or 0.55),
+            "caption_box_radius": int(getattr(clip, "caption_box_radius", 14) or 14),
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
