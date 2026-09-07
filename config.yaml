@@ -231,7 +231,9 @@ render:
 
 captions:
   enabled: true
-  template: "karaoke"        # "minimal" | "vibrant" | "karaoke" — 단어별 강조가 정확도 체감/몰입도를 높임
+  # 2026-09-08 사용자 요청: "실시간 자막 트래킹 파란색으로 안 따라가도 돼. 그냥 자막만, 검정색으로만."
+  # 카라오케(단어별 실시간 블루 강조) 끄고 정적 자막(차콜/검정 한 가지 색)만 표시.
+  template: "minimal"        # "minimal" | "vibrant" | "karaoke" — minimal/vibrant는 정적 단색, karaoke만 단어별 색 추적
   font_path: "assets/fonts/Pretendard-Bold.ttf"
   # 자막은 다시 Pretendard로(2026-09-03 사용자 요청 — 지마켓 산스는 제목에만 유지).
   font_family: "Pretendard"  # ASS Fontname은 파일명이 아니라 폰트 내부 family name과 일치해야 함
@@ -260,7 +262,7 @@ captions:
   # 자막 키워드 형광 강조(세련된 자막): 정적(비카라오케) 자막에서 핵심 단어를 형광색+볼드로
   # 칠한다. 강조 대상은 clip.caption_highlights(정확도 교정 패스가 채움) 우선, 없으면 keywords.
   # karaoke 템플릿에서는 이미 단어별로 색이 움직여서 적용 안 됨(비카라오케에서만).
-  highlight_keywords_enabled: true
+  highlight_keywords_enabled: false  # 위와 같은 요청: 키워드 형광(앰버) 강조도 끄고 순수 단색 자막만
   highlight_color: "&H0000E5FF"          # 형광 노랑/앰버 #FFE500 (BGR 순서 주의)
   # 플랫폼 UI 안전 영역: pad/blur/crop 레거시(오버레이) 모드에서만 사용 — 업로드 찬양 자막이
   # 이 경로를 탄다 (card 레이아웃은 영상 밖에 캡션이 있어 해당 없음).

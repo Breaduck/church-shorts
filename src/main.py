@@ -1159,7 +1159,15 @@ def analyze(
             # 다이어트 기준 실측 추정)를 쓴다.
             _Stage(
                 "highlight", "하이라이트 후보 선정 중...",
-                est=_stage_time_est("selection", 200.0), span=70,
+                est=_stage_time_est("selection", 200.0), span=55,
+            ),
+            # 제목 전용 패스(refine_titles)도 별도 claude -p 호출이라 수십 초~분 단위로 걸린다.
+            # 예전엔 이 단계가 별도 스테이지가 아니라 진행바가 하이라이트 선정 100%(사실상
+            # 97~99%)에서 멈춘 채 실제로는 몇 분 더 걸리는 것처럼 보였다(사용자 신고: "97%에서
+            # 멈추고 실제론 2~3분 늦게 끝남"). 별도 스테이지로 떼어 계속 움직이게 한다.
+            _Stage(
+                "titles", "제목을 다시 뽑는 중...",
+                est=_stage_time_est("titles", 60.0), span=15,
             ),
         ]
     sp = StageProgress(progress, stages)
@@ -1537,13 +1545,14 @@ def analyze(
         # 범용 콜아웃·결론 노출로 뭉쳐 나왔다("GPT로 다시 돌리는 게 낫다"). 경계가 확정된 뒤
         # 클립 대사만 놓고 제목에 사고를 전부 쓴다. 실패하면 초안 제목 그대로 간다.
         if clips:
-            sp.message("제목을 다시 뽑는 중 (클릭 시뮬레이션)...")
+            sp.advance("제목을 다시 뽑는 중 (클릭 시뮬레이션)...")
             t_title = time.time()
             try:
                 refine_titles(
                     clips, transcript,
                     model=model or h.get("model", ""),
                     thinking_tokens=int(h.get("title_thinking_tokens", 3072)),
+                    on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
                 )
             except Exception:  # noqa: BLE001 - 제목 실패로 선정 전체를 잃지 않는다
                 traceback.print_exc()
@@ -1991,11 +2000,19 @@ def render_selected(
         }
     if facetrack_enabled is not None:
         cfg["render"] = {**cfg["render"], "facetrack": facetrack_enabled}
-    if caption_lang == "bilingual":
-        # 이중언어(한글 아래 영어): 한국어는 그대로 유지하고, 렌더 시 영어 번역 트랙을 같은
-        # 줄에 작게 이어붙인다(render.render_clip이 이 플래그를 읽어 bilingual_overrides
-        # 전달). caption_lang=="en"(영어로 완전 대체)와는 다른 옵션 — 둘 다 켜지면 en이 우선.
-        cfg["render"] = {**cfg["render"], "caption_bilingual": True}
+    if caption_lang in ("bilingual", "en"):
+        # 이중언어(한글 아래 영어)/영어 전용: 편집기에서 미리 '영어 자막 만들기'를 눌러둔
+        # 클립은 저장된 번역(caption_overrides_en)을 쓰고, 안 눌러둔 클립은 render.py가
+        # 지금 확정된 자막을 그 자리에서 번역한다(caption_translate_model, 번역도 '자막
+        # 실행' 단계라 분석용 모델(opus)과 무관하게 Sonnet 고정 — web_app.translate_captions_route
+        # 와 동일한 정책). caption_lang=="en"(영어로 완전 대체)과 "bilingual"은 둘 다 켤 수
+        # 없는 별개 옵션 — 팝업 셀렉트가 하나만 고르게 한다.
+        cfg["render"] = {
+            **cfg["render"],
+            "caption_bilingual": caption_lang == "bilingual",
+            "caption_en_only": caption_lang == "en",
+            "caption_translate_model": "claude-sonnet-4-5",
+        }
     if motion_enabled is not None:
         # 모션그래픽(제목 팝 + 자막 페이드): captions.animate로 전달(렌더의 pr_captions도 상속).
         cfg["captions"] = {**cfg["captions"], "animate": motion_enabled}

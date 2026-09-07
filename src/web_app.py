@@ -1622,7 +1622,7 @@ def _compute_layout(
             "caption_bottom_px": max(0, res_h - cap_y),
             "title_size": 0,
             "caption_font_size": caption_size,
-            "caption_en_font_size": max(16, int(caption_size * 0.45)),
+            "caption_en_font_size": max(16, int(caption_size * 0.60)),
             "title_ass_coeff": 1,
             "caption_ass_coeff": ass_size_coeff(caption_font_name),
         }
@@ -1664,7 +1664,7 @@ def _compute_layout(
         "caption_base_margin_v": base_caption_margin_v,
         "title_size": title_size,
         "caption_font_size": captions_cfg["font_size"],
-        "caption_en_font_size": max(16, int(captions_cfg["font_size"] * 0.45)),
+        "caption_en_font_size": max(16, int(captions_cfg["font_size"] * 0.60)),
         # 카드형 자막은 영상 박스 아래(위 기준, ASS Alignment 8)에 붙는다.
         "caption_anchor": "top",
         "caption_bottom_px": 0,
@@ -2405,7 +2405,7 @@ STUDIO_TEMPLATE = r"""
   .ws { flex: 1 1 auto; min-height: 0; display: grid; gap: 0; padding: 3px;
     grid-template-columns: var(--colL, 34%) 5px 1fr;
     grid-template-rows: var(--rowT, 58%) 5px 1fr; }
-  .split-v { grid-column: 2; grid-row: 1 / 4; cursor: col-resize; }
+  .split-v { grid-column: 2; grid-row: 1; cursor: col-resize; }
   .split-h { grid-column: 1 / 4; grid-row: 2; cursor: row-resize; }
   .split-v:hover, .split-h:hover, .split-v.on, .split-h.on { background: rgba(62,142,247,.35); }
 
@@ -2835,14 +2835,17 @@ STUDIO_TEMPLATE = r"""
   </button>
 </div>
 
-<!-- ─── 작업 영역(4분할) ─── -->
+<!-- ─── 작업 영역: 상단 2분할(소스·효과·프로젝트 병합 / 프로그램) + 하단 전체 너비 타임라인 ─── -->
 <div class="ws" id="ws">
 
-  <!-- ① 소스 / 효과 컨트롤 -->
+  <!-- ① 소스 / 효과 컨트롤 / 프로젝트(병합) -->
   <div class="panel" id="pSrcEc" style="grid-column:1;grid-row:1">
     <div class="tabs">
       <div class="tab" data-tab="src"><span class="tname">소스: 원본 영상</span><span class="mm">≡</span></div>
       <div class="tab on" data-tab="ec"><span class="tname">효과 컨트롤</span><span class="mm">≡</span></div>
+      <div class="tab" data-tab="proj"><span class="tname">프로젝트: <span id="projName2">클립 {{ idx + 1 }}</span></span><span class="mm">≡</span></div>
+      <div class="tab" data-tab="media"><span class="tname">미디어 브라우저</span></div>
+      <div class="tab" data-tab="fx"><span class="tname">효과</span></div>
       <div class="fill"></div><div class="tabmenu">»</div>
     </div>
     <div class="pbody" data-body="src">
@@ -2924,6 +2927,39 @@ STUDIO_TEMPLATE = r"""
         </div>
       </div>
     </div>
+    <div class="pbody" data-body="proj">
+      <div class="pj-tools">
+        <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="pjSearch" placeholder="검색"></div>
+      </div>
+      <div class="pj-cols"><span>이름</span><span>미디어 시작</span><span>미디어 지속 시간</span></div>
+      <div class="pj-list" id="pjList"></div>
+      <div class="pj-foot">
+        <button class="fi" id="pjSort" title="이름/시작 시간순 정렬 전환"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M4 12h7M4 17h4M17 6v12M14 15l3 3 3-3"/></svg></button>
+        <span class="fill"></span>
+        <input class="zoom" id="pjZoom" type="range" min="0" max="100" value="50" title="타임라인 확대/축소">
+        <button class="fi" id="pjNew" title="새 항목(자막 추가)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M12 11v6M9 14h6"/></svg></button>
+        <button class="fi" id="pjDel" title="지우기(선택한 자막)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
+      </div>
+    </div>
+    <div class="pbody" data-body="media">
+      <div class="ec-none">이 프로젝트의 미디어: 원본 영상 1개 (source.mp4). 추가 미디어 가져오기는 홈(후보 목록)에서 합니다.</div>
+    </div>
+    <div class="pbody" data-body="fx">
+      <div class="pj-tools"><div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input placeholder="검색" id="fxSearch"></div></div>
+      <div class="fx-tree" id="fxTree">
+        <div class="fx-fold"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>AI 자막 도구</div>
+          <div class="fl">
+            <div class="fx-item" data-fx="sync"><span class="fxi">fx</span><span class="nm">싱크 맞추기</span><button class="apply">적용</button></div>
+            <div class="fx-item" data-fx="correct"><span class="fxi">fx</span><span class="nm">AI 교정</span><button class="apply">적용</button></div>
+            <div class="fx-item" data-fx="translate"><span class="fxi">fx</span><span class="nm">영어 번역</span><button class="apply">적용</button></div>
+            <div class="fx-item" data-fx="lyrics" id="fxLyrics" style="display:none"><span class="fxi">fx</span><span class="nm">가사 가져오기</span><button class="apply">적용</button></div>
+          </div>
+        </div>
+        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>사전 설정</div><div class="fl"><div class="ec-none">없음</div></div></div>
+        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>오디오 효과</div><div class="fl"><div class="ec-none">렌더 시 자동 처리</div></div></div>
+        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>비디오 효과</div><div class="fl"><div class="ec-none">렌더 시 자동 처리</div></div></div>
+      </div>
+    </div>
   </div>
 
   <div class="split-v" id="splitV"></div>
@@ -2976,51 +3012,8 @@ STUDIO_TEMPLATE = r"""
 
   <div class="split-h" id="splitH"></div>
 
-  <!-- ③ 프로젝트 / 효과 -->
-  <div class="panel" id="pProj" style="grid-column:1;grid-row:3">
-    <div class="tabs">
-      <div class="tab on" data-tab="proj"><span class="tname">프로젝트: <span id="projName2">클립 {{ idx + 1 }}</span></span><span class="mm">≡</span></div>
-      <div class="tab" data-tab="media"><span class="tname">미디어 브라우저</span></div>
-      <div class="tab" data-tab="fx"><span class="tname">효과</span></div>
-      <div class="fill"></div><div class="tabmenu">»</div>
-    </div>
-    <div class="pbody on" data-body="proj">
-      <div class="pj-tools">
-        <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="pjSearch" placeholder="검색"></div>
-      </div>
-      <div class="pj-cols"><span>이름</span><span>미디어 시작</span><span>미디어 지속 시간</span></div>
-      <div class="pj-list" id="pjList"></div>
-      <div class="pj-foot">
-        <button class="fi" id="pjSort" title="이름/시작 시간순 정렬 전환"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M4 12h7M4 17h4M17 6v12M14 15l3 3 3-3"/></svg></button>
-        <span class="fill"></span>
-        <input class="zoom" id="pjZoom" type="range" min="0" max="100" value="50" title="타임라인 확대/축소">
-        <button class="fi" id="pjNew" title="새 항목(자막 추가)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M12 11v6M9 14h6"/></svg></button>
-        <button class="fi" id="pjDel" title="지우기(선택한 자막)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
-      </div>
-    </div>
-    <div class="pbody" data-body="media">
-      <div class="ec-none">이 프로젝트의 미디어: 원본 영상 1개 (source.mp4). 추가 미디어 가져오기는 홈(후보 목록)에서 합니다.</div>
-    </div>
-    <div class="pbody" data-body="fx">
-      <div class="pj-tools"><div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input placeholder="검색" id="fxSearch"></div></div>
-      <div class="fx-tree" id="fxTree">
-        <div class="fx-fold"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>AI 자막 도구</div>
-          <div class="fl">
-            <div class="fx-item" data-fx="sync"><span class="fxi">fx</span><span class="nm">싱크 맞추기</span><button class="apply">적용</button></div>
-            <div class="fx-item" data-fx="correct"><span class="fxi">fx</span><span class="nm">AI 교정</span><button class="apply">적용</button></div>
-            <div class="fx-item" data-fx="translate"><span class="fxi">fx</span><span class="nm">영어 번역</span><button class="apply">적용</button></div>
-            <div class="fx-item" data-fx="lyrics" id="fxLyrics" style="display:none"><span class="fxi">fx</span><span class="nm">가사 가져오기</span><button class="apply">적용</button></div>
-          </div>
-        </div>
-        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>사전 설정</div><div class="fl"><div class="ec-none">없음</div></div></div>
-        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>오디오 효과</div><div class="fl"><div class="ec-none">렌더 시 자동 처리</div></div></div>
-        <div class="fx-fold closed"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>비디오 효과</div><div class="fl"><div class="ec-none">렌더 시 자동 처리</div></div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ④ 도구 + 타임라인 + 오디오 미터 -->
-  <div class="bottom-right" style="grid-column:3;grid-row:3">
+  <!-- ③ 도구 + 타임라인 + 오디오 미터 (하단 전체 너비) -->
+  <div class="bottom-right" style="grid-column:1 / 4;grid-row:3">
     <div class="tools" id="toolsPanel">
       <button class="tool on" data-tool="select" title="선택 도구 (V)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 9-6 1 3 6-2 1-3-6-4 4z"/></svg></button>
       <button class="tool" data-tool="trackfwd" title="앞으로 트랙 선택 도구 (A)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4l9 8-9 8zM13 4l9 8-9 8z"/></svg><span class="sub"></span></button>
@@ -3164,6 +3157,9 @@ let ens = [];       // 영어(인덱스로 한국어와 짝, 시간은 항상 �
 let selIdx = -1;
 let selSet = new Set();   // 다중 선택(앞으로 트랙 선택 도구)
 let capClipboard = null;  // Ctrl+C로 복사한 자막들: [{off, dur, text}] (off=첫 자막 기준 상대초)
+// 자막 트랙 개수(C1 기본 1개). 붙여넣기가 기존 자막과 겹치면 자동으로 늘어난다(track 필드는
+// 화면 배치용일 뿐 서버엔 저장 안 됨 — 내보내기는 항상 start/end/text 평평한 목록 하나다).
+let nKoTracks = 1;
 let dirty = false;
 // 자동 저장 상태. markDirty()가 초기화 도중 불릴 수도 있어(TDZ 방지) 여기서 미리 선언한다.
 let autoSaveTimer = null, saving = false;
@@ -3192,8 +3188,9 @@ function tcShort(t) {
 fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json()).then(info => {
   C = info.clip; L = info.layout;
   dur = info.source_duration || (C.end + 10);
-  caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text, track: 0 }));
   ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  nKoTracks = 1;
   initTexts();
   initVSegs();
   const title = (C.title || ('클립 ' + (IDX + 1)));
@@ -3593,7 +3590,7 @@ function updateOverlay() {
   } else {
     koEl.style.background = ''; koEl.style.borderRadius = ''; koEl.style.padding = ''; koEl.style.transform = '';
   }
-  const enWant = parseFloat($('pSizeEn').value) || Math.max(16, Math.round((koPx / (kc * SC)) * 0.45));
+  const enWant = parseFloat($('pSizeEn').value) || Math.max(16, Math.round((koPx / (kc * SC)) * 0.60));
   const en = (enVisible && ens[i]) ? ens[i].text : '';
   enEl.style.display = en ? 'block' : 'none';
   if (en) {
@@ -3882,7 +3879,9 @@ document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () =
 
 // ─── 트랙 헤더 토글 ───
 $('koLock').addEventListener('click', () => {
-  koLocked = !koLocked; $('koLock').classList.toggle('on', koLocked); $('koTrack').classList.toggle('locked', koLocked); syncSelPanel();
+  koLocked = !koLocked; $('koLock').classList.toggle('on', koLocked);
+  for (let i = 0; i < nKoTracks; i++) { const l = koLaneEl(i); if (l) l.classList.toggle('locked', koLocked); }
+  syncSelPanel();
 });
 $('koEye').addEventListener('click', () => { koVisible = !koVisible; $('koEye').classList.toggle('on', koVisible); updateOverlay(); });
 $('enEye').addEventListener('click', () => setEnVisible(!enVisible));
@@ -3993,26 +3992,67 @@ function addCapAt(a, b) {
 // 자막을 끌거나 늘렸을 때 옆 자막과 겹치지 않도록 옆 자막을 같이 밀어낸다(길이는 유지).
 // 겹치면 두 자막이 한 화면에 같이 떠서 화면이 엉킨다 — 밀어내는 편이 항상 옳다.
 function pushNeighbors(i) {
-  for (let k = i + 1; k < caps.length; k++) {
-    const need = caps[k - 1].end - caps[k].start;
+  // 겹침 자막(다른 트랙)이 섞여 있으면 배열 인덱스가 곧 '시간순 이웃'이 아니므로, 같은
+  // 트랙끼리만 밀어낸다 — 안 그러면 트랙이 다른, 실제로 안 겹치는 자막까지 옆으로 밀렸다.
+  const trk = caps[i].track || 0;
+  const idxs = caps.map((c, k) => k).filter((k) => (caps[k].track || 0) === trk)
+    .sort((a, b) => caps[a].start - caps[b].start);
+  const pos = idxs.indexOf(i);
+  for (let p = pos + 1; p < idxs.length; p++) {
+    const k = idxs[p], kp = idxs[p - 1];
+    const need = caps[kp].end - caps[k].start;
     if (need <= 0) break;
     const len = caps[k].end - caps[k].start;
     caps[k].start = Math.min(dur - 0.3, caps[k].start + need);
     caps[k].end = Math.min(dur, caps[k].start + len);
   }
-  for (let k = i - 1; k >= 0; k--) {
-    const need = caps[k].end - caps[k + 1].start;
+  for (let p = pos - 1; p >= 0; p--) {
+    const k = idxs[p], kn = idxs[p + 1];
+    const need = caps[k].end - caps[kn].start;
     if (need <= 0) break;
     const len = caps[k].end - caps[k].start;
     caps[k].end = Math.max(0.3, caps[k].end - need);
     caps[k].start = Math.max(0, caps[k].end - len);
   }
 }
+// 겹침 자막용 추가 트랙(C1+2, C1+3, ...). 기본 트랙(koHead/koTrack, index 0)은 항상 있고,
+// nKoTracks가 2 이상이면 그만큼 레인을 헤더 열(C2/en 앞)과 트랙 몸통(en 트랙 앞)에 만든다.
+function koHeadEl(i) { return i === 0 ? $('koHead') : $('koHead' + i); }
+function koLaneEl(i) { return i === 0 ? $('koTrack') : $('koTrack' + i); }
+function ensureKoLanes() {
+  const heads = $('headsScroll'), lanes = $('tracksScroll');
+  for (let i = 1; i < nKoTracks; i++) {
+    if (!koHeadEl(i)) {
+      const h = document.createElement('div');
+      h.className = 'trk-h h-c'; h.id = 'koHead' + i; h.style.height = '34px';
+      h.innerHTML = '<span class="patch">C1+' + (i + 1) + '</span>' +
+        '<button class="addbtn" data-kodel="' + i + '" title="이 자막 트랙 삭제">×</button>' +
+        '<span class="tn">겹침 자막</span>';
+      heads.insertBefore(h, $('enHead'));
+    }
+    if (!koLaneEl(i)) {
+      const l = document.createElement('div');
+      l.className = 'trk ko h-c'; l.id = 'koTrack' + i; l.dataset.ko = i;
+      lanes.insertBefore(l, $('enTrack'));
+    }
+  }
+  for (let i = nKoTracks; koHeadEl(i); i++) { koHeadEl(i).remove(); const l = koLaneEl(i); if (l) l.remove(); }
+}
+function deleteKoTrack(i) {
+  if (i <= 0) return;
+  pushUndo();
+  caps = caps.filter((c) => (c.track || 0) !== i).map((c) => ((c.track || 0) > i ? { ...c, track: (c.track || 0) - 1 } : c));
+  nKoTracks = Math.max(1, nKoTracks - 1);
+  markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
+  setStatus('자막 트랙 삭제');
+}
 function renderTracks() {
-  const ko = $('koTrack'), en = $('enTrack');
-  ko.querySelectorAll('.blk, .blk-add').forEach(el => el.remove()); en.querySelectorAll('.blk').forEach(el => el.remove());
-  caps.forEach((c, i) => mkBlock(ko, c, i, false));
-  renderAddSlots(ko);
+  ensureKoLanes();
+  const en = $('enTrack');
+  for (let i = 0; i < nKoTracks; i++) { const l = koLaneEl(i); if (l) l.querySelectorAll('.blk, .blk-add').forEach(el => el.remove()); }
+  en.querySelectorAll('.blk').forEach(el => el.remove());
+  caps.forEach((c, i) => { const lane = koLaneEl(c.track || 0); if (lane) mkBlock(lane, c, i, false); });
+  renderAddSlots(koLaneEl(0));
   if (ens.length) {
     en.style.display = 'block'; $('enHead').style.display = 'flex';
     ens.forEach((c, i) => { if (caps[i]) mkBlock(en, { start: caps[i].start, end: caps[i].end, text: c.text }, i, true); });
@@ -4309,7 +4349,8 @@ $('btnAddTrack').addEventListener('click', addTextTrack);
 $('addTrkRow').addEventListener('click', (e) => { if (e.target.id !== 'btnAddTrack') addTextTrack(); });
 $('headsScroll').addEventListener('click', (e) => {
   const add = e.target.closest('[data-txadd]'); if (add) { addTextAt(+add.dataset.txadd, v.currentTime); return; }
-  const del = e.target.closest('[data-txdel]'); if (del) deleteTextTrack(+del.dataset.txdel);
+  const del = e.target.closest('[data-txdel]'); if (del) { deleteTextTrack(+del.dataset.txdel); return; }
+  const kodel = e.target.closest('[data-kodel]'); if (kodel) deleteKoTrack(+kodel.dataset.kodel);
 });
 
 function renderAll() { if (!C) return; renderRuler(); renderThumbs(); renderTracks(); renderPlayhead(); renderKf(); }
@@ -4463,7 +4504,7 @@ function splitBlockAt(i, e) {
 function splitAtTime(i, t) {
   const c = caps[i]; if (!c || t <= c.start + 0.05 || t >= c.end - 0.05) return;
   pushUndo();
-  const second = { start: t, end: c.end, text: c.text }; c.end = t; caps.splice(i + 1, 0, second);
+  const second = { start: t, end: c.end, text: c.text, track: c.track }; c.end = t; caps.splice(i + 1, 0, second);
   if (ens[i]) ens.splice(i + 1, 0, { start: second.start, end: second.end, text: ens[i].text });
   selIdx = i; selSet = new Set(); markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); setStatus('자막 분할');
 }
@@ -4474,10 +4515,11 @@ function deleteSel(ripple) {
   const idxs = (selSet.size ? [...selSet] : [selIdx]).sort((a, b) => b - a);
   const gap = ripple && idxs.length === 1 ? (caps[idxs[0]].end - caps[idxs[0]].start) : 0;
   const cutAt = gap ? caps[idxs[0]].end : 0;
-  const first = Math.min(...idxs);
+  const cutTrack = gap ? (caps[idxs[0]].track || 0) : 0;
   idxs.forEach(k => { caps.splice(k, 1); if (ens.length > k) ens.splice(k, 1); });
   if (gap) {
-    for (let k = first; k < caps.length; k++) { caps[k].start -= gap; caps[k].end -= gap; }
+    // 같은 트랙(줄)만 당겨 붙인다 — 다른 트랙(겹침 자막)까지 같이 당기면 안 겹쳤던 자막이 겹치게 된다.
+    caps.forEach((c) => { if ((c.track || 0) === cutTrack && c.start >= cutAt - 1e-6) { c.start -= gap; c.end -= gap; } });
     if (syncLock) { markers = markers.map(m => m >= cutAt ? Math.max(0, m - gap) : m); renderRuler(); }
   }
   selIdx = -1; selSet = new Set(); markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
@@ -4516,7 +4558,7 @@ function openEdit(i, blkEl) {
   const ok = document.createElement('button'); ok.textContent = '확인';
   wrap.appendChild(inp); wrap.appendChild(ok);
   wrap.style.left = Math.max(0, Math.min(parseFloat(blkEl.style.left), tw() - 420)) + 'px';
-  wrap.style.top = ($('koTrack').offsetTop + 2) + 'px';
+  wrap.style.top = ((blkEl.parentElement || $('koTrack')).offsetTop + 2) + 'px';
   $('tracksScroll').appendChild(wrap); inp.focus(); inp.select();
   const commit = () => { pushUndo(); caps[i].text = inp.value.trim() || caps[i].text; markDirty(); closeEdit(); renderTracks(); updateOverlay(); syncSelPanel(); };
   ok.addEventListener('click', commit);
@@ -4542,6 +4584,7 @@ function copySel() {
   capClipboard = idxs.map((i) => ({ off: caps[i].start - base, dur: caps[i].end - caps[i].start, text: caps[i].text }));
   setStatus(idxs.length > 1 ? idxs.length + '개 자막 복사됨' : '자막 복사됨');
 }
+function rangesOverlap(a0, a1, b0, b1) { return a0 < b1 - 1e-6 && b0 < a1 - 1e-6; }
 function pasteSel() {
   if (!capClipboard || !capClipboard.length) return;
   pushUndo();
@@ -4551,14 +4594,27 @@ function pasteSel() {
     let en = Math.max(s + 0.05, Math.min(dur, s + c.dur));
     return { start: s, end: en, text: c.text };
   });
-  added.forEach((a) => caps.push(a));
+  // 겹치는 자리에 붙여넣으면(예전엔 그냥 같은 줄에 쌓여 화면이 뒤섞였다) 캡컷/프리미어처럼
+  // 자동으로 자막 트랙을 하나 더 만든다(사용자 요청 2026-09-08). 기존 트랙 중 하나라도
+  // 완전히 안 겹치면 그 트랙을 쓰고, 전부 겹치면 새 트랙을 만든다.
+  let track = 0;
+  for (;; track++) {
+    const onTrack = caps.filter((c) => (c.track || 0) === track);
+    const conflict = added.some((a) => onTrack.some((c) => rangesOverlap(a.start, a.end, c.start, c.end)));
+    if (!conflict) break;
+  }
+  const addedTrack = track >= nKoTracks;
+  if (addedTrack) nKoTracks = track + 1;
+  added.forEach((a) => { a.track = track; caps.push(a); });
   caps.sort((a, b) => a.start - b.start);
   let hadEn = false;
   if (ens.length) { hadEn = true; ens = []; }
   selSet = new Set(caps.map((c, i) => i).filter((i) => added.includes(caps[i])));
   selIdx = selSet.size ? Math.min(...selSet) : -1;
   markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
-  setStatus((added.length > 1 ? added.length + '개 자막 붙여넣기됨' : '자막 붙여넣기됨') + (hadEn ? ' — 영어 트랙은 다시 번역해 주세요' : ''));
+  setStatus((added.length > 1 ? added.length + '개 자막 붙여넣기됨' : '자막 붙여넣기됨')
+    + (hadEn ? ' — 영어 트랙은 다시 번역해 주세요' : '')
+    + (addedTrack ? ' (겹쳐서 자막 트랙 C1+' + (track + 1) + ' 자동 추가)' : ''));
 }
 
 // ─── 효과 컨트롤 우측 키프레임 미니 타임라인 ───
@@ -4672,7 +4728,7 @@ function applyFx(kind) {
 function snapshot() {
   return {
     caps: caps.map(c => ({ ...c })), ens: ens.map(c => ({ ...c })), cs: C.start, ce: C.end,
-    vsegs: vsegs.map(s => ({ ...s })), texts: texts.map(t => ({ ...t })), nTxTracks,
+    vsegs: vsegs.map(s => ({ ...s })), texts: texts.map(t => ({ ...t })), nTxTracks, nKoTracks,
     capFont, capAlign, capTextColor, capBox, capBoxColor, capBoxOpacity,
     capBold, capItalic, capUnderline, capOutlineOn, capOutlineColor, capGlow, capGlowColor,
     pSize: $('pSize').value, pX: $('pX').value, pY: $('pY').value, pSizeEn: $('pSizeEn').value,
@@ -4688,6 +4744,7 @@ function pushUndo(prevTimes) {
 }
 function restore(s) {
   caps = s.caps.map(c => ({ ...c })); ens = s.ens.map(c => ({ ...c })); C.start = s.cs; C.end = s.ce;
+  nKoTracks = s.nKoTracks || caps.reduce((m, c) => Math.max(m, (c.track || 0) + 1), 1);
   vsegs = (s.vsegs || [{ s: s.cs, e: s.ce }]).map(x => ({ ...x }));
   if (s.texts) { texts = s.texts.map(t => ({ ...t })); nTxTracks = s.nTxTracks || 0; }
   if (s.capFont !== undefined) {

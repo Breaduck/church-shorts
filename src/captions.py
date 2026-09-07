@@ -699,6 +699,9 @@ def build_ass(
     caption_outline_width_override: float = -1.0,
     caption_glow: bool = False,
     caption_glow_color: str = "",
+    auto_translate_bilingual: bool = False,
+    auto_translate_en_only: bool = False,
+    auto_translate_model: str = "",
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -968,9 +971,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         uniform_ko_size = min(
             (wrap_of(wt, caption_size)[1] for wt in ko_word_texts), default=caption_size,
         )
+        # 이중언어를 골랐는데 편집기에서 '영어 자막 만들기'를 미리 안 눌러 번역이 없으면
+        # (사용자 신고 2026-09-08: "영어 자막 눌렀는데도 같이 안 나오네") 조용히 한국어만
+        # 내지 않고, 지금 확정된 한국어 줄 그대로 여기서 즉석 번역한다.
+        if not en_by_start and lines and (auto_translate_bilingual or auto_translate_en_only):
+            try:
+                from src.highlights import translate_captions_to_english
+
+                auto_en = translate_captions_to_english(
+                    [" ".join(wt) for wt in ko_word_texts], model=auto_translate_model,
+                )
+            except Exception:  # noqa: BLE001 - 번역 실패는 한국어 단독 자막으로 조용히 폴백
+                auto_en = []
+            if len(auto_en) == len(lines):
+                en_by_start = {
+                    round(lines[k].start + clip_start, 2): (auto_en[k] or "").strip()
+                    for k in range(len(lines))
+                }
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
-        # 영어 크기는 편집기에서 따로 정할 수 있다(0이면 확정된 한글 크기의 45%로 자동).
-        base_en_size = caption_size_en_override or max(16, int(uniform_ko_size * 0.45))
+        # 영어 완전 대체(caption_lang=="en"): 번역이 갖춰졌으면 한국어 대신 그 텍스트로
+        # 굽는다 — 이중언어처럼 작은 두 번째 줄이 아니라 본문 자체를 바꾼다.
+        if auto_translate_en_only and en_texts and all(en_texts):
+            ko_word_texts = [t.split() for t in en_texts]
+            uniform_ko_size = min(
+                (wrap_of(wt, caption_size)[1] for wt in ko_word_texts), default=caption_size,
+            )
+            en_texts = ["" for _ in en_texts]
+        # 영어 크기는 편집기에서 따로 정할 수 있다(0이면 확정된 한글 크기의 60%로 자동).
+        # 45%는 너무 작다는 신고(2026-09-08)로 60%로 상향.
+        base_en_size = caption_size_en_override or max(16, int(uniform_ko_size * 0.60))
         uniform_en_size = min(
             (
                 wrap_of(_display_text(t).split(), base_en_size)[1]
@@ -1032,6 +1061,63 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     lines = _clamp_lines_non_overlap(
         chunk_words_into_lines(rel_words, max_words_per_line, max_units=max_units)
     )
+
+    # 편집기에서 한 번도 확정한 적 없는(caption_overrides가 비어 재전사 결과 그대로 굽는)
+    # 클립도 '영어 자막'/이중언어를 고르면 그대로 나와야 한다(사용자 신고 2026-09-08). 이
+    # 경로는 caption_overrides가 없어 위의 번역 캐시(bilingual_overrides)도 매길 대상이
+    # 없으므로, 지금 막 확정된 한국어 줄을 그 자리에서 바로 번역한다.
+    auto_en_texts: list[str] = []
+    if lines and (auto_translate_bilingual or auto_translate_en_only):
+        try:
+            from src.highlights import translate_captions_to_english
+
+            auto_en_texts = translate_captions_to_english(
+                [" ".join(_display_text(w.text) for w in ln.words) for ln in lines],
+                model=auto_translate_model,
+            )
+        except Exception:  # noqa: BLE001 - 번역 실패는 한국어 단독 자막으로 조용히 폴백
+            auto_en_texts = []
+        if len(auto_en_texts) != len(lines):
+            auto_en_texts = []
+
+    if auto_translate_en_only and auto_en_texts:
+        # 완전 영어 대체: 시간(라인 구간)은 그대로 두고 내용만 영어로 바꿔 굽는다.
+        lines = [
+            CaptionLine(
+                start=ln.start, end=ln.end,
+                words=_distribute_by_chars((auto_en_texts[k] or ln.words[0].text).split(), ln.start, ln.end),
+            )
+            for k, ln in enumerate(lines)
+        ]
+        for line in lines:
+            _emit_box(line, [_display_text(w.text) for w in line.words], None, caption_size)
+            _emit_line(line)
+        return header + "\n".join(events) + "\n"
+
+    if auto_translate_bilingual and auto_en_texts:
+        en_wrap_of = _make_wrap_planner(font_name, usable_px)
+        en_color = "&H00A1958B&" if card_layout else "&H00F2F2F2&"
+        base_en_size = caption_size_en_override or max(16, int(caption_size * 0.60))
+        uniform_en_size = min(
+            (en_wrap_of(_display_text(t).split(), base_en_size)[1] for t in auto_en_texts if t),
+            default=base_en_size,
+        )
+        for line, en_text in zip(lines, auto_en_texts):
+            word_texts = [_display_text(w.text) for w in line.words]
+            extra = ""
+            if en_text:
+                en_disp = _display_text(en_text)
+                en_toks = en_disp.split()
+                en_cuts = en_wrap_of(en_toks, uniform_en_size)[0]
+                if en_cuts:
+                    bounds = [0, *en_cuts, len(en_toks)]
+                    en_disp = "\\N".join(
+                        " ".join(en_toks[bounds[i]:bounds[i + 1]]) for i in range(len(bounds) - 1)
+                    )
+                extra = f"\\N{{\\fs{uniform_en_size}\\c{en_color}\\bord0}}{en_disp}{{\\r}}"
+            _emit_box(line, word_texts, None, caption_size)
+            _emit_line(line, extra_text=extra)
+        return header + "\n".join(events) + "\n"
 
     for line in lines:
         _emit_box(line, [_display_text(w.text) for w in line.words], None, caption_size)
@@ -1128,6 +1214,9 @@ def build_ass_for_clip(
     highlight_keywords: list[str] | None = None,
     bilingual_overrides: list | None = None,
     free_texts: list | None = None,
+    auto_translate_bilingual: bool = False,
+    auto_translate_en_only: bool = False,
+    auto_translate_model: str = "",
 ) -> str:
     words = _collect_words_in_range(
         segments, clip_start, clip_end,
@@ -1205,4 +1294,7 @@ def build_ass_for_clip(
         caption_outline_width_override=float(fs.get("caption_outline_width", -1.0) if fs.get("caption_outline_width", -1.0) is not None else -1.0),
         caption_glow=bool(fs.get("caption_glow", False)),
         caption_glow_color=fs.get("caption_glow_color", "") or "",
+        auto_translate_bilingual=auto_translate_bilingual,
+        auto_translate_en_only=auto_translate_en_only,
+        auto_translate_model=auto_translate_model,
     )

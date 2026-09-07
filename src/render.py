@@ -774,6 +774,18 @@ def render_clip(
             getattr(clip, "caption_overrides_en", None) if render_cfg.get("caption_bilingual") else None
         ),
         free_texts=getattr(clip, "free_texts", None) or None,
+        # 편집기에서 '영어 자막 만들기'를 미리 안 눌러 caption_overrides_en이 없어도(사용자
+        # 신고 2026-09-08: "영어 자막 눌렀는데도 같이 안 나오네"), 이중언어/영어전용을
+        # 골랐으면 지금 확정된 자막을 그 자리에서 번역해 붙인다(captions.build_ass가 처리).
+        auto_translate_bilingual=bool(render_cfg.get("caption_bilingual")),
+        # caption_overrides_en이 이미 있었으면 main.py가 caption_overrides를 그걸로 이미
+        # 바꿔치기했다(기존 경로) — 그 경우까지 또 번역을 돌리면 이미 영어인 텍스트를
+        # 다시 "번역"하느라 헛돈다. 번역이 없던 클립에만 즉석 번역을 켠다.
+        auto_translate_en_only=(
+            bool(render_cfg.get("caption_en_only"))
+            and not getattr(clip, "caption_overrides_en", None)
+        ),
+        auto_translate_model=render_cfg.get("caption_translate_model", "") or "",
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
