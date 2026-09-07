@@ -346,7 +346,10 @@ def _ass_time(sec: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def _karaoke_text(words: list[Word], hi_match=None, hi_color: str = "", base_color: str = "") -> str:
+def _karaoke_text(
+    words: list[Word], hi_match=None, hi_color: str = "", base_color: str = "",
+    wrap_after: "set[int] | list[int] | None" = None,
+) -> str:
     r"""단어별 카라오케(\k) 강조 텍스트. 단어 사이의 '쉼(gap)'만큼 \k를 먼저 넣어,
     강조가 실제 목소리보다 앞서 달려나가지 않게 맞춘다(줄 시작 = 첫 단어 start 기준).
     이걸 안 하면 단어 사이 침묵이 무시돼 강조가 목소리를 앞질러 자막이 어긋난다
@@ -359,7 +362,12 @@ def _karaoke_text(words: list[Word], hi_match=None, hi_color: str = "", base_col
         return ""
     parts: list[str] = []
     prev_end = words[0].start  # 줄은 첫 단어에서 시작 → 그 앞엔 쉼이 없다
-    for w in words:
+    _wrap = set(wrap_after or ())
+    for i, w in enumerate(words):
+        if i in _wrap:
+            # 사용자가 키운 글씨가 한 줄에 안 들어갈 때만 여기서 다음 줄로 넘긴다.
+            parts.append(parts.pop().rstrip() if parts else "")
+            parts.append("\\N")
         gap_cs = int(round((w.start - prev_end) * 100))
         if gap_cs > 0:
             parts.append(f"{{\\k{gap_cs}}}")  # 쉼: 아무것도 강조 안 하고 시간만 소비
@@ -371,6 +379,60 @@ def _karaoke_text(words: list[Word], hi_match=None, hi_color: str = "", base_col
             parts.append(f"{{\\k{dur_cs}}}{disp} ")
         prev_end = w.end
     return "".join(parts).strip()
+
+
+MAX_CAPTION_LINES = 3
+
+
+def _make_wrap_planner(font_name: str, usable_px: float):
+    """(단어들, 원하는 크기) → (줄바꿈 단어 인덱스들, 실제로 쓸 크기) 함수를 만든다.
+
+    규칙은 하나다: **사용자가 고른 크기가 우선**. 한 줄에 안 들어가면 줄을 늘리고
+    (최대 MAX_CAPTION_LINES줄, 각 줄 폭이 최대한 고르게), 그래도 넘칠 때만 크기를 줄인다.
+    예전엔 무조건 한 줄이라, 크기를 아무리 키워도 가장 긴 줄이 폭에 닿는 순간부터 전체가
+    그만큼 다시 작아졌다 — "92 넘으면 더 안 커진다"의 원인(실신고 2026-09-07).
+    """
+    from itertools import combinations
+
+    from src.fonts import measure_text_width_px
+
+    cache: dict[tuple[str, int], tuple[list[int], int]] = {}
+
+    def _w(text: str, size: int) -> float:
+        return measure_text_width_px(text, font_name, size) or 0.0
+
+    def _best_split(word_texts: list[str], size: int, k: int) -> tuple[list[int], float]:
+        """단어 경계에서 k줄로 나눌 때 '가장 긴 줄'이 최소가 되는 분할."""
+        n = len(word_texts)
+        if k <= 1:
+            return [], _w(" ".join(word_texts), size)
+        best: tuple[list[int], float] | None = None
+        for cuts in combinations(range(1, n), k - 1):
+            bounds = [0, *cuts, n]
+            widest = max(
+                _w(" ".join(word_texts[bounds[i]:bounds[i + 1]]), size) for i in range(k)
+            )
+            if best is None or widest < best[1]:
+                best = (list(cuts), widest)
+        return best if best else ([], _w(" ".join(word_texts), size))
+
+    def plan(word_texts: list[str], size: int) -> tuple[list[int], int]:
+        key = (" ".join(word_texts), size)
+        if key in cache:
+            return cache[key]
+        n = len(word_texts)
+        last: tuple[list[int], float] = ([], 0.0)
+        for k in range(1, min(MAX_CAPTION_LINES, max(1, n)) + 1):
+            cuts, widest = _best_split(word_texts, size, k)
+            if not widest or widest <= usable_px:
+                cache[key] = (cuts, size)
+                return cache[key]
+            last = (cuts, widest)
+        out = (last[0], max(28, int(size * usable_px / last[1])))
+        cache[key] = out
+        return out
+
+    return plan
 
 
 def _fit_title_font_size(
@@ -525,6 +587,7 @@ def build_ass(
     title_spacing: float = 0.0,
     caption_font_override: str = "",
     caption_size_override: int = 0,
+    caption_size_en_override: int = 0,
     caption_align: str = "",
     caption_spacing: float = 0.0,
     voice_silences: list[tuple[float, float]] | None = None,
@@ -674,7 +737,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{title_disp}"
         )
 
-    def _emit_line(line: CaptionLine, extra_text: str = "", prefix_text: str = "") -> None:
+    def _emit_line(
+        line: CaptionLine, extra_text: str = "", prefix_text: str = "",
+        wrap_after: "set[int] | list[int] | None" = None,
+    ) -> None:
         # sync_offset_sec: 자막 표시를 오디오 대비 일괄 지연(+)/선행(-)하는 전역 노브.
         # 유튜브 자동자막 단어 시각이 전반적으로 0.2~0.5초 이른 '상시 리드'는 무음 교정
         # (긴 쉼만 잡음)으로는 안 잡혀서, 최종 이벤트 시각에서 통째로 민다. 카라오케 \k는
@@ -683,15 +749,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_t = _ass_time(max(0.0, line.start + sync_offset_sec))
         end_t = _ass_time(max(0.0, line.end + sync_offset_sec))
         if template == "karaoke":
-            text = _karaoke_text(line.words, _hi_match, highlight_color, cap_primary)
+            text = _karaoke_text(line.words, _hi_match, highlight_color, cap_primary, wrap_after)
         else:
             parts = []
-            for w in line.words:
+            _wrap = set(wrap_after or ())
+            for i, w in enumerate(line.words):
                 disp = _display_text(w.text)
                 if _hi_match and _hi_match(disp):
                     disp = _highlight_wrap(disp, highlight_color, highlight_style)
-                parts.append(disp)
-            text = " ".join(parts)
+                parts.append(("\\N" if i in _wrap else "") + disp)
+            text = " ".join(parts).replace(" \\N", "\\N")
         text = prefix_text + text + extra_text  # prefix=줄별 폰트 축소(\fs), extra=영어 번역 줄 등
         if animate:
             # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
@@ -719,47 +786,53 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 for ko, en in zip(ko_sorted, en_sorted)
             }
         lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
-        # 한 줄 강제 + 크기는 클립 안에서 하나: 실제 폰트 글리프 폭으로 재서, 가장 긴 줄이
-        # 안전지대 폭에 한 줄로 들어가는 크기를 모든 줄에 똑같이 쓴다. 줄마다 크기를 달리
-        # 하면 재생 중 글자가 커졌다 작아졌다 한다(실신고 2026-09-06). '유난히 긴 줄' 때문에
-        # 전체가 작아지는 건 편집기 단계에서 그 줄만 앞뒤 조각으로 쪼개서 막는다
-        # (split_outlier_lines — 쪼갠 결과가 타임라인에도 별도 자막으로 보여야 수정 가능).
-        from src.fonts import measure_text_width_px
-
+        # 크기는 클립 안에서 하나(줄마다 다르면 재생 중 글자가 커졌다 작아졌다 한다 —
+        # 실신고 2026-09-06). 그 하나를 정하는 규칙: **사용자가 고른 크기를 먼저 지키고**,
+        # 안 들어가는 줄은 2줄로 내린다. 2줄로도 안 되면 그때만 줄인다.
+        # (예전엔 무조건 1줄이라, 크기를 아무리 키워도 가장 긴 줄이 폭에 닿는 순간부터
+        #  전체가 그만큼 다시 줄어들어 "92 넘으면 더 안 커진다"가 됐다 — 실신고 2026-09-07.)
         usable_px = width - caption_margin_l - caption_margin_r - 24
+        wrap_of = _make_wrap_planner(font_name, usable_px)
 
-        def _fit_fs(text: str, base_size: int) -> int | None:
-            """text가 base_size로 폭을 넘으면 들어가는 크기를, 아니면 None을 반환."""
-            w_px = measure_text_width_px(text, font_name, base_size)
-            if w_px and w_px > usable_px:
-                return max(28, int(base_size * usable_px / w_px))
-            return None
-
-        ko_texts = [" ".join(_display_text(w.text) for w in line.words) for line in lines]
-        _needed = [f for f in (_fit_fs(t, caption_size) for t in ko_texts) if f is not None]
-        uniform_ko_size = min(_needed) if _needed else None
+        ko_word_texts = [[_display_text(w.text) for w in line.words] for line in lines]
+        uniform_ko_size = min(
+            (wrap_of(wt, caption_size)[1] for wt in ko_word_texts), default=caption_size,
+        )
         en_texts = [en_by_start.get(round(ln.start + clip_start, 2), "") for ln in lines]
-        base_en_size = max(16, int(caption_size * 0.45))
-        _needed_en = [
-            f for f in (_fit_fs(_display_text(t), base_en_size) for t in en_texts if t)
-            if f is not None
-        ]
-        uniform_en_size = min(_needed_en) if _needed_en else None
+        # 영어 크기는 편집기에서 따로 정할 수 있다(0이면 확정된 한글 크기의 45%로 자동).
+        base_en_size = caption_size_en_override or max(16, int(uniform_ko_size * 0.45))
+        uniform_en_size = min(
+            (
+                wrap_of(_display_text(t).split(), base_en_size)[1]
+                for t in en_texts if t
+            ),
+            default=base_en_size,
+        )
+        # 영어 줄 색: 영상 위 오버레이(찬양)는 밝은 회색, 흰 배경 카드형은 회색조 차콜.
+        # (카드형에서 #F2F2F2를 쓰면 흰 바탕에 흰 글씨라 영어 자막이 아예 안 보였다.)
+        en_color = "&H00A1958B&" if card_layout else "&H00F2F2F2&"
 
-        for line, en_text in zip(lines, en_texts):
-            ko_size = uniform_ko_size or caption_size  # 클립 전체 단일 크기(줄별 예외 없음)
+        for line, word_texts, en_text in zip(lines, ko_word_texts, en_texts):
+            ko_size = uniform_ko_size
+            wrap_after = wrap_of(word_texts, ko_size)[0]
             prefix = f"{{\\fs{ko_size}}}" if ko_size != caption_size else ""
             extra = ""
             if en_text:
-                # 영어는 더 작게(45%) + 테두리 없이(bord0) 옅은 회색 — 레퍼런스 스타일
-                # (사용자 요청 2026-09-05: "영어 자막은 크기 좀 더 줄이고 테두리 하지 마").
-                # 색은 #F2F2F2 — "아주 조금 더 밝은 회색"(사용자 미세조정 요청, E6→F2).
-                en_size = uniform_en_size or base_en_size
+                # 영어는 기본적으로 더 작게(한글의 45%) + 테두리 없이(bord0) — 레퍼런스 스타일
+                # (사용자 요청 2026-09-05). 크기는 편집기에서 따로 지정할 수 있다(caption_size_en).
+                en_disp = _display_text(en_text)
+                en_toks = en_disp.split()
+                en_cuts = wrap_of(en_toks, uniform_en_size)[0]
+                if en_cuts:
+                    bounds = [0, *en_cuts, len(en_toks)]
+                    en_disp = "\\N".join(
+                        " ".join(en_toks[bounds[i]:bounds[i + 1]]) for i in range(len(bounds) - 1)
+                    )
                 extra = (
-                    f"\\N{{\\fs{en_size}\\c&HF2F2F2&\\bord0}}"
-                    f"{_display_text(en_text)}{{\\r}}"
+                    f"\\N{{\\fs{uniform_en_size}\\c{en_color}\\bord0}}"
+                    f"{en_disp}{{\\r}}"
                 )
-            _emit_line(line, extra_text=extra, prefix_text=prefix)
+            _emit_line(line, extra_text=extra, prefix_text=prefix, wrap_after=wrap_after)
         return header + "\n".join(events) + "\n"
 
     rel_words = [Word(start=w.start - clip_start, end=w.end - clip_start, text=w.text) for w in clip_words]
@@ -924,6 +997,7 @@ def build_ass_for_clip(
         title_spacing=float(fs.get("title_spacing", 0) or 0),
         caption_font_override=fs.get("caption_font", ""),
         caption_size_override=int(fs.get("caption_size", 0) or 0),
+        caption_size_en_override=int(fs.get("caption_size_en", 0) or 0),
         caption_align=fs.get("caption_align", ""),
         caption_spacing=float(fs.get("caption_spacing", 0) or 0),
         voice_silences=voice_silences,

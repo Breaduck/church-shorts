@@ -401,7 +401,7 @@ def reanalyze_clip_region(
     # 사용자 스타일/위치 편집도 새 후보에 물려준다(같은 장면이니 그대로 쓰는 게 자연스럽다).
     for attr in (
         "fill_mode", "title_font", "title_size", "title_align", "title_spacing",
-        "caption_font", "caption_size", "caption_align", "caption_spacing",
+        "caption_font", "caption_size", "caption_size_en", "caption_align", "caption_spacing",
     ):
         setattr(new, attr, getattr(orig, attr, getattr(new, attr)))
     # 구간이 새로 잡혔으니 이전 자막·분할은 물려주지 않는다(렌더 때 재전사).

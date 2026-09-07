@@ -92,6 +92,8 @@ class Clip:
     title_spacing: float = 0.0  # 자간(px)
     caption_font: str = ""
     caption_size: int = 0
+    # 영어 자막 크기(px). 0이면 한글 크기의 45%를 자동으로 쓴다.
+    caption_size_en: int = 0
     caption_align: str = ""
     caption_spacing: float = 0.0
     # 편집기에서 사용자가 영상 구간을 직접 정했으면 True. 이 경우 렌더 시 문장 끝 자동 확장/스냅을

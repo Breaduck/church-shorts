@@ -733,6 +733,7 @@ def render_clip(
             "title_spacing": getattr(clip, "title_spacing", 0.0) or 0.0,
             "caption_font": getattr(clip, "caption_font", "") or "",
             "caption_size": getattr(clip, "caption_size", 0) or 0,
+            "caption_size_en": getattr(clip, "caption_size_en", 0) or 0,
             "caption_align": getattr(clip, "caption_align", "") or "",
             "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
         },

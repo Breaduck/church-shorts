@@ -1604,8 +1604,10 @@ def _compute_layout(
         caption_size = int(captions_cfg.get("font_size", 72) * 1.28)  # 렌더의 업로드 찬양 확대와 동일(1.28)
         scale = PREVIEW_CANVAS_WIDTH / res_w
         caption_font_name = getattr(clip, "caption_font", "") or captions_cfg.get("font_family", "")
-        # 자막은 하단 안전영역 위(bottom 정렬). 미리보기 요소는 top 기준이라 폰트 높이만큼 위로.
-        cap_y = int(res_h * (1 - captions_cfg.get("safe_area_bottom_pct", 0.2)))
+        # 자막은 하단 기준(ASS Alignment 2)이다 — 크기를 키우면 글자가 '위로' 자란다.
+        # 미리보기도 같은 기준(bottom)으로 그려야 크기를 바꿔도 위치가 안 어긋난다.
+        # cap_y는 captions._y_position과 같은 식(-40 포함)이어야 렌더와 일치한다.
+        cap_y = int(res_h * (1 - captions_cfg.get("safe_area_bottom_pct", 0.2)) - 40)
         return {
             "resolution": (res_w, res_h),
             "scale": scale,
@@ -1615,8 +1617,12 @@ def _compute_layout(
             "no_title": True,   # 실제 렌더에 제목 오버레이가 없다 — 팝업도 제목을 숨긴다
             "title_base_margin_v": 0,
             "caption_base_margin_v": max(0, cap_y - int(caption_size * 1.3)),
+            # 렌더 기준: 자막 블록의 '아래 끝'이 화면 바닥에서 이만큼 떨어진다(offset_y만큼 내려감).
+            "caption_anchor": "bottom",
+            "caption_bottom_px": max(0, res_h - cap_y),
             "title_size": 0,
             "caption_font_size": caption_size,
+            "caption_en_font_size": max(16, int(caption_size * 0.45)),
             "title_ass_coeff": 1,
             "caption_ass_coeff": ass_size_coeff(caption_font_name),
         }
@@ -1658,6 +1664,10 @@ def _compute_layout(
         "caption_base_margin_v": base_caption_margin_v,
         "title_size": title_size,
         "caption_font_size": captions_cfg["font_size"],
+        "caption_en_font_size": max(16, int(captions_cfg["font_size"] * 0.45)),
+        # 카드형 자막은 영상 박스 아래(위 기준, ASS Alignment 8)에 붙는다.
+        "caption_anchor": "top",
+        "caption_bottom_px": 0,
         # libass는 Fontsize를 셀 높이로 해석해 같은 숫자라도 브라우저보다 작게 그린다
         # (fonts.ass_size_coeff 주석 참고). 미리보기 CSS px = ASS 크기 × 이 계수 × scale.
         "title_ass_coeff": ass_size_coeff(title_font_name),
@@ -1682,7 +1692,11 @@ def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict])
         full_frame = _is_upload_praise(video_id, clip)
         layout = _compute_layout(cfg, clip, res, full_frame=full_frame)
         width = int((layout.get("resolution") or [1080, 1920])[0])
-        size = int(layout.get("caption_font_size") or cfg["captions"]["font_size"])
+        size = int(
+            getattr(clip, "caption_size", 0)
+            or layout.get("caption_font_size")
+            or cfg["captions"]["font_size"]
+        )
         font = clip.caption_font or cfg["captions"]["font_family"]
         usable = caption_usable_width_px(width, card_layout=not full_frame)
         return split_outlier_lines(lines, font, size, usable)
@@ -2451,9 +2465,15 @@ STUDIO_TEMPLATE = r"""
   .prm .txt { flex: 1 1 auto; min-width: 0; background: #151515; border: 1px solid #333; color: #e6e6e6;
     border-radius: 2px; padding: 3px 6px; font-family: inherit; font-size: 12px; }
   .prm .txt:focus { outline: none; border-color: var(--blue); }
-  .prm.sl { padding-left: 46px; padding-top: 0; }
-  .prm.sl input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: var(--hot); height: 14px; }
-  .prm.sl .lim { color: #6a6a6a; font-size: 10px; width: 34px; text-align: center; }
+  /* 값 조절은 막대(슬라이더) 대신 애플식 둥근 −/+ 버튼 + 숫자(좌우 드래그도 됨).
+     사용자 요청 2026-09-07: "크기·위치 저 움직이는 바 형태 별로다". */
+  .prm .stp { width: 20px; height: 20px; flex: 0 0 20px; border: 0; border-radius: 50%;
+    background: #f5f5f7; color: #1d1d1f; font-size: 13px; font-weight: 700; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,.45), 0 3px 8px rgba(0,0,0,.30);
+    transition: transform .12s ease, background .12s ease; }
+  .prm .stp:hover { background: #fff; transform: translateY(-1px); }
+  .prm .stp:active { background: #e5e5ea; transform: translateY(0); }
   .prm .chk { accent-color: var(--hot); }
   .prm .dimtxt { color: #7a7a7a; }
   .ec-none { padding: 10px 30px; color: #6a6a6a; }
@@ -2469,18 +2489,32 @@ STUDIO_TEMPLATE = r"""
   .kf-ruler .ph::before { content: ''; position: absolute; left: -5px; top: 0; border: 5.5px solid transparent; border-top: 8px solid var(--blue); }
 
   /* ── 프로그램 모니터 ── */
+  /* 프로그램 모니터는 '원본 영상'이 아니라 **완성될 세로 영상 한 프레임 그대로**를 그린다.
+     (예전엔 원본 16:9 위에 자막을 bottom 24%로 얹어서, 스튜디오에서 맞춘 자막 위치가
+      실제 추출물과 전혀 달랐다 — 실신고 2026-09-07.) 좌표는 확인 팝업과 같은 공식:
+     프레임 = layout.resolution, 영상 = layout.video_box, 자막 top = caption_base_margin_v + y. */
   .stage { flex: 1 1 auto; min-height: 0; position: relative; background: #101010; overflow: hidden; }
-  .vbox { position: absolute; background: #000; }
-  .vbox video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000; }
-  .cap-ov { position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%); text-align: center;
-    width: max-content; max-width: 96%; pointer-events: none; font-weight: 800; color: #fff;
-    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.7);
-    line-height: 1.25; white-space: nowrap; z-index: 3; }
-  .cap-ov .en { display: block; font-weight: 600; color: #e6e6e6; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+  .frame { position: absolute; background: #fff; overflow: hidden; box-shadow: 0 0 0 1px #303030; }
+  .vbox { position: absolute; background: #000; overflow: hidden; }
+  .vbox video { width: 100%; height: 100%; display: block; background: #000; }
+  .ttl-ov { position: absolute; left: 50%; transform: translateX(-50%); text-align: center;
+    white-space: nowrap; width: max-content; pointer-events: none; font-weight: 800;
+    color: #191f28; line-height: 1.25; z-index: 3; }
+  .cap-ov { position: absolute; left: 50%; transform: translateX(-50%); text-align: center;
+    width: max-content; max-width: 96%; font-weight: 800; color: #191f28; line-height: 1.25;
+    z-index: 4; cursor: grab; touch-action: none; padding: 1px 5px; border-radius: 7px;
+    border: 1.5px dashed transparent; }
+  .cap-ov:hover, .cap-ov.dragging { border-color: var(--hot); background: rgba(75,155,255,.16); }
+  .cap-ov.dragging { cursor: grabbing; }
+  .cap-ov .en { display: block; font-weight: 600; color: #8b95a1; }
+  /* 영상 위 오버레이(업로드 찬양)는 실제 렌더가 흰 글씨 + 검은 외곽선이다. */
+  .cap-ov.onvideo { color: #fff;
+    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.7); }
+  .cap-ov.onvideo .en { color: #f2f2f2; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
   .safe { position: absolute; pointer-events: none; border: 1px dashed rgba(255,80,80,.5); display: none; z-index: 2; }
   .safe.right { top: 0; bottom: 0; right: 0; width: 13%; }
   .safe.bottom { left: 0; right: 0; bottom: 0; height: 12%; }
-  .vbox.showsafe .safe { display: block; }
+  .frame.showsafe .safe { display: block; }
   .mon-bar { flex: 0 0 26px; display: flex; align-items: center; gap: 10px; padding: 0 10px; background: #1e1e1e;
     border-top: 1px solid #000; font-size: 11.5px; }
   .mon-bar .tc { color: var(--hot); font-variant-numeric: tabular-nums; font-size: 12px; }
@@ -2614,6 +2648,11 @@ STUDIO_TEMPLATE = r"""
   .tl-panel.tool-type .trk.ko .blk { cursor: text; }
   .tl-panel.tool-trackfwd .trk.ko .blk { cursor: e-resize; }
   .trk.locked .blk { cursor: not-allowed; opacity: .7; }
+  /* 자막 사이 빈 구간: 점선 + '+' 를 두어 그 자리에 바로 소절을 만든다(사용자 요청). */
+  .blk-add { position: absolute; top: 5px; bottom: 5px; border: 1px dashed #6b6b6b; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center; color: #8e8e8e; font-size: 13px;
+    font-weight: 700; cursor: pointer; background: rgba(255,255,255,.02); }
+  .blk-add:hover { border-color: var(--hot); color: var(--hot); background: rgba(75,155,255,.12); }
   .blk-edit { position: absolute; z-index: 9; background: #2b2b2b; border: 1px solid var(--blue); border-radius: 4px; padding: 5px; display: flex; gap: 5px; align-items: center; }
   .blk-edit input { width: 340px; background: #151515; color: #e6e6e6; border: 1px solid #333; border-radius: 3px; padding: 5px 8px; font-family: inherit; font-size: 12px; }
   .blk-edit button { padding: 4px 9px; font-size: 11.5px; border-radius: 3px; border: 1px solid #444; background: #3a3a3a; color: #e6e6e6; cursor: pointer; }
@@ -2769,12 +2808,19 @@ STUDIO_TEMPLATE = r"""
             <div class="fx" id="fxStyle">
               <div class="fx-h"><span class="tri">▼</span><span class="fxi">fx</span><span class="fxn">텍스트 스타일</span><span class="rst" data-reset="style">재설정</span></div>
               <div class="fx-b">
-                <div class="prm"><span class="stop"></span><span class="pn">크기</span><div class="pv"><input class="hot" type="number" id="pSizeN" min="36" max="170" step="1"><span class="unit">px</span></div></div>
-                <div class="prm sl"><input type="range" id="pSize" min="36" max="170" step="1"><span class="lim">36 · 170</span></div>
-                <div class="prm"><span class="stop"></span><span class="pn">위치</span><div class="pv"><input class="hot" type="number" id="pXN" min="-400" max="400" step="1" title="가로 오프셋"><input class="hot" type="number" id="pYN" min="-400" max="400" step="1" title="세로 오프셋"></div></div>
-                <div class="prm sl"><input type="range" id="pX" min="-400" max="400" step="1" title="가로"><span class="lim">가로</span></div>
-                <div class="prm sl"><input type="range" id="pY" min="-400" max="400" step="1" title="세로"><span class="lim">세로</span></div>
+                <div class="prm"><span class="stop"></span><span class="pn">크기</span><div class="pv"><button class="stp" data-nudge="pSize:-2" title="작게">&minus;</button><input class="hot" type="number" id="pSize" min="28" max="240" step="1"><button class="stp" data-nudge="pSize:2" title="크게">+</button><span class="unit">px</span></div></div>
+                <div class="prm"><span class="stop"></span><span class="pn">가로 위치</span><div class="pv"><button class="stp" data-nudge="pX:-6" title="왼쪽으로">&minus;</button><input class="hot" type="number" id="pX" min="-400" max="400" step="1"><button class="stp" data-nudge="pX:6" title="오른쪽으로">+</button><span class="unit">px</span></div></div>
+                <div class="prm"><span class="stop"></span><span class="pn">세로 위치</span><div class="pv"><button class="stp" data-nudge="pY:-6" title="위로">&minus;</button><input class="hot" type="number" id="pY" min="-700" max="700" step="1"><button class="stp" data-nudge="pY:6" title="아래로">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">안전 여백</span><div class="pv"><input class="chk" type="checkbox" id="pSafe" checked><span class="dimtxt">휴대폰 UI 가이드(우측·하단)</span></div></div>
+                <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn"></span><div class="pv"><span class="dimtxt">미리보기의 자막을 끌어서 옮길 수도 있어요</span></div></div>
+              </div>
+            </div>
+            <div class="ec-sec">자막(영어)</div>
+            <div class="fx" id="fxStyleEn">
+              <div class="fx-h"><span class="tri">▼</span><span class="fxi">fx</span><span class="fxn">텍스트 스타일</span><span class="rst" data-reset="styleEn">재설정</span></div>
+              <div class="fx-b">
+                <div class="prm"><span class="stop"></span><span class="pn">크기</span><div class="pv"><button class="stp" data-nudge="pSizeEn:-2" title="작게">&minus;</button><input class="hot" type="number" id="pSizeEn" min="0" max="200" step="1"><button class="stp" data-nudge="pSizeEn:2" title="크게">+</button><span class="unit">px</span></div></div>
+                <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn"></span><div class="pv"><span class="dimtxt">0이면 한글 크기의 45%로 자동 · 한글 자막 바로 아래에 붙습니다</span></div></div>
               </div>
             </div>
             <div class="ec-sec">선택한 소절</div>
@@ -2808,9 +2854,12 @@ STUDIO_TEMPLATE = r"""
     </div>
     <div class="pbody on">
       <div class="stage" id="stage">
-        <div class="vbox showsafe" id="vbox">
-          <video id="v" src="/media/{{ video_id }}/source.mp4" playsinline preload="auto"></video>
+        <div class="frame showsafe" id="frame">
+          <div class="vbox" id="vbox">
+            <video id="v" src="/media/{{ video_id }}/source.mp4" playsinline preload="auto"></video>
+          </div>
           <div class="safe right"></div><div class="safe bottom"></div>
+          <div class="ttl-ov" id="ttlOv"></div>
           <div class="cap-ov" id="capOv" style="display:none"><span class="ko"></span><span class="en"></span></div>
         </div>
       </div>
@@ -3064,9 +3113,11 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   homeView = { a: view.a, b: view.b };
   $('tTotal').textContent = tc(C.end - C.start);
   const defSize = Math.round((L.caption_font_size || 72));
-  bindNum('pSize', 'pSizeN', C.caption_size || defSize);
-  bindNum('pX', 'pXN', C.caption_offset_x || 0);
-  bindNum('pY', 'pYN', C.caption_offset_y || 0);
+  bindNum('pSize', C.caption_size || defSize);
+  bindNum('pX', C.caption_offset_x || 0);
+  bindNum('pY', C.caption_offset_y || 0);
+  bindNum('pSizeEn', C.caption_size_en || 0);
+  applyPreviewFonts(info);
   v.addEventListener('loadedmetadata', () => { v.currentTime = C.start; fitVideo(); });
   if (v.readyState >= 1) { v.currentTime = C.start; fitVideo(); }
   fitVideo(); renderProject(); renderAll(); syncSelPanel(); loadPeaks(); renderBgm();
@@ -3104,37 +3155,86 @@ function splitter(el, axis) {
 }
 splitter($('splitV'), 'v'); splitter($('splitH'), 'h');
 
-// ─── 프로그램 모니터: 영상 맞춤 배치 ───
+// ─── 프로그램 모니터: '완성될 세로 프레임' 그대로 배치 ───
+// 프레임(=출력 해상도) 안에 영상 박스를 layout.video_box 위치에 넣고, 제목·자막을 렌더와
+// 같은 기준선(title/caption_base_margin_v)에 그린다. 확인 팝업과 완전히 같은 공식이라
+// 여기서 맞춘 위치가 그대로 추출물에 나온다.
 let fitMode = 'fit';
+let SC = 1;  // 화면 px / 렌더 px
 function fitVideo() {
-  const st = $('stage'), box = $('vbox');
+  const st = $('stage'), fr = $('frame'), box = $('vbox');
+  if (!L) return;
+  const RW = (L.resolution || [1080, 1920])[0], RH = (L.resolution || [1080, 1920])[1];
   const W = st.clientWidth - 16, H = st.clientHeight - 16;
-  const vw = v.videoWidth || 1920, vh = v.videoHeight || 1080;
-  let s = Math.min(W / vw, H / vh);
+  let s = Math.min(W / RW, H / RH);
   if (fitMode !== 'fit') s = Math.min(s, parseFloat(fitMode) * 0.5);  // 100%는 화면 대비 1/2 크기 기준
-  const w = Math.max(40, vw * s), h = Math.max(40, vh * s);
-  box.style.width = w + 'px'; box.style.height = h + 'px';
-  box.style.left = ((st.clientWidth - w) / 2) + 'px'; box.style.top = ((st.clientHeight - h) / 2) + 'px';
-  updateOverlay();
+  const w = Math.max(60, RW * s), h = Math.max(60, RH * s);
+  fr.style.width = w + 'px'; fr.style.height = h + 'px';
+  fr.style.left = ((st.clientWidth - w) / 2) + 'px'; fr.style.top = ((st.clientHeight - h) / 2) + 'px';
+  SC = w / RW;
+  const vb = L.video_box || { x: 0, y: 0, w: RW, h: RH, r: 0 };
+  box.style.left = (vb.x * SC) + 'px'; box.style.top = (vb.y * SC) + 'px';
+  box.style.width = (vb.w * SC) + 'px'; box.style.height = (vb.h * SC) + 'px';
+  box.style.borderRadius = ((vb.r || 0) * SC) + 'px';
+  updateTitleOv(); updateOverlay();
+}
+// 실제 렌더에 쓰이는 글꼴을 미리보기에도 심는다(@font-face). 글꼴이 다르면 글자 폭이
+// 달라져서 '몇 글자에서 줄이 넘어가는지'가 어긋난다.
+function applyPreviewFonts(info) {
+  let css = '';
+  for (const f of (info.fonts || [])) {
+    css += "@font-face{font-family:'" + f.family + "';src:url('/font/" + f.file + "');font-display:swap}\n";
+  }
+  if (css) { const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st); }
+  if (info.caption_font) $('capOv').style.fontFamily = "'" + info.caption_font.family + "', sans-serif";
+  if (info.title_font) $('ttlOv').style.fontFamily = "'" + info.title_font.family + "', sans-serif";
+}
+// 제목(카드형에서만 존재). 스튜디오에서 편집하지는 않고, 자막 위치를 잡을 때 기준이
+// 되도록 실제 크기·위치 그대로 보여준다.
+function updateTitleOv() {
+  const el = $('ttlOv'); if (!L) return;
+  if (L.no_title || !C || !C.title) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = '';
+  String(C.title).split('\n').forEach((part, i) => {
+    if (i > 0) el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(part));
+  });
+  const KT = L.title_ass_coeff || 1;
+  let fs = (C.title_size || L.title_size || 130) * KT * SC;
+  el.style.fontSize = fs + 'px';
+  // 렌더는 제목을 항상 한 줄로 폭에 맞춘다(_fit_title_font_size) — 미리보기도 같이 줄인다.
+  const cap = (L.resolution[0] - 80) * SC;
+  let guard = 0;
+  while (el.scrollWidth > cap && fs > 6 && guard++ < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; }
+  el.style.left = ((L.resolution[0] / 2 + (C.title_offset_x || 0)) * SC) + 'px';
+  el.style.top = (((L.title_base_margin_v || 0) + (C.title_offset_y || 0)) * SC) + 'px';
 }
 $('ddFit').addEventListener('change', () => { fitMode = $('ddFit').value; fitVideo(); });
 window.addEventListener('resize', () => { fitVideo(); renderAll(); });
 
-// ─── 속성 바인딩(슬라이더 ↔ 핫텍스트) ───
-function bindNum(rangeId, numId, initial) {
-  const r = $(rangeId), n = $(numId);
-  r.value = initial; n.value = initial;
-  const onChange = () => { markDirty(); updateOverlay(); };
-  r.addEventListener('input', () => { n.value = r.value; onChange(); });
-  n.addEventListener('input', () => {
-    let val = parseFloat(n.value); if (Number.isNaN(val)) return;
-    val = Math.max(parseFloat(r.min), Math.min(parseFloat(r.max), val));
-    r.value = val; onChange();
-  });
-  hotDrag(n, r);
+// ─── 속성 바인딩(숫자 + 둥근 −/+ 버튼 + 좌우 드래그) ───
+// 슬라이더(막대)는 뺐다 — 값이 눈금에 갇히고 미세 조정이 어려워서(사용자 요청 2026-09-07).
+function bindNum(numId, initial) {
+  const n = $(numId);
+  n.value = Math.round(initial);
+  n.addEventListener('input', () => { markDirty(); updateOverlay(); });
+  hotDrag(n);
 }
+function nudge(numId, delta) {
+  const n = $(numId);
+  let val = (parseFloat(n.value) || 0) + delta;
+  if (n.min !== '') val = Math.max(parseFloat(n.min), val);
+  if (n.max !== '') val = Math.min(parseFloat(n.max), val);
+  n.value = Math.round(val);
+  markDirty(); updateOverlay();
+}
+document.querySelectorAll('.stp').forEach((b) => b.addEventListener('click', () => {
+  const [id, d] = b.dataset.nudge.split(':');
+  nudge(id, parseFloat(d));
+}));
 // 프리미어 핫텍스트: 파란 숫자를 좌우로 끌면 값이 바뀐다
-function hotDrag(n, r) {
+function hotDrag(n) {
   let x0 = 0, v0 = 0, moved = false;
   n.addEventListener('pointerdown', (e) => {
     if (document.activeElement === n || n.disabled) return;
@@ -3157,64 +3257,145 @@ function hotDrag(n, r) {
   });
 }
 $('pSafe').addEventListener('change', () => setSafe($('pSafe').checked));
-function setSafe(on) { $('pSafe').checked = on; $('vbox').classList.toggle('showsafe', on); $('miSafe').classList.toggle('chk', on); $('tbCompare').classList.toggle('on', on); }
+function setSafe(on) { $('pSafe').checked = on; $('frame').classList.toggle('showsafe', on); $('miSafe').classList.toggle('chk', on); $('tbCompare').classList.toggle('on', on); }
 setSafe(true);
 document.querySelectorAll('.fx-h').forEach(h => h.addEventListener('click', (e) => { if (e.target.classList.contains('rst')) return; h.parentElement.classList.toggle('closed'); }));
 document.querySelector('[data-reset="style"]').addEventListener('click', () => {
-  const defSize = Math.round((L && L.caption_font_size) || 72);
-  $('pSize').value = defSize; $('pSizeN').value = defSize; $('pX').value = 0; $('pXN').value = 0; $('pY').value = 0; $('pYN').value = 0;
+  $('pSize').value = Math.round((L && L.caption_font_size) || 72);
+  $('pX').value = 0; $('pY').value = 0;
+  markDirty(); updateOverlay();
+});
+document.querySelector('[data-reset="styleEn"]').addEventListener('click', () => {
+  $('pSizeEn').value = 0;  // 0 = 한글의 45%로 자동
   markDirty(); updateOverlay();
 });
 
 // ─── 미리보기 자막 오버레이 ───
 function activeCapIdx(t) { for (let i = 0; i < caps.length; i++) if (t >= caps[i].start && t < caps[i].end) return i; return -1; }
+// 자막이 한 줄로 들어갈 수 있는 폭(렌더 px). captions.py caption_usable_width_px와 같은 공식.
+function capUsablePx() {
+  const RW = (L.resolution || [1080, 1920])[0];
+  const base = L.no_title ? Math.max(40, Math.round(RW * 0.15)) : 40;
+  return Math.max(80, RW - 2 * base - 24);
+}
 function updateOverlay() {
   const ov = $('capOv'); if (!L) return;
   const i = activeCapIdx(v.currentTime);
   if (i < 0 || !koVisible) { ov.style.display = 'none'; return; }
   ov.style.display = 'block';
+  ov.classList.toggle('onvideo', !!L.no_title);
   const koEl = ov.querySelector('.ko');
   const enEl = ov.querySelector('.en');
-  const scale = v.clientWidth / (L.resolution ? L.resolution[0] : 1080);
   const kc = L.caption_ass_coeff || 1;
-  const sz = parseFloat($('pSize').value) * kc * scale;
-  const usableW = v.clientWidth * 0.70;
-  koEl.textContent = caps[i].text;
+  const want = parseFloat($('pSize').value) || (L.caption_font_size || 72);
+  const usable = capUsablePx() * SC;
+  // 렌더(captions.py)와 동일 규칙: 클립 전체가 하나의 크기 + 사용자가 고른 크기가 우선.
+  // 한 줄에 안 들어가면 2줄로 내리고, 2줄로도 넘칠 때만 줄인다.
+  const koPx = uniformFontPx(caps, want * kc * SC, usable);
+  setWrapped(koEl, caps[i].text, koPx, usable);
+  ov.style.fontSize = koPx + 'px';
+  const enWant = parseFloat($('pSizeEn').value) || Math.max(16, Math.round((koPx / (kc * SC)) * 0.45));
   const en = (enVisible && ens[i]) ? ens[i].text : '';
-  enEl.textContent = en; enEl.style.display = en ? 'block' : 'none';
-  ov.style.transform = 'translateX(calc(-50% + ' + (parseFloat($('pX').value) * scale) + 'px))';
-  ov.style.bottom = 'calc(24% - ' + (parseFloat($('pY').value) * scale) + 'px)';
-  // 렌더(captions.py)와 동일 규칙: 클립 안의 모든 줄이 '하나의 크기'(가장 긴 줄이 안전지대
-  // 안에 한 줄로 들어가는 크기). 줄마다 크기가 달라지면 재생 중 글자가 커졌다 작아졌다
-  // 한다(실신고 2026-09-06). 유난히 긴 줄은 서버가 미리 앞뒤 자막으로 쪼개 보내준다.
-  const f = uniformCapSize(sz, usableW);
-  ov.style.fontSize = f + 'px'; enEl.style.fontSize = (f * 0.45) + 'px';
-  ov.style.whiteSpace = 'nowrap';
-}
-// ── 클립 단일 자막 크기(렌더 captions.py와 같은 규칙) ─────────────────────────
-// 모든 줄을 같은 폰트로 재서 '가장 긴 줄이 안전지대에 한 줄로 들어가는 크기'를 구한다.
-// 결과는 (텍스트 목록·기본 크기·폭) 키로 캐시해 매 프레임 재측정을 피한다.
-let _ucsKey = '', _ucsVal = 0;
-function uniformCapSize(sz, usableW) {
-  const key = caps.map(c => c.text).join('') + '|' + sz.toFixed(2) + '|' + Math.round(usableW);
-  if (key === _ucsKey) return _ucsVal;
-  let m = document.getElementById('capMeasure');
-  if (!m) {
-    m = document.createElement('span'); m.id = 'capMeasure';
-    m.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-99999px;top:0;font-weight:800;line-height:1.25;pointer-events:none';
-    document.body.appendChild(m);
+  enEl.style.display = en ? 'block' : 'none';
+  if (en) {
+    const enPx = uniformFontPx(ens, enWant * kc * SC, usable);
+    enEl.style.fontSize = enPx + 'px';
+    setWrapped(enEl, en, enPx, usable);
   }
-  m.style.fontFamily = getComputedStyle($('capOv')).fontFamily;
-  m.style.fontSize = sz + 'px';
-  let need = sz;
-  for (const c of caps) {
-    m.textContent = c.text || '';
-    const w = m.getBoundingClientRect().width;
-    if (w > usableW && w > 0) need = Math.min(need, sz * usableW / w);
+  ov.style.left = (((L.resolution[0] / 2) + parseFloat($('pX').value)) * SC) + 'px';
+  const offY = parseFloat($('pY').value) || 0;
+  if (L.caption_anchor === 'bottom') {
+    // 영상 위 오버레이(찬양): 렌더가 '아래 기준'이라 글씨를 키우면 위로 자란다 — 미리보기도 동일.
+    ov.style.top = '';
+    ov.style.bottom = (((L.caption_bottom_px || 0) - offY) * SC) + 'px';
+  } else {
+    ov.style.bottom = '';
+    ov.style.top = (((L.caption_base_margin_v || 0) + offY) * SC) + 'px';
   }
-  _ucsKey = key; _ucsVal = Math.max(10, need);
-  return _ucsVal;
 }
+// ── 한 줄/두 줄 판정(렌더 _make_wrap_planner와 같은 규칙) ────────────────────
+let _measEl = null;
+function measPx(text, fontPx) {
+  if (!_measEl) {
+    _measEl = document.createElement('span');
+    _measEl.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;left:-99999px;top:0;font-weight:800;line-height:1.25;pointer-events:none';
+    document.body.appendChild(_measEl);
+  }
+  _measEl.style.fontFamily = getComputedStyle($('capOv')).fontFamily;
+  _measEl.style.fontSize = fontPx + 'px';
+  _measEl.textContent = text || '';
+  return _measEl.getBoundingClientRect().width;
+}
+// 렌더 _make_wrap_planner와 같은 규칙: 한 줄 → 안 되면 2줄 → 3줄, 그래도 넘치면 그때 축소.
+// {scale: 이 줄이 요구하는 축소 비율(1이면 그대로), cuts: 줄바꿈할 단어 인덱스들}
+const MAX_CAP_LINES = 3;
+function bestSplit(toks, fontPx, k) {
+  const n = toks.length;
+  if (k <= 1) return { cuts: [], widest: measPx(toks.join(' '), fontPx) };
+  let best = null;
+  const walk = (start, chosen) => {
+    if (chosen.length === k - 1) {
+      const bounds = [0, ...chosen, n];
+      let widest = 0;
+      for (let i = 0; i < k; i++) widest = Math.max(widest, measPx(toks.slice(bounds[i], bounds[i + 1]).join(' '), fontPx));
+      if (!best || widest < best.widest) best = { cuts: chosen.slice(), widest: widest };
+      return;
+    }
+    for (let i = start; i < n; i++) { chosen.push(i); walk(i + 1, chosen); chosen.pop(); }
+  };
+  walk(1, []);
+  return best || { cuts: [], widest: measPx(toks.join(' '), fontPx) };
+}
+function planLine(text, fontPx, usable) {
+  const toks = String(text || '').split(/\s+/).filter(Boolean);
+  if (!toks.length) return { scale: 1, cuts: [] };
+  let last = { cuts: [], widest: 0 };
+  for (let k = 1; k <= Math.min(MAX_CAP_LINES, toks.length); k++) {
+    const r = bestSplit(toks, fontPx, k);
+    if (!r.widest || r.widest <= usable) return { scale: 1, cuts: r.cuts };
+    last = r;
+  }
+  return { scale: usable / last.widest, cuts: last.cuts };
+}
+// 클립 안의 모든 줄에 똑같이 쓸 크기(줄마다 다르면 재생 중 글자가 커졌다 작아졌다 한다).
+let _ufKey = '', _ufVal = 0;
+function uniformFontPx(list, fontPx, usable) {
+  const key = list.map(c => c.text).join('\u0001') + '|' + fontPx.toFixed(2) + '|' + Math.round(usable);
+  if (key === _ufKey) return _ufVal;
+  let sc = 1;
+  for (const c of list) sc = Math.min(sc, planLine(c.text, fontPx, usable).scale);
+  _ufKey = key; _ufVal = Math.max(8, fontPx * sc);
+  return _ufVal;
+}
+function setWrapped(el, text, fontPx, usable) {
+  const cuts = planLine(text, fontPx, usable).cuts;
+  el.textContent = '';
+  if (!cuts.length) { el.textContent = text; return; }
+  const toks = String(text).split(/\s+/).filter(Boolean);
+  const bounds = [0, ...cuts, toks.length];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    if (i > 0) el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(toks.slice(bounds[i], bounds[i + 1]).join(' ')));
+  }
+}
+// 미리보기에서 자막을 직접 끌어 옮긴다(막대 대신 — 사용자 요청 2026-09-07).
+(function () {
+  const ov = $('capOv');
+  ov.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    ov.classList.add('dragging'); ov.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY;
+    const ox = parseFloat($('pX').value) || 0, oy = parseFloat($('pY').value) || 0;
+    const move = (ev) => {
+      $('pX').value = Math.round(ox + (ev.clientX - sx) / SC);
+      $('pY').value = Math.round(oy + (ev.clientY - sy) / SC);
+      markDirty(); updateOverlay();
+    };
+    const up = () => { ov.classList.remove('dragging'); document.removeEventListener('pointermove', move); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  });
+})();
 
 // ─── 재생 제어 ───
 function playPause() {
@@ -3413,10 +3594,64 @@ function mkBlock(track, item, i, isEn) {
   }
   track.appendChild(b);
 }
+// 자막이 없는 빈 구간마다 점선 '+' 칸을 둔다 — 누르면 그 구간을 채우는 소절이 생긴다.
+function renderAddSlots(track) {
+  const gaps = [];
+  const ordered = caps.map((c, i) => ({ ...c, i })).sort((a, b) => a.start - b.start);
+  let cur = C.start;
+  for (const c of ordered) {
+    if (c.start - cur > 0.25) gaps.push([cur, c.start]);
+    cur = Math.max(cur, c.end);
+  }
+  if (C.end - cur > 0.25) gaps.push([cur, C.end]);
+  for (const [a, b] of gaps) {
+    const x0 = t2x(a), x1 = t2x(b);
+    if (x1 < 0 || x0 > tw() || x1 - x0 < 16) continue;
+    const el = document.createElement('div');
+    el.className = 'blk-add';
+    el.title = '이 빈 구간에 자막 추가';
+    el.textContent = '+';
+    el.style.left = Math.max(0, x0) + 'px';
+    el.style.width = (Math.min(tw(), x1) - Math.max(0, x0)) + 'px';
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    el.addEventListener('click', () => addCapAt(a, b));
+    track.appendChild(el);
+  }
+}
+function addCapAt(a, b) {
+  pushUndo();
+  const end = Math.min(b, a + Math.max(0.6, Math.min(b - a, 5)));
+  caps.push({ start: a, end: end, text: '새 소절' });
+  caps.sort((x, y) => x.start - y.start);
+  if (ens.length) { ens = []; setStatus('소절 추가 — 영어 트랙은 다시 번역해 주세요'); }
+  selIdx = caps.findIndex((c) => c.start === a); selSet = new Set();
+  markDirty(); renderTracks(); updateOverlay(); syncSelPanel();
+  const blk = $('koTrack').querySelector('.blk.sel');
+  if (blk) openEdit(selIdx, blk);
+}
+// 자막을 끌거나 늘렸을 때 옆 소절과 겹치지 않도록 옆 소절을 같이 밀어낸다(길이는 유지).
+// 겹치면 두 자막이 한 화면에 같이 떠서 화면이 엉킨다 — 밀어내는 편이 항상 옳다.
+function pushNeighbors(i) {
+  for (let k = i + 1; k < caps.length; k++) {
+    const need = caps[k - 1].end - caps[k].start;
+    if (need <= 0) break;
+    const len = caps[k].end - caps[k].start;
+    caps[k].start = Math.min(dur - 0.3, caps[k].start + need);
+    caps[k].end = Math.min(dur, caps[k].start + len);
+  }
+  for (let k = i - 1; k >= 0; k--) {
+    const need = caps[k].end - caps[k + 1].start;
+    if (need <= 0) break;
+    const len = caps[k].end - caps[k].start;
+    caps[k].end = Math.max(0.3, caps[k].end - need);
+    caps[k].start = Math.max(0, caps[k].end - len);
+  }
+}
 function renderTracks() {
   const ko = $('koTrack'), en = $('enTrack');
-  ko.querySelectorAll('.blk').forEach(el => el.remove()); en.querySelectorAll('.blk').forEach(el => el.remove());
+  ko.querySelectorAll('.blk, .blk-add').forEach(el => el.remove()); en.querySelectorAll('.blk').forEach(el => el.remove());
   caps.forEach((c, i) => mkBlock(ko, c, i, false));
+  renderAddSlots(ko);
   if (ens.length) {
     en.style.display = 'block'; $('enHead').style.display = 'flex';
     ens.forEach((c, i) => { if (caps[i]) mkBlock(en, { start: caps[i].start, end: caps[i].end, text: c.text }, i, true); });
@@ -3572,6 +3807,7 @@ function onDrag(e) {
   } else if (drag.mode === 'roll-l' && caps[i - 1]) {
     const t = Math.max(S[i - 1].start + 0.3, Math.min(S[i].end - 0.3, S[i].start + dt)); c.start = t; caps[i - 1].end = t;
   } else if (drag.mode.startsWith('roll')) { return; }
+  if (drag.mode === 'm' || drag.mode === 'l' || drag.mode === 'r') pushNeighbors(i);
   markDirty(); renderTracks(); updateOverlay(); syncSelPanel(); renderRuler();
 }
 function endDrag() { drag = null; document.removeEventListener('pointermove', onDrag); }
@@ -3796,7 +4032,13 @@ function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); res
 // ─── 저장/내보내기 ───
 function markDirty() { dirty = true; $('projEdited').textContent = ' - 편집됨'; scheduleAutoSave(); }
 function payload() {
-  const p = { captions: collect(), caption_size: parseInt($('pSize').value, 10), caption_offset_x: parseFloat($('pX').value), caption_offset_y: parseFloat($('pY').value) };
+  const p = {
+    captions: collect(),
+    caption_size: parseInt($('pSize').value, 10),
+    caption_size_en: parseInt($('pSizeEn').value, 10) || 0,
+    caption_offset_x: parseFloat($('pX').value),
+    caption_offset_y: parseFloat($('pY').value),
+  };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   if (clipRangeDirty) { p.clip_start = C.start; p.clip_end = C.end; }
   if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; }
@@ -4255,7 +4497,7 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     for k in ("title_font", "title_align", "caption_font", "caption_align"):
         if k in body:
             setattr(clip, k, str(body.get(k, "") or ""))
-    for k in ("title_size", "caption_size"):
+    for k in ("title_size", "caption_size", "caption_size_en"):
         if k in body:
             setattr(clip, k, int(float(body.get(k) or 0)))
     for k in ("title_spacing", "caption_spacing"):
@@ -4555,6 +4797,7 @@ def clip_preview_info(video_id: str, idx: int):
             "caption_overrides_en": (getattr(clip, "caption_overrides_en", None) or []),
             "clip_type": getattr(clip, "clip_type", "") or "",
             "caption_size": int(getattr(clip, "caption_size", 0) or 0),
+            "caption_size_en": int(getattr(clip, "caption_size_en", 0) or 0),
             "playback_speed": float(getattr(clip, "playback_speed", 1.0) or 1.0),
             "show_full_source_once": bool(getattr(clip, "show_full_source_once", False)),
             "bgm": (getattr(clip, "bgm", None) or None),
@@ -5133,7 +5376,7 @@ PREVIEW_MODAL_JS = r"""
       titleEl.style.fontSize = Math.round((state.title.size || L.title_size) * KT * SC) + 'px';
     }
     applyTitleSize();
-    capEl.style.fontSize = Math.round(L.caption_font_size * KC * SC) + 'px';
+    capEl.style.fontSize = Math.round((C.caption_size || L.caption_font_size) * KC * SC) + 'px';
     // 실제 렌더는 제목이 항상 1줄 — 팝업도 무조건 1줄로. 스타일시트 순서/캐시에 좌우되지
     // 않게 인라인으로 박는다(인라인이 어떤 시트 규칙보다 우선).
     titleEl.style.whiteSpace = 'nowrap';
@@ -5154,7 +5397,14 @@ PREVIEW_MODAL_JS = r"""
     let ZOOM = 1;
     function paintBox(el, key) {
       el.style.left = (bases[key].left + state[key].x * SC) + 'px';
-      el.style.top = (bases[key].top + state[key].y * SC) + 'px';
+      if (key === 'caption' && L.caption_anchor === 'bottom') {
+        // 렌더가 '아래 기준'인 오버레이 자막(찬양): 아래에서 띄운 거리로 그린다.
+        el.style.top = '';
+        el.style.bottom = (((L.caption_bottom_px || 0) - state.caption.y) * SC) + 'px';
+      } else {
+        el.style.bottom = '';
+        el.style.top = (bases[key].top + state[key].y * SC) + 'px';
+      }
     }
     // 가로 정중앙 스냅: x(가운데 기준 오프셋)가 거의 0이면 0으로 딱 붙이고 가이드선을 보여준다.
     const guideV = $('.pv-guide-v');
