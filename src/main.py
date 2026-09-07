@@ -39,6 +39,7 @@ from src.highlights import (
     save_prompt_for_manual_mode,
     select_highlights_auto,
     select_praise_songs,
+    refine_titles,
 )
 from src.feedback import format_feedback_for_prompt, load_feedback
 from src.render import render_clip
@@ -1532,6 +1533,22 @@ def analyze(
             except Exception:  # noqa: BLE001 - 앵커 실패 시 기존 숫자 경계로 조용히 폴백
                 traceback.print_exc()
         print(f"[main] 경계 앵커링: {anchored_n}/{len(clips)}개 클립 인용문 매칭 성공", flush=True)
+        # 제목 전용 패스(2026-09-07): 선정 프롬프트 안에서 곁다리로 쓰인 제목은 남 얘기 티저·
+        # 범용 콜아웃·결론 노출로 뭉쳐 나왔다("GPT로 다시 돌리는 게 낫다"). 경계가 확정된 뒤
+        # 클립 대사만 놓고 제목에 사고를 전부 쓴다. 실패하면 초안 제목 그대로 간다.
+        if clips:
+            sp.message("제목을 다시 뽑는 중 (클릭 시뮬레이션)...")
+            t_title = time.time()
+            try:
+                refine_titles(
+                    clips, transcript,
+                    model=model or h.get("model", ""),
+                    thinking_tokens=int(h.get("title_thinking_tokens", 3072)),
+                )
+            except Exception:  # noqa: BLE001 - 제목 실패로 선정 전체를 잃지 않는다
+                traceback.print_exc()
+                print("[main] 제목 전용 패스 실패 — 선정 단계 초안 제목 유지", flush=True)
+            _record_stage_time("titles", time.time() - t_title)
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
             sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")
