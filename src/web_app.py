@@ -2640,6 +2640,12 @@ STUDIO_TEMPLATE = r"""
      A2(배경 음악)는 자유롭게 끌 수 있다 — 재생 시작 지점을 옮기는 것이라 싱크가 안 깨진다. */
   #bgmClip { pointer-events: auto; cursor: grab; }
   #bgmClip:active { cursor: grabbing; }
+  /* V1은 이제 실제로 잘라 조각낼 수 있다 — 조각마다 선택·리사이즈 손잡이가 있다. */
+  .vclip { pointer-events: auto; cursor: default; }
+  .vclip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+  .vclip .h.l { left: 0; } .vclip .h.r { right: 0; }
+  .vclip .h:hover { background: rgba(255,255,255,.3); }
+  .vclip.sel { box-shadow: inset 0 0 0 1px #fff; }
   .vclip .cn, .aclip .cn { position: absolute; left: 6px; top: 2px; font-size: 10.5px; color: #e8ecf5; text-shadow: 0 1px 2px #000; z-index: 2; }
   .aclip canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   .blk { position: absolute; top: 3px; bottom: 3px; background: #5a4f8f; border: 1px solid #8072c9; border-radius: 2px; overflow: hidden;
@@ -3147,6 +3153,7 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
   ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
   initTexts();
+  initVSegs();
   const title = (C.title || ('클립 ' + (IDX + 1)));
   ['projName', 'projName2', 'progName', 'tlName'].forEach(id => $(id).textContent = title);
   $('ecMaster').textContent = '마스터 * ' + title; $('ecSeq').textContent = title + ' * 자막';
@@ -3762,18 +3769,95 @@ function renderTracks() {
     en.style.display = 'block'; $('enHead').style.display = 'flex';
     ens.forEach((c, i) => { if (caps[i]) mkBlock(en, { start: caps[i].start, end: caps[i].end, text: c.text }, i, true); });
   } else { en.style.display = 'none'; $('enHead').style.display = 'none'; }
-  // V1/A1 클립 막대(클립 구간)
+  // V1/A1 클립 막대(클립 구간) — 영상을 실제로 여러 조각(vsegs)으로 자를 수 있다.
   const vt = $('vTrack'); vt.querySelectorAll('.vclip').forEach(el => el.remove());
-  const vc = document.createElement('div'); vc.className = 'vclip';
-  vc.style.left = t2x(C.start) + 'px'; vc.style.width = Math.max(4, t2x(C.end) - t2x(C.start)) + 'px';
-  vc.style.background = 'transparent'; vc.style.borderColor = '#7f93cf'; vc.style.zIndex = 2;
-  const cn = document.createElement('span'); cn.className = 'cn'; cn.textContent = 'V1 · ' + (C.title || ''); vc.appendChild(cn); vt.appendChild(vc);
+  vsegs.forEach((sg, i) => {
+    const x0 = t2x(sg.s), x1 = t2x(sg.e);
+    if (x1 < 0 || x0 > tw()) return;
+    const vc = document.createElement('div'); vc.className = 'vclip' + (i === selVSeg ? ' sel' : '');
+    vc.dataset.vseg = i;
+    vc.style.left = Math.max(-2, x0) + 'px'; vc.style.width = Math.max(6, Math.min(tw() + 2, x1) - Math.max(-2, x0)) + 'px';
+    vc.style.background = 'transparent'; vc.style.borderColor = i === selVSeg ? '#fff' : '#7f93cf'; vc.style.zIndex = 2;
+    const cn = document.createElement('span'); cn.className = 'cn';
+    cn.textContent = 'V1 · ' + (C.title || '') + (vsegs.length > 1 ? (' [' + (i + 1) + '/' + vsegs.length + ']') : '');
+    vc.appendChild(cn);
+    const hl = document.createElement('div'); hl.className = 'h l';
+    const hr = document.createElement('div'); hr.className = 'h r';
+    vc.appendChild(hl); vc.appendChild(hr);
+    vc.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) { selVSeg = i; renderTracks(); return; }
+      if (tool === 'hand') return;
+      if (tool === 'razor') { const rect = tlTracks.getBoundingClientRect(); splitVSegAt(x2t(e.clientX - rect.left)); return; }
+      const edge = e.target === hl ? 'l' : e.target === hr ? 'r' : 'm';
+      if (edge === 'm') { selVSeg = i; renderTracks(); const rect = tlTracks.getBoundingClientRect(); seek(x2t(e.clientX - rect.left)); return; }
+      startVSegDrag(e, i, edge);
+    });
+    vt.appendChild(vc);
+  });
   const ac = $('aClip'); ac.style.left = '0'; ac.style.width = tw() + 'px';
   const bc = $('bgmClip'); bc.style.left = t2x(C.start) + 'px'; bc.style.width = Math.max(4, t2x(C.end) - t2x(C.start)) + 'px';
   drawWave();
   renderNavi();
   renderTextTracks();
 }
+// ─── V1 실제 영상 자르기(조각 분할/삭제) ────────────────────────────────────
+// 확인 팝업의 '분할' 기능(segs/keep_ranges)과 완전히 같은 저장 구조를 스튜디오
+// 타임라인에도 그대로 노출한다 — "영상을 클릭하고 분할했으면 영상이 실제로 잘려야지"
+// (2026-09-08). 조각은 절대(원본) 초 좌표를 그대로 쓴다(팝업과 동일 — 지운 자리를
+// 화면에서 당겨 붙이지 않고 그냥 빈 구간으로 둔다. 실제 이어붙이기는 렌더가 한다).
+// 구간이 바뀌면 저장된 자막 시간이 더는 유효하지 않으므로(팝업과 같은 이유) 저장 시
+// 자동으로 비워 렌더가 새 길이로 다시 전사하게 한다(찬양 클립은 재전사가 없어 예외).
+let vsegs = [], selVSeg = -1;
+function initVSegs() {
+  vsegs = (C.keep_ranges && C.keep_ranges.length)
+    ? C.keep_ranges.map((r) => ({ s: r[0], e: r[1] }))
+    : [{ s: C.start, e: C.end }];
+  selVSeg = -1;
+}
+function vsegsChanged() {
+  if (!vsegs.length) return false;
+  return vsegs.length > 1 || Math.abs(vsegs[0].s - C.start) > 0.05 || Math.abs(vsegs[vsegs.length - 1].e - C.end) > 0.05;
+}
+function splitVSegAt(t) {
+  for (let i = 0; i < vsegs.length; i++) {
+    if (t > vsegs[i].s + 0.3 && t < vsegs[i].e - 0.3) {
+      pushUndo();
+      vsegs.splice(i + 1, 0, { s: t, e: vsegs[i].e });
+      vsegs[i].e = t; selVSeg = i + 1;
+      markDirty(); clipRangeDirty = true; renderTracks(); setStatus('영상 분할');
+      return;
+    }
+  }
+  setStatus('여기는 이미 조각 경계예요');
+}
+function deleteVSeg(i) {
+  if (vsegs.length <= 1) { setStatus('최소 한 조각은 남아 있어야 해요'); return; }
+  pushUndo();
+  vsegs.splice(i, 1);
+  selVSeg = -1;
+  markDirty(); clipRangeDirty = true; renderTracks(); setStatus('영상 조각 삭제 — 저장하면 실제로 잘려요');
+}
+let vsegDrag = null;
+function startVSegDrag(e, i, mode) {
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  pushUndo();
+  selVSeg = i; renderTracks();
+  vsegDrag = { i, mode, x0: e.clientX, snap: vsegs.map((s) => ({ s: s.s, e: s.e })) };
+  document.addEventListener('pointermove', onVSegDrag);
+  document.addEventListener('pointerup', endVSegDrag, { once: true });
+}
+function onVSegDrag(e) {
+  if (!vsegDrag) return;
+  const dt = (e.clientX - vsegDrag.x0) / tw() * (view.b - view.a);
+  const i = vsegDrag.i, S = vsegDrag.snap[i], sg = vsegs[i];
+  const prevEnd = i > 0 ? vsegDrag.snap[i - 1].e + 0.1 : 0;
+  const nextStart = i < vsegs.length - 1 ? vsegDrag.snap[i + 1].s - 0.1 : dur;
+  if (vsegDrag.mode === 'l') sg.s = Math.min(Math.max(prevEnd, S.s + dt), sg.e - 0.5);
+  else if (vsegDrag.mode === 'r') sg.e = Math.max(Math.min(nextStart, S.e + dt), sg.s + 0.5);
+  markDirty(); clipRangeDirty = true; renderTracks();
+}
+function endVSegDrag() { vsegDrag = null; document.removeEventListener('pointermove', onVSegDrag); }
 // ─── 자유 텍스트 트랙(캡컷식) ──────────────────────────────────────────────
 // 자막(caps)은 한 트랙에 시간순으로 늘어서고 서로 겹칠 수 없다. 그와 별개로, 캡컷처럼
 // "아무 데나 놓고 아무 때나 띄우는 텍스트"가 필요하다는 요청(2026-09-08). 그래서 요소마다
@@ -4325,13 +4409,13 @@ function applyFx(kind) {
 }
 
 // ─── 실행 취소 ───
-function snapshot() { return { caps: caps.map(c => ({ ...c })), ens: ens.map(c => ({ ...c })), cs: C.start, ce: C.end }; }
+function snapshot() { return { caps: caps.map(c => ({ ...c })), ens: ens.map(c => ({ ...c })), cs: C.start, ce: C.end, vsegs: vsegs.map(s => ({ ...s })) }; }
 function pushUndo(prevTimes) {
   const s = snapshot();
   if (prevTimes) s.caps = s.caps.map((c, i) => ({ ...c, start: prevTimes[i].start, end: prevTimes[i].end }));
   undoStack.push(s); if (undoStack.length > 100) undoStack.shift(); redoStack = [];
 }
-function restore(s) { caps = s.caps.map(c => ({ ...c })); ens = s.ens.map(c => ({ ...c })); C.start = s.cs; C.end = s.ce; selIdx = -1; selSet = new Set(); markDirty(); renderAll(); updateOverlay(); syncSelPanel(); renderProject(); }
+function restore(s) { caps = s.caps.map(c => ({ ...c })); ens = s.ens.map(c => ({ ...c })); C.start = s.cs; C.end = s.ce; vsegs = (s.vsegs || [{ s: s.cs, e: s.ce }]).map(x => ({ ...x })); selVSeg = -1; selIdx = -1; selSet = new Set(); markDirty(); renderAll(); updateOverlay(); syncSelPanel(); renderProject(); }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); setStatus('실행 취소'); }
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); setStatus('다시 실행'); }
 
@@ -4347,14 +4431,33 @@ function payload() {
   };
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
-  if (clipRangeDirty) { p.clip_start = C.start; p.clip_end = C.end; }
+  // 영상을 실제로 잘랐으면(vsegsChanged) 구간·keep_ranges를 같이 보내고, 저장된 자막
+  // 시간은 새 길이에 안 맞으므로 비워서 렌더가 다시 전사하게 한다(팝업의 분할과 동일한
+  // 규칙 — 찬양은 재전사가 없어 예외로 자막을 지키고, keep_ranges만 반영한다).
+  const vChanged = vsegsChanged();
+  if (clipRangeDirty || vChanged) {
+    p.clip_start = vsegs[0].s; p.clip_end = vsegs[vsegs.length - 1].e;
+  }
+  if (vChanged) {
+    p.keep_ranges = vsegs.map((s) => [s.s, s.e]);
+    if (C.clip_type !== 'praise') p.captions = [];
+  }
   if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; p.bgm_offset = C.bgm.offset || 0; }
   return p;
 }
 async function save() {
+  const vChanged = vsegsChanged();
   const r = await fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/position', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
-  if (r.ok) { dirty = false; clipRangeDirty = false; $('projEdited').textContent = ''; setStatus('저장됨 ✓'); return true; }
-  setStatus('저장 실패'); return false;
+  if (!r.ok) { setStatus('저장 실패'); return false; }
+  dirty = false; clipRangeDirty = false; $('projEdited').textContent = '';
+  if (vChanged) {
+    // 영상 길이가 바뀌었으니(진짜 컷) 새 구간 기준으로 페이지를 다시 불러온다 — 자막은
+    // 서버가 비웠고, 다음 로드에서 새 길이에 맞는 자막 초안이 자동으로 다시 뜬다.
+    setStatus('영상이 잘렸어요 — 새 길이로 다시 불러오는 중…');
+    location.reload();
+    return true;
+  }
+  setStatus('저장됨 ✓'); return true;
 }
 async function render() {
   if (!(await save())) return;
@@ -4534,6 +4637,8 @@ function menuAct(a) {
     'ctx-mark-in': () => markIn(ctxTime), 'ctx-mark-out': () => markOut(ctxTime),
     'tx-edit-text': () => focusTxOverlay(selTx),
     'tx-split': () => { if (selTx >= 0) splitTxAt(selTx, v.currentTime); },
+    'v-split': () => splitVSegAt(ctxTime),
+    'v-delete': () => { if (selVSeg >= 0) deleteVSeg(selVSeg); },
     'zoom-in': () => zoomBy(0.75, (view.a + view.b) / 2), 'zoom-out': () => zoomBy(1.34, (view.a + view.b) / 2), 'zoom-fit': zoomFit,
     snap: () => setSnap(!snapOn), marker: addMarker, 'marker-clear': () => { markers = []; renderRuler(); },
     'fx-correct': () => applyFx('correct'), 'fx-translate': () => applyFx('translate'), 'fx-sync': () => applyFx('sync'),
@@ -4569,6 +4674,23 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMen
 
 function timelineCtx(e) {
   e.preventDefault();
+  const vclip = e.target.closest('.vclip');
+  if (vclip && vclip.dataset.vseg !== undefined) {
+    const i = parseInt(vclip.dataset.vseg, 10);
+    selVSeg = i; renderTracks();
+    const rect = tlTracks.getBoundingClientRect();
+    const t = x2t(e.clientX - rect.left);
+    const canSplit = t > vsegs[i].s + 0.3 && t < vsegs[i].e - 0.3;
+    showCtxMenu(e.clientX, e.clientY,
+      ctxItem('여기서 영상 분할', 'v-split', { k: 'Ctrl+K', dis: !canSplit }) +
+      ctxSep() +
+      ctxItem('이 조각 삭제(잘라내기)', 'v-delete', { dis: vsegs.length <= 1 }) +
+      ctxSep() +
+      ctxItem('모두 선택 해제', 'deselect', { k: 'Ctrl+Shift+A' })
+    );
+    ctxTime = t;
+    return;
+  }
   const txblk = e.target.closest('.txblk');
   if (txblk && txblk.dataset.tx !== undefined) {
     const i = parseInt(txblk.dataset.tx, 10);
