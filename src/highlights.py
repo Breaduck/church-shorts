@@ -143,6 +143,17 @@ class Clip:
     caption_box_height_pct: float = 28.0  # 상하 여백(글자 대비 %).
     caption_box_offset_x: float = 0.0   # 박스를 글자 중심에서 좌우로 미는 px.
     caption_box_offset_y: float = 0.0   # 박스를 글자 중심에서 위아래로 미는 px.
+    # 캡컷 '텍스트' 패널의 패턴(B/U/I)·획(외곽선)·불투명도·글로우. 기본값은 지금까지의
+    # 렌더 결과와 완전히 같다(볼드 켜짐·외곽선 항상 켜짐·불투명 100%·글로우 꺼짐).
+    caption_bold: bool = True
+    caption_italic: bool = False
+    caption_underline: bool = False
+    caption_text_opacity: float = 1.0     # 0(투명)~1(불투명).
+    caption_outline_enabled: bool = True  # 꺼면 외곽선(획) 없이 글자만.
+    caption_outline_color: str = ""       # CSS hex. 빈 값 = config 기본 색.
+    caption_outline_width: float = -1.0   # px. -1 = config 기본값 사용.
+    caption_glow: bool = False
+    caption_glow_color: str = ""          # CSS hex. 빈 값 = 글자색과 동일.
     # 자유 텍스트(캡컷식). 스튜디오에서 '+'로 만든 텍스트 트랙 위의 요소들이다.
     # 자막(caption_overrides)과 달리 겹쳐도 되고, 요소마다 자기 시간·화면 위치·크기를 갖는다.
     # [{"start": 절대초, "end": 절대초, "text": str, "x": 렌더px(중앙 기준 오프셋),

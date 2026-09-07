@@ -352,6 +352,8 @@ def _css_hex_to_ass_alpha(opacity: float) -> str:
     return f"&H{round((1 - op) * 255):02X}&".upper()
 
 
+
+
 def _rounded_rect_path(w: float, h: float, r: float) -> str:
     """(0,0)-(w,h) 사각형 안에 둥근 모서리(반지름 r) 벡터 경로를 그린다(ASS \\p 드로잉).
     베지어 근사 상수 0.5523(원을 4개의 3차 베지어로 근사할 때 표준 계수)."""
@@ -688,6 +690,15 @@ def build_ass(
     caption_box_height_pct: float = 28.0,
     caption_box_offset_x: float = 0.0,
     caption_box_offset_y: float = 0.0,
+    caption_bold: bool = True,
+    caption_italic: bool = False,
+    caption_underline: bool = False,
+    caption_text_opacity: float = 1.0,
+    caption_outline_enabled: bool = True,
+    caption_outline_color_override: str = "",
+    caption_outline_width_override: float = -1.0,
+    caption_glow: bool = False,
+    caption_glow_color: str = "",
 ) -> str:
     """클립 하나에 대한 ASS 자막 문자열을 생성한다.
 
@@ -770,6 +781,29 @@ def build_ass(
     else:
         cap_primary, cap_secondary = primary_color, karaoke_highlight_color
 
+    # 캡컷 '패턴'(B/U/I)·'획'(외곽선) — 사용자가 넣어준 캡컷 스크린샷 항목을 그대로 노출.
+    # ASS Style의 Bold/Italic/Underline은 -1(켜짐)/0(꺼짐), Outline은 너비(0=획 없음).
+    cap_bold = -1 if caption_bold else 0
+    cap_italic = -1 if caption_italic else 0
+    cap_underline = -1 if caption_underline else 0
+    cap_outline_color = _css_hex_to_ass_color(caption_outline_color_override) if caption_outline_color_override else outline_color
+    cap_outline_width = caption_outline_width_override if caption_outline_width_override >= 0 else outline_width
+    if not caption_outline_enabled:
+        cap_outline_width = 0
+    # 텍스트 자체의 불투명도(박스 불투명도와 별개) — Primary/Secondary 둘 다에 걸어야
+    # 카라오케(말하기 전/후 색이 바뀌는 동안)에도 계속 같은 투명도를 유지한다.
+    cap_alpha_tag = ""
+    if caption_text_opacity < 0.999:
+        a = _css_hex_to_ass_alpha(caption_text_opacity)
+        cap_alpha_tag = f"\\1a{a}\\2a{a}\\3a{a}"
+    # 글로우: 외곽선을 두껍게+흐리게(\\blur) 만들어 은은하게 번지는 효과를 낸다(사용자 스샷의
+    # '글로우' 항목). 진짜 별도 발광 레이어를 새로 그리는 대신 같은 텍스트의 획 렌더만
+    # 바꾸는 방식이라 위치 계산이 필요 없고 항상 글자와 정확히 겹친다.
+    cap_glow_tag = ""
+    if caption_glow:
+        glow_c = _css_hex_to_ass_color(caption_glow_color) if caption_glow_color else cap_primary
+        cap_glow_tag = f"\\blur6\\3c{glow_c}\\bord{max(cap_outline_width, 6):.0f}"
+
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -778,7 +812,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{caption_size},{cap_primary},{cap_secondary},{outline_color},&H00000000,-1,0,0,0,100,100,{caption_spacing},0,1,{outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
+Style: Caption,{font_name},{caption_size},{cap_primary},{cap_secondary},{cap_outline_color},&H00000000,{cap_bold},{cap_italic},{cap_underline},0,100,100,{caption_spacing},0,1,{cap_outline_width},0,{caption_alignment},{caption_margin_l},{caption_margin_r},{caption_margin_v},1
 Style: Hook,{title_font_name},{title_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,{title_spacing},0,1,{outline_width + 1},0,{title_alignment},{title_margin_l},{title_margin_r},{title_margin_v},1
 Style: FreeText,{font_name},{caption_size},{primary_color},{karaoke_highlight_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,8,0,0,0,1
 Style: CapBox,{font_name},{caption_size},&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
@@ -875,7 +909,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     disp = _highlight_wrap(disp, highlight_color, highlight_style)
                 parts.append(("\\N" if i in _wrap else "") + disp)
             text = " ".join(parts).replace(" \\N", "\\N")
-        text = prefix_text + text + extra_text  # prefix=줄별 폰트 축소(\fs), extra=영어 번역 줄 등
+        # 불투명도·글로우는 모든 자막 줄에 똑같이 걸린다(캡컷 스크린샷의 '혼합'/'글로우' 항목).
+        # override 태그는 반드시 {}로 감싸야 한다 — 안 감싸면 그대로 글자로 찍힌다.
+        style_prefix = ("{" + cap_alpha_tag + cap_glow_tag + "}") if (cap_alpha_tag or cap_glow_tag) else ""
+        text = style_prefix + prefix_text + text + extra_text  # prefix=줄별 폰트 축소(\fs), extra=영어 번역 줄 등
         if animate:
             # 자막 줄 등장/퇴장 페이드(부드러운 전환) — 모션그래픽 옵션.
             text = "{\\fad(120,80)}" + text
@@ -1159,4 +1196,13 @@ def build_ass_for_clip(
         caption_box_height_pct=float(fs.get("caption_box_height_pct", 28.0) or 28.0),
         caption_box_offset_x=float(fs.get("caption_box_offset_x", 0.0) or 0.0),
         caption_box_offset_y=float(fs.get("caption_box_offset_y", 0.0) or 0.0),
+        caption_bold=bool(fs.get("caption_bold", True)),
+        caption_italic=bool(fs.get("caption_italic", False)),
+        caption_underline=bool(fs.get("caption_underline", False)),
+        caption_text_opacity=float(fs.get("caption_text_opacity", 1.0) or 1.0),
+        caption_outline_enabled=bool(fs.get("caption_outline_enabled", True)),
+        caption_outline_color_override=fs.get("caption_outline_color", "") or "",
+        caption_outline_width_override=float(fs.get("caption_outline_width", -1.0) if fs.get("caption_outline_width", -1.0) is not None else -1.0),
+        caption_glow=bool(fs.get("caption_glow", False)),
+        caption_glow_color=fs.get("caption_glow_color", "") or "",
     )
