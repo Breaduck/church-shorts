@@ -2636,6 +2636,10 @@ STUDIO_TEMPLATE = r"""
   .vclip, .aclip { position: absolute; top: 3px; bottom: 3px; border-radius: 2px; overflow: hidden; pointer-events: none; }
   .vclip { background: #3e4c6e; border: 1px solid #56689a; }
   .aclip { background: #2f5f5b; border: 1px solid #3f8a84; }
+  /* A1(원본 오디오)은 영상과 같은 소스라 계속 잠겨 있지만(pointer-events:none 상속),
+     A2(배경 음악)는 자유롭게 끌 수 있다 — 재생 시작 지점을 옮기는 것이라 싱크가 안 깨진다. */
+  #bgmClip { pointer-events: auto; cursor: grab; }
+  #bgmClip:active { cursor: grabbing; }
   .vclip .cn, .aclip .cn { position: absolute; left: 6px; top: 2px; font-size: 10.5px; color: #e8ecf5; text-shadow: 0 1px 2px #000; z-index: 2; }
   .aclip canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   .blk { position: absolute; top: 3px; bottom: 3px; background: #5a4f8f; border: 1px solid #8072c9; border-radius: 2px; overflow: hidden;
@@ -4344,7 +4348,7 @@ function payload() {
   if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
   p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
   if (clipRangeDirty) { p.clip_start = C.start; p.clip_end = C.end; }
-  if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; }
+  if (C.bgm) { p.bgm_volume = C.bgm.volume; p.bgm_muted = C.bgm.muted; p.bgm_offset = C.bgm.offset || 0; }
   return p;
 }
 async function save() {
@@ -4455,14 +4459,36 @@ $('bgmVol').addEventListener('input', () => {
 });
 v.addEventListener('play', () => {
   const a = $('bgmAudio'); if (!C.bgm || !a.src) return;
-  try { if (a.duration) a.currentTime = Math.max(0, (v.currentTime - C.start) % a.duration); } catch (e) { /* 메타데이터 전이면 무시 */ }
+  try { if (a.duration) a.currentTime = Math.max(0, ((C.bgm.offset || 0) + v.currentTime - C.start) % a.duration); } catch (e) { /* 메타데이터 전이면 무시 */ }
   a.play().catch(() => {});
 });
 v.addEventListener('pause', () => $('bgmAudio').pause());
 v.addEventListener('seeked', () => {
   const a = $('bgmAudio'); if (!C.bgm || !a.duration) return;
-  a.currentTime = Math.max(0, (v.currentTime - C.start) % a.duration);
+  a.currentTime = Math.max(0, ((C.bgm.offset || 0) + v.currentTime - C.start) % a.duration);
 });
+// BGM 막대를 좌우로 끌면 '이 클립에서 재생되는 시간대'가 아니라 '배경음악 파일 안에서
+// 어디부터 틀지'(offset)가 바뀐다 — 막대 자체는 항상 클립 구간(C.start~C.end)에 고정.
+// 음원이 무한 반복이라 오프셋에 상한이 없고, 드래그 중엔 미리듣기 오디오도 같이 옮겨 준다.
+(function () {
+  const bc = $('bgmClip');
+  bc.addEventListener('pointerdown', (e) => {
+    if (!C.bgm || tool === 'hand') return;
+    e.preventDefault();
+    const x0 = e.clientX, off0 = C.bgm.offset || 0;
+    const move = (ev) => {
+      const dt = (ev.clientX - x0) / tw() * (view.b - view.a);
+      C.bgm.offset = Math.max(0, off0 + dt);
+      markDirty();
+      const a = $('bgmAudio');
+      if (a.duration) { try { a.currentTime = (C.bgm.offset + v.currentTime - C.start) % a.duration; } catch (err) {} }
+      setStatus('배경 음악 시작 지점 = ' + tc(C.bgm.offset));
+    };
+    const up = () => document.removeEventListener('pointermove', move);
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  });
+})();
 
 // ─── 소스 모니터(원본 영상, 탭을 열 때 로드) ───
 let sv = null;
@@ -4859,8 +4885,10 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     for k in ("title_spacing", "caption_spacing"):
         if k in body:
             setattr(clip, k, float(body.get(k) or 0))
-    # 배경 음악 볼륨/음소거(파일은 별도 업로드 라우트에서 받는다).
-    if clip.bgm and ("bgm_volume" in body or "bgm_muted" in body):
+    # 배경 음악 볼륨/음소거/시작 오프셋(파일은 별도 업로드 라우트에서 받는다).
+    # 오프셋은 타임라인에서 BGM 막대를 끌어 정한, 음원 파일 안에서 재생을 시작할 지점(초)
+    # — 무한 반복 위에서 자르는 창(atrim)만 옮기므로 클립 길이·다른 트랙과는 무관하다.
+    if clip.bgm and ("bgm_volume" in body or "bgm_muted" in body or "bgm_offset" in body):
         if "bgm_volume" in body:
             try:
                 clip.bgm["volume"] = max(0.0, min(1.0, float(body.get("bgm_volume"))))
@@ -4868,6 +4896,11 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
                 pass
         if "bgm_muted" in body:
             clip.bgm["muted"] = bool(body.get("bgm_muted"))
+        if "bgm_offset" in body:
+            try:
+                clip.bgm["offset"] = max(0.0, float(body.get("bgm_offset")))
+            except (TypeError, ValueError):
+                pass
     save_clips_json(clips, clips_path)
     return jsonify({"ok": True})
 

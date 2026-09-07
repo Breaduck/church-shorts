@@ -430,22 +430,28 @@ def _probe_duration(path: Path) -> float:
         return 0.0
 
 
-def _mix_bgm(output_path: Path, bgm_path: Path, volume: float) -> None:
+def _mix_bgm(output_path: Path, bgm_path: Path, volume: float, offset: float = 0.0) -> None:
     """스튜디오에서 업로드한 배경 음악을 결과물 오디오 아래로 믹싱한다(외부 파일 있음).
 
     _add_sfx와 같은 ffmpeg amix 패턴: 클립 길이(이미 완성된 output_path의 실제 길이 —
     무음 제거/배속을 다 반영한 최종 길이)에 맞춰 반복재생 후 자르고, 시작/끝을 짧게
     페이드해 튀지 않게 한다. 비디오는 재인코딩하지 않는다(-c:v copy).
-    실패해도 본 렌더는 이미 완성돼 있으므로 호출자가 로그만 남기고 넘어간다."""
+    실패해도 본 렌더는 이미 완성돼 있으므로 호출자가 로그만 남기고 넘어간다.
+
+    offset: 스튜디오에서 BGM 막대를 끌어 정한, 배경음악 파일 안에서 재생을 시작할 지점(초).
+    입력을 -stream_loop -1로 무한 반복시키므로 그 반복 스트림 위에서 atrim의 시작점만
+    옮기면 된다(음원 길이로 나눠 감쌀 필요 없음 — 반복이 무한이라 임의의 양수 오프셋이
+    항상 유효하다). 기본 0이면 기존과 완전히 동일한 동작."""
     dur = _probe_duration(output_path)
     if dur <= 0:
         return
     vol = max(0.0, min(1.0, volume))
+    off = max(0.0, offset)
     fade_d = min(1.0, dur / 4)
     filter_complex = (
         f"[0:a]aformat=sample_rates=48000:channel_layouts=stereo[base];"
         f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,"
-        f"atrim=0:{dur:.3f},volume={vol:.3f},"
+        f"atrim={off:.3f}:{off + dur:.3f},asetpts=PTS-STARTPTS,volume={vol:.3f},"
         f"afade=t=in:d={fade_d:.2f},afade=t=out:st={max(0.0, dur - fade_d):.2f}:d={fade_d:.2f}[bgm];"
         f"[base][bgm]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
     )
@@ -919,7 +925,7 @@ def render_clip(
         bgm_path = video_path.parent / "bgm" / bgm["filename"]
         if bgm_path.exists():
             try:
-                _mix_bgm(output_path, bgm_path, float(bgm.get("volume", 0.25) or 0.25))
+                _mix_bgm(output_path, bgm_path, float(bgm.get("volume", 0.25) or 0.25), float(bgm.get("offset", 0.0) or 0.0))
             except Exception:  # noqa: BLE001 - 배경 음악 실패는 치명적이지 않음
                 traceback.print_exc()
 
