@@ -844,10 +844,18 @@ def render_clip(
     video_path: Path,
     segments: list[Segment],
     clip: Clip,
-    output_path: Path,
+    final_output_path: Path,
     render_cfg: dict,
     captions_cfg: dict,
 ) -> None:
+    """클립 하나를 렌더한다. 결과는 final_output_path.
+
+    전 과정을 임시 파일(.rendering.mp4)에서 하고 마지막에만 final로 옮긴다. 예전엔 최종
+    경로에 직접 쓴 뒤 배속→효과음→BGM→아웃트로를 **같은 파일에 제자리 변형**해서,
+    중간 단계에서 죽으면 전에 잘 나왔던 클립이 깨진 채 남았다. 게다가 그 경로가 그대로
+    /media 다운로드 경로라 쓰는 중에 받으면 깨진 파일을 받았다."""
+    output_path = final_output_path.with_suffix(".rendering.mp4")
+    output_path.unlink(missing_ok=True)
     resolution = tuple(render_cfg.get("resolution", [1080, 1920]))
     duration = clip.end - clip.start
     render_cfg = _effective_render_cfg(clip, render_cfg)
@@ -1090,6 +1098,11 @@ def render_clip(
                 _append_outro(output_path, outro_seg)
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+
+    # 모든 후처리가 끝난 뒤에만 최종 경로로 옮긴다(원자적). 여기까지 못 오면 이전에 잘
+    # 나왔던 final_output_path는 손대지 않은 채 그대로 남는다.
+    output_path.replace(final_output_path)
+    ass_path.replace(final_output_path.with_suffix(".ass"))
 
 
 def render_all_clips(

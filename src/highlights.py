@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
@@ -1475,9 +1475,28 @@ def save_prompt_for_manual_mode(prompt: str, output_path: Path) -> None:
 CLIPS_LOCK = threading.RLock()
 
 
+_CLIP_FIELDS = frozenset(f.name for f in fields(Clip))
+
+
 def load_clips_json(path: Path) -> list[Clip]:
+    """clips.json → Clip 목록. Clip에 없는 키는 무시한다.
+
+    예전엔 Clip(**c)라서, 필드를 하나 지우거나 이름만 바꿔도 그 순간 **기존 clips.json이
+    전부 TypeError로 안 열렸다**(작업물 전체 접근 불가). 지금까지는 필드를 추가만 해서
+    버텼지만 되돌릴 수 없는 제약이었다. 모르는 키를 흘려보내면 구버전 코드로 롤백하거나
+    필드를 정리해도 기존 작업물이 그대로 열린다. 버려진 키는 한 번만 로그로 알린다."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    return [Clip(**c) for c in data]
+    out = []
+    dropped: set[str] = set()
+    for c in data:
+        extra = set(c) - _CLIP_FIELDS
+        if extra:
+            dropped |= extra
+            c = {k: v for k, v in c.items() if k in _CLIP_FIELDS}
+        out.append(Clip(**c))
+    if dropped:
+        print(f"[clips] 알 수 없는 필드 무시: {sorted(dropped)} ({path})", flush=True)
+    return out
 
 
 def save_clips_json(clips: list[Clip], path: Path) -> None:

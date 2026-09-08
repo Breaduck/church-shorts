@@ -32,6 +32,8 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 # 클립 '구간 재분석' 작업 상태(영상별). 팝업이 폴링해서 완료되면 새 후보를 보여준다.
+# 아래 _retrans_jobs(자막 정밀 재전사)와 함께 _jobs_lock으로 보호한다 — 검사와 표시가
+# 원자적이지 않으면 같은 작업이 중복 실행된다(각 라우트 주석 참고).
 _reanalyze_jobs: dict[str, dict] = {}
 
 
@@ -7118,10 +7120,14 @@ def reanalyze_clip_route(video_id: str, idx: int):
     clips_path = OUTPUT_ROOT / video_id / "clips.json"
     if not clips_path.exists():
         return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
-    cur = _reanalyze_jobs.get(video_id)
-    if cur and cur.get("running"):
-        return jsonify({"error": "이미 재분석이 진행 중입니다"}), 409
-    _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
+    # 검사(running?)와 표시(running=True)를 한 락 안에서 한다. 예전엔 락이 없어서 그 사이에
+    # 두 번째 요청이 끼어들면(다른 탭·더블클릭) 같은 클립 재분석 스레드가 2개 떠서 claude
+    # 호출을 두 배로 태우고 서로의 결과를 덮어썼다(TOCTOU).
+    with _jobs_lock:
+        cur = _reanalyze_jobs.get(video_id)
+        if cur and cur.get("running"):
+            return jsonify({"error": "이미 재분석이 진행 중입니다"}), 409
+        _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
     threading.Thread(target=_run_reanalyze_job, args=(video_id, idx), daemon=True).start()
     return jsonify({"ok": True})
 
@@ -7241,10 +7247,13 @@ def retranscribe_route(video_id: str, idx: int):
     if not (OUTPUT_ROOT / video_id / "clips.json").exists():
         return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
     key = f"{video_id}:{idx}"
-    cur = _retrans_jobs.get(key)
-    if cur and cur.get("running"):
-        return jsonify({"ok": True, "already": True})
-    _retrans_jobs[key] = {"running": True, "error": None, "lines": None}
+    # 재분석과 같은 이유로 락 안에서 검사+표시(TOCTOU). 정밀 재전사는 large-v3라 중복 실행이
+    # 뜨면 CPU를 두 배로 먹고 whisper 모델 사본까지 늘어난다.
+    with _jobs_lock:
+        cur = _retrans_jobs.get(key)
+        if cur and cur.get("running"):
+            return jsonify({"ok": True, "already": True})
+        _retrans_jobs[key] = {"running": True, "error": None, "lines": None}
     threading.Thread(target=_run_retranscribe_job, args=(video_id, idx), daemon=True).start()
     return jsonify({"ok": True})
 
