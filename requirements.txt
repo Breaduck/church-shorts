@@ -16,3 +16,5 @@ google-auth-oauthlib>=1.2.0
 # 얼굴 추적 리프레이밍(facetrack): Haar 캐스케이드 얼굴 검출. 4.x는 캐스케이드 XML을
 # 번들하지만, 리포에도 assets/facetrack에 복사해 버전 독립적으로 로드한다.
 opencv-python-headless>=4.8,<5
+# 회귀 테스트(tests/): venv\Scripts\python.exe -m pytest tests -q
+pytest>=8.0
