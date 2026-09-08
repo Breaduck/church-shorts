@@ -19,6 +19,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 from src.feedback import PerformanceRecord, upsert_feedback
+from src.models import EXECUTION_MODEL, sanitize as sanitize_model
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
 from src.main import analyze, reanalyze_clip_region, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
@@ -1038,6 +1039,7 @@ CANDIDATES_TEMPLATE = f"""
     var renderIndices = null;   // 이번 세션에서 렌더 요청한 클립들(버튼 클릭 시 채워짐)
     var wasRendering = false;   // 렌더 진행 중이었는지(완료 전이 감지용)
     var polling = false;
+    var idleTicks = 0;          // 연속으로 '아무것도 안 도는' 응답을 받은 횟수(폴링 백오프용)
     var reanalyzeUrl = "/video/" + VID + "/reanalyze_status";
     var wasReanalyzing = false;  // 팝업을 닫아도(만들기 전 확인 창) 재분석은 서버에서 계속 돌고,
     // 이 위젯이 이어서 진행률을 보여준다("팝업 나가면 취소되는 것처럼 보인다"는 신고 수정.
@@ -1110,17 +1112,24 @@ CANDIDATES_TEMPLATE = f"""
     }}
     function poll() {{
       fetch(statusUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
+        var idle = false;   // 이번 응답 기준으로 '아무것도 안 돌고 있음'이면 아래에서 백오프
         if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
         if (j.rendering) {{ wasRendering = true; showProg(j.render_pct, j.render_message || '쇼츠 렌더링 중…', j.render_eta_seconds); }}
         else if (wasRendering) {{ wasRendering = false; onRenderDone(); }}
         else if (!j.ready && j.status !== 'error') {{ showProg(j.pct, j.message || '분석 중…', j.eta_seconds); }}
-        else {{ pollReanalyze(); }}   // 렌더/분석이 안 도는 동안만 재분석 상태를 확인(위젯 하나 공유)
-        setTimeout(poll, 800);
+        else {{ pollReanalyze(); idle = true; }}   // 렌더/분석이 안 도는 동안만 재분석 상태를 확인(위젯 하나 공유)
+        // 놀고 있을 때는 폴링 간격을 늘린다(백오프). 예전엔 조건 없이 800ms로 자기를 다시
+        // 걸어서, 분석·렌더가 다 끝난 뒤에도 초당 2회 요청이 영원히 나갔다(실측: 페이지를
+        // 열어둔 9시간 28분 동안 계속 — server_err.txt 1MB). 배터리/CPU를 먹고, 터널로
+        // 열어두면 그대로 외부 트래픽이 된다. 뭔가 시작되면 즉시 800ms로 되돌아간다.
+        if (idle) {{ idleTicks++; }} else {{ idleTicks = 0; }}
+        setTimeout(poll, idle ? Math.min(10000, 800 * Math.pow(2, Math.min(idleTicks, 4))) : 800);
       }}).catch(function() {{ setTimeout(poll, 1500); }});
     }}
     // 버튼 클릭 시 호출: 이번에 렌더할 인덱스를 기억하고 즉시 위젯을 띄운다.
     window.__startRenderWatch = function(indices) {{
       renderIndices = indices; wasRendering = true;
+      idleTicks = 0;   // 백오프 초기화 — 방금 시작한 렌더는 800ms 간격으로 즉시 따라붙는다
       showProg(0, '렌더링 시작…', null);
       if (!polling) {{ polling = true; poll(); }}
     }};
@@ -1171,10 +1180,7 @@ def analyze_route():
     force = bool(body.get("force"))
     # 선정 모델은 UI 라디오(소넷/오푸스)에서 온다. 임의 문자열을 CLI에 넘기지 않도록
     # 허용 목록으로 제한하고, 벗어나면 빈 값("")으로 둬 analyze()가 config 기본을 쓴다.
-    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
-    model = (body.get("model") or "").strip()
-    if model and model not in _ALLOWED_MODELS:
-        model = ""
+    model = sanitize_model(body.get("model") or "")
     # 인덱스의 말씀/찬양 버튼. 허용 목록 밖 값은 기본(말씀)으로.
     mode = (body.get("mode") or "sermon").strip()
     if mode not in ("sermon", "praise"):
@@ -1223,10 +1229,7 @@ def analyze_upload_route():
     mode = (request.form.get("mode") or "sermon").strip()
     if mode not in ("sermon", "praise"):
         mode = "sermon"
-    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
-    model = (request.form.get("model") or "").strip()
-    if model and model not in _ALLOWED_MODELS:
-        model = ""
+    model = sanitize_model(request.form.get("model") or "")
     # 찬양 곡 제목(한 줄에 한 곡, 부른 순서). 입력하면 whisper 전사를 건너뛰고 정식 가사를
     # 자막으로 쓴다(사용자 요청 2026-09-05: 노래 전사 정확도가 너무 낮음). sermon엔 무의미.
     song_titles = (request.form.get("song_titles") or "").strip() if mode == "praise" else ""
@@ -7320,12 +7323,9 @@ def correct_captions_route(video_id: str, idx: int):
     in_lines = body.get("captions") or []
     if not in_lines:
         return jsonify({"error": "교정할 자막이 없습니다"}), 400
-    model = (body.get("model") or "").strip()
-    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
-    if model and model not in _ALLOWED_MODELS:
-        model = ""
+    model = sanitize_model(body.get("model") or "")
     # 자막 교정은 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
-    model = model or "claude-sonnet-4-5"
+    model = model or EXECUTION_MODEL
 
     from src.highlights import correct_sermon_captions
 
@@ -7379,7 +7379,7 @@ def fetch_lyrics_route(video_id: str, idx: int):
     try:
         # 가사 검색도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
         lyrics_by_idx = fetch_praise_lyrics_by_titles(
-            [title], model="claude-sonnet-4-5",
+            [title], model=EXECUTION_MODEL,
             thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
         )
     except Exception as e:  # noqa: BLE001
@@ -7424,12 +7424,9 @@ def translate_captions_route(video_id: str, idx: int):
     in_lines = body.get("captions") or []
     if not in_lines:
         return jsonify({"error": "번역할 자막이 없습니다"}), 400
-    model = (body.get("model") or "").strip()
-    _ALLOWED_MODELS = {"claude-sonnet-4-5", "claude-opus-4-8", "claude-fable-5"}
-    if model and model not in _ALLOWED_MODELS:
-        model = ""
+    model = sanitize_model(body.get("model") or "")
     # 번역도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 기본 Sonnet(2026-09-06).
-    model = model or "claude-sonnet-4-5"
+    model = model or EXECUTION_MODEL
 
     from src.highlights import translate_captions_to_english
 
@@ -7468,4 +7465,10 @@ if __name__ == "__main__":
     # 반응해 서버를 재시작하면 진행 중이던 작업(및 메모리 상 _jobs 상태)이 통째로 날아간다
     # (실제로 겪은 문제: 관련 없는 스크립트 파일이 바뀌었는데도 분석 작업이 끊김).
     # 코드를 고친 뒤에는 터미널에서 수동으로 재시작해야 한다.
-    app.run(debug=True, use_reloader=False, threaded=True, host="0.0.0.0", port=5000)
+    # debug=True는 절대 쓰지 않는다. Werkzeug 디버거가 켜지면 예외가 나는 순간 브라우저에서
+    # 임의의 파이썬 코드를 실행할 수 있는 콘솔이 열리는데(use_reloader=False로도 안 꺼진다),
+    # README가 안내하는 cloudflared 터널로 이 서버를 공개하면 그 콘솔이 인터넷에 그대로
+    # 노출된다 = 이 PC 원격 장악. 라우트에 인증도 없으므로 기본 바인드도 루프백으로 둔다.
+    # 외부(터널/휴대폰)에서 써야 할 때만 SHORTS_HOST=0.0.0.0 로 명시적으로 연다.
+    host = os.environ.get("SHORTS_HOST", "127.0.0.1")
+    app.run(debug=False, use_reloader=False, threaded=True, host=host, port=5000)

@@ -28,6 +28,7 @@ from src.render import _probe_display_resolution
 from src.highlights import (
     CLIPS_LOCK,
     Clip,
+    QuotaExceededError,
     build_prompt,
     load_clips_json,
     save_clips_json,
@@ -42,6 +43,7 @@ from src.highlights import (
     refine_titles,
 )
 from src.feedback import format_feedback_for_prompt, load_feedback
+from src.models import EXECUTION_MODEL
 from src.render import render_clip
 from src.transcribe import Segment, Word, transcribe_and_save, transcribe_clip_precise, Transcript
 from src.transcript_import import (
@@ -425,7 +427,7 @@ def _title_based_praise_clips(
     # 가사 검색/자막 텍스트 확정은 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 항상
     # Sonnet 고정(2026-09-06, 사용자 결정: 분석은 Opus, 자막 실행은 Sonnet).
     lyrics_by_idx = fetch_praise_lyrics_by_titles(
-        title_lines, model="claude-sonnet-4-5",
+        title_lines, model=EXECUTION_MODEL,
         thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
         on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
     )
@@ -1448,7 +1450,7 @@ def analyze(
                     if req:
                         # 자막 교정도 '자막 실행' 단계 — 분석용 모델(opus)과 무관하게 Sonnet 고정.
                         fixed = correct_praise_lyrics(
-                            req, model="claude-sonnet-4-5",
+                            req, model=EXECUTION_MODEL,
                             thinking_tokens=int(p.get("lyrics_thinking_tokens", 2048)),
                         )
                         for ci, c in enumerate(clips):
@@ -1531,6 +1533,11 @@ def analyze(
                     extra_block=feedback_block,
                     on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
                 )
+            except QuotaExceededError:
+                # 한도 소진은 폴백 대상이 아니다. v1을 또 부르면 확정 실패할 CLI 호출을
+                # 한 번 더 태워 남은 한도만 갉아먹고, 사용자에겐 진짜 원인(한도) 대신
+                # v1의 2차 오류가 보인다. 그대로 올려 보내 "한도 도달"을 정확히 알린다.
+                raise
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
                 print("[main] v2 선정 실패 — v1 단일 프롬프트로 폴백", flush=True)
@@ -2039,7 +2046,7 @@ def render_selected(
             **cfg["render"],
             "caption_bilingual": caption_lang == "bilingual",
             "caption_en_only": caption_lang == "en",
-            "caption_translate_model": "claude-sonnet-4-5",
+            "caption_translate_model": EXECUTION_MODEL,
         }
     if motion_enabled is not None:
         # 모션그래픽(제목 팝 + 자막 페이드): captions.animate로 전달(렌더의 pr_captions도 상속).

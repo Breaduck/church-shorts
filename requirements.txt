@@ -5,6 +5,9 @@ numpy>=1.26.0
 librosa>=0.10.0
 soundfile>=0.12.0
 PyYAML>=6.0
+# fonts.py가 폰트 name 테이블에서 family 이름을 읽고(ASS Fontname), captions.py가 제목
+# 크기를 실측(_fit_title_font_size)하는 데 쓴다. 최상단 import라 없으면 편집기가 아예 안 뜬다.
+fonttools>=4.50
 Flask>=3.0.0
 python-dotenv>=1.0.0
 google-api-python-client>=2.100.0

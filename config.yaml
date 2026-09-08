@@ -84,7 +84,7 @@ highlights:
   # 우선이라 Opus를 기본으로 쓴다(속도·비용보다 선정 품질). 빈 값("")이면 claude CLI 기본
   # 모델을 따른다(예전 동작). 자막 교정/번역 같은 '실행' 단계는 여기 값과 무관하게 항상
   # Sonnet으로 고정해 호출부에서 직접 처리한다(correct_sermon_captions/translate_captions 등).
-  model: "claude-opus-4-8"
+  model: "claude-opus-5"
   # 선정 엔진(2026-09-08). "v2" = 문장 단위 재조립 → 명제 지도+컷(위 model, Opus) → 결정론적
   # 검증(핵심 문장 포함·미완 끝 확장·구조 표지 제거·길이) → 실제 대사 채점(score_model, Sonnet).
   # "v1" = 예전 단일 프롬프트(highlights.build_prompt). v2가 예외로 실패하면 자동으로 v1 폴백.
@@ -140,7 +140,7 @@ highlights:
 praise:
   # 곡 구간 감지(분석 단계)용 모델 — 하이라이트 선정과 같은 정책으로 Opus 기본(2026-09-06).
   # 가사 교정/가사 가져오기 같은 '자막 실행' 호출은 이 값을 쓰지 않고 항상 Sonnet 고정.
-  model: "claude-opus-4-8"
+  model: "claude-opus-5"
   thinking_tokens: 4096        # 60분+ 전사본에서 노래/말 구분 + 곡 식별에 필요한 사고 공간
   min_duration_sec: 60         # 이보다 훨씬 짧으면 멘트/간주로 보고 제외
   max_duration_sec: 420        # 곡 하나 상한(7분). 넘으면 여러 곡을 합쳤을 가능성 → 제외

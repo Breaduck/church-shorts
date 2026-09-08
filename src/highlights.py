@@ -30,6 +30,15 @@ from src.scoring import compute_scores
 from src.transcribe import Transcript
 
 
+class QuotaExceededError(RuntimeError):
+    """Claude 구독 세션 한도 소진. 재시도해봐야 확정 실패하는 오류다.
+
+    RuntimeError를 상속하므로 기존 `except Exception`/`except RuntimeError` 처리는 그대로
+    동작한다. 별도 타입으로 나눈 이유는 '실패하면 다른 엔진으로 폴백' 같은 재시도 경로가
+    이 오류에는 반응하면 안 되기 때문이다 — 한도가 찼는데 v1을 또 부르면 확정 실패할
+    CLI 호출을 한 번 더 태워 남은 한도만 갉아먹는다(분석 1회에 최대 4~5회 호출이 나갔다)."""
+
+
 @dataclass
 class Clip:
     start: float
@@ -703,7 +712,7 @@ def _invoke_claude_json(
         ))
 
     def _raise_quota(raw: str):
-        raise RuntimeError(
+        raise QuotaExceededError(
             "Claude 사용량(세션) 한도에 도달했습니다. 한도가 리셋된 뒤 다시 시도하거나, "
             "구독과 별개인 ANTHROPIC_API_KEY를 설정해 API 경로로 돌리세요.\n"
             f"원문: {raw.strip()[:300]}"
@@ -1472,7 +1481,25 @@ def load_clips_json(path: Path) -> list[Clip]:
 
 
 def save_clips_json(clips: list[Clip], path: Path) -> None:
+    """clips.json을 원자적으로 저장한다(임시파일 → fsync → os.replace).
+
+    왜 write_text를 쓰면 안 되나: write_text는 대상 파일을 먼저 0바이트로 자르고 쓴다.
+    이 파일 하나에 제목·자막(caption_overrides)·트림·keep_ranges·스타일 60여 필드,
+    즉 그 영상 작업물 전체가 들어 있어서, 쓰는 도중에 프로세스가 죽으면(서버 창 닫기,
+    ffmpeg OOM, 강제종료) 작업이 통째로 사라진다. os.replace는 같은 볼륨에서 원자적이라
+    '옛 내용 그대로' 아니면 '새 내용 그대로' 둘 중 하나만 남는다.
+    직전 버전은 .bak으로 한 세대 남겨, 상위 로직 버그로 빈 배열을 저장해버린 경우에도
+    수동 복구가 가능하게 한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    data = json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=2)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())  # 전원이 나가도 내용이 디스크에 도달했음을 보장
+    if path.exists():
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except OSError:
+            pass  # 백업 실패가 저장 자체를 막으면 안 된다
+    os.replace(tmp, path)
