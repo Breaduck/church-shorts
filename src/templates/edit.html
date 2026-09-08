@@ -1,0 +1,500 @@
+
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>위치 편집 - {{ video_id }}</title>
+__BASE_STYLE__
+<style>
+  .canvas-wrap { display: flex; justify-content: center; margin: 24px 0; }
+  .canvas {
+    position: relative; width: {{ layout.canvas_w }}px; height: {{ layout.canvas_h }}px;
+    background: #f7f8fa; border-radius: 20px; box-shadow: var(--shadow); overflow: hidden;
+  }
+  .video-box { position: absolute; background: #000; overflow: hidden; }
+  .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .drag-box {
+    position: absolute; cursor: grab; touch-action: none; user-select: none;
+    transform: translate(-50%, 0); text-align: center; white-space: nowrap;
+    padding: 4px 10px; border-radius: 8px; border: 1.5px dashed transparent;
+  }
+  .drag-box:hover, .drag-box.dragging { border-color: var(--accent); background: rgba(49,130,246,0.08); }
+  .drag-box.title {
+    font-weight: 800; color: #191f28;
+    /* 렌더(libass)처럼 긴 제목은 2줄로 자연 줄바꿈(1.4배 부스트와 일치). nowrap이면
+       fitToWidth가 한 줄로 다시 쪼그라뜨려 미리보기가 실제보다 작아 보인다. */
+    white-space: normal; word-break: keep-all;
+    max-width: {{ ((layout.resolution[0] - 80) * layout.scale)|round|int }}px;
+  }
+  .drag-box.caption { font-weight: 700; color: #191f28; }
+  .hint { color: var(--text-muted); font-size: 13px; text-align: center; margin-top: 4px; }
+  .btn-row { display: flex; gap: 10px; margin-top: 20px; }
+  .btn-row button, .btn-row a {
+    flex: 1; text-align: center; padding: 14px; border-radius: 14px; font-size: 14px; font-weight: 600;
+    font-family: inherit; border: none; cursor: pointer; text-decoration: none;
+  }
+  #resetBtn { background: var(--border); color: var(--text); }
+  #saveBtn { background: var(--accent); color: #fff; }
+  #saveStatus { text-align: center; color: var(--text-muted); font-size: 13px; margin-top: 10px; min-height: 16px; }
+  .cap-editor { margin-top: 28px; }
+  .cap-editor h2 { font-size: 17px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .cap-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 14px; }
+  .cap-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .cap-time {
+    flex-shrink: 0; width: 52px; text-align: right; font-size: 12px; font-weight: 600;
+    color: var(--text-faint); font-variant-numeric: tabular-nums;
+  }
+  /* input[type=text]의 전역 width:100%/margin-top(BASE_STYLE)보다 상위 명시도가 필요해
+     .cap-row input.cap-input로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
+  .cap-row input.cap-input {
+    flex: 1; min-width: 0; padding: 10px 12px; font-size: 14px; font-family: inherit;
+    border: 1.5px solid var(--border); border-radius: 10px; background: #fafbfc;
+    transition: border-color .15s, background .15s; width: auto; margin-top: 0;
+  }
+  .cap-input:focus { outline: none; border-color: var(--accent); background: #fff; }
+  .cap-empty { color: var(--text-faint); font-size: 13px; }
+  .title-edit { margin: 0 0 22px; }
+  .title-edit label { display: block; font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+  .title-edit input {
+    width: 100%; padding: 13px 15px; font-size: 16px; font-weight: 700; font-family: inherit;
+    border: 1.5px solid var(--border); border-radius: 12px; background: #fafbfc;
+  }
+  .title-edit input:focus { outline: none; border-color: var(--accent); background: #fff; }
+  /* input[type=number]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가 필요해
+     .cap-row input.cap-num로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
+  .cap-row input.cap-num {
+    width: 54px; flex-shrink: 0; padding: 8px 4px; font-size: 12px; text-align: center; font-family: inherit;
+    border: 1.5px solid var(--border); border-radius: 8px; background: #fafbfc;
+    font-variant-numeric: tabular-nums;
+  }
+  .cap-num:focus { outline: none; border-color: var(--accent); background: #fff; }
+  .cap-del {
+    flex-shrink: 0; width: 32px; height: 32px; border: none; border-radius: 8px;
+    background: var(--border); color: var(--text-muted); font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  .cap-del:hover { background: #ffe3e3; color: #e02424; }
+  .cap-add {
+    margin-top: 8px; padding: 10px 16px; font-size: 13px; font-weight: 600; font-family: inherit;
+    color: var(--accent); background: #eef4ff; border: none; border-radius: 10px; cursor: pointer;
+  }
+  .cap-add:hover { background: #dfeafe; }
+  #renderBtn {
+    width: 100%; margin-top: 12px; padding: 15px; font-size: 15px; font-weight: 700; font-family: inherit;
+    color: #fff; background: var(--accent); border: none; border-radius: 14px; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(49,130,246,0.28);
+  }
+  #renderBtn:hover { background: var(--accent-hover); }
+  #renderBtn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+  .hidden { display: none; }
+  #renderResult video { width: 100%; max-width: 300px; display: block; margin: 14px auto 0; border-radius: 14px; background: #000; }
+  .ed-card { background: var(--card); border-radius: 16px; box-shadow: var(--shadow); padding: 20px 22px; margin-bottom: 14px; }
+  .ed-card h2 { font-size: 16px; font-weight: 700; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .ed-card .cap-sub { margin-top: 0; }
+  .sty-h { font-size: 13px; font-weight: 700; color: var(--text-muted); margin: 16px 0 6px; }
+  .sty-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .sty-row > label { font-size: 13px; font-weight: 600; color: var(--text-muted); width: 44px; flex-shrink: 0; }
+  .sty-row select { flex: 1; }
+  .sty-grid { display: grid; grid-template-columns: 1fr 70px 86px 70px; gap: 8px; }
+  .trim-num { width: 88px; }
+  .unit { font-size: 13px; color: var(--text-muted); }
+  .title-input {
+    width: 100%; padding: 13px 15px; font-size: 16px; font-weight: 700; font-family: inherit;
+    border: 1.5px solid var(--border); border-radius: 12px; background: #fafbfc;
+  }
+  .title-input:focus { outline: none; border-color: var(--accent); background: #fff; }
+  .sty-grid select, .sty-grid input, .sty-row select, .sty-row input {
+    padding: 9px 10px; font-size: 13px; font-family: inherit; border: 1.5px solid var(--border);
+    border-radius: 9px; background: #fafbfc; min-width: 0;
+  }
+  .sty-grid select:focus, .sty-grid input:focus, .sty-row select:focus, .sty-row input:focus { outline: none; border-color: var(--accent); background: #fff; }
+  /* 추천 제목 후보 칩 */
+  .title-cands { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .title-cand {
+    text-align: left; padding: 12px 14px; font-size: 14.5px; font-weight: 600; font-family: inherit;
+    color: var(--text); background: #fafbfc; border: 1.5px solid var(--border); border-radius: 12px;
+    cursor: pointer; transition: border-color .15s, background .15s; line-height: 1.4;
+  }
+  .title-cand:hover { border-color: var(--accent); background: #f0f6ff; }
+  .title-cand.sel { border-color: var(--accent); background: #eef4ff; color: var(--accent); }
+  /* 세부 편집 접기 */
+  details.advanced { background: transparent; box-shadow: none; padding: 0; margin-bottom: 14px; }
+  details.advanced > summary {
+    cursor: pointer; list-style: none; padding: 15px 20px; background: var(--card);
+    border-radius: 14px; box-shadow: var(--shadow); font-size: 15px; font-weight: 700;
+    color: var(--text); display: flex; align-items: center; justify-content: space-between;
+  }
+  details.advanced > summary::-webkit-details-marker { display: none; }
+  details.advanced > summary::after { content: '▾'; color: var(--text-faint); font-size: 13px; transition: transform .2s; }
+  details.advanced[open] > summary::after { transform: rotate(180deg); }
+  details.advanced > summary .sum-sub { font-size: 12.5px; font-weight: 500; color: var(--text-faint); }
+  details.advanced .adv-body { margin-top: 12px; }
+</style>
+<style>
+/* 각 글꼴을 실제 모양으로 미리보기(드롭다운 옵션 + 캔버스). font-display:swap로 늦게 떠도 UI는 안 막힘 */
+{% for f in fonts %}@font-face{ font-family:'{{ f.family }}'; src:url('/font/{{ f.file }}'); font-display:swap; }
+{% endfor %}
+.fontopt option { font-size: 15px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/video/{{ video_id }}">&larr; 후보 목록</a>
+  <h1>제목·자막 위치 편집</h1>
+  <p class="subtitle">글자를 드래그해서 원하는 위치로 옮기세요. #{{ idx + 1 }} 클립 ({{ clip.title }})</p>
+
+  <div class="btn-row" style="margin:14px 0 4px">
+    <button id="resetBtn" type="button">위치 초기화</button>
+    <button id="saveBtn" type="button">저장만</button>
+  </div>
+  <button id="renderBtn" type="button">저장하고 영상 만들기</button>
+  <p id="saveStatus"></p>
+
+  <div class="canvas-wrap">
+    <div class="canvas" id="canvas">
+      <div class="video-box" id="videoBox" style="
+        left: {{ (layout.video_box.x * layout.scale)|round|int }}px;
+        top: {{ (layout.video_box.y * layout.scale)|round|int }}px;
+        width: {{ (layout.video_box.w * layout.scale)|round|int }}px;
+        height: {{ (layout.video_box.h * layout.scale)|round|int }}px;
+        border-radius: {{ (layout.video_box.r * layout.scale)|round|int }}px;">
+        <img src="/media/{{ video_id }}/preview/{{ idx }}.jpg" alt="미리보기 프레임">
+      </div>
+      <div class="drag-box title" id="titleBox" style="font-size: {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }}px; white-space: nowrap;">
+        {{ clip.title }}
+      </div>
+      <div class="drag-box caption" id="captionBox" style="font-size: {{ (layout.caption_font_size * layout.caption_ass_coeff * layout.scale)|round|int }}px;">
+        {{ caption_preview }}
+      </div>
+    </div>
+  </div>
+  <p class="hint">글자를 드래그해 위치를 옮기고, 아래에서 화면·글꼴·자막을 편집하세요. 최종 결과는 렌더링해야 반영됩니다.</p>
+
+  <section class="ed-card">
+    <h2>제목</h2>
+    <input type="text" id="titleInput" class="title-input" value="{{ clip.title }}">
+    {% if clip.title_candidates %}
+    <p class="cap-sub" style="margin:12px 0 0">추천 제목 — 누르면 위에 바로 적용돼요</p>
+    <div class="title-cands">
+      {% for t in clip.title_candidates %}
+      <button type="button" class="title-cand">{{ t }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <details class="advanced">
+    <summary>세부 편집 <span class="sum-sub">화면·글꼴·길이·자막 손보기</span></summary>
+    <div class="adv-body">
+      <section class="ed-card">
+        <h2>영상 길이</h2>
+        <p class="cap-sub">클립 시작·끝을 초 단위로 조절합니다. (전체 {{ '%.1f'|format(clip.end - clip.start) }}초) · 시작을 음수로, 끝을 전체보다 크게 하면 원본에서 앞뒤로 <b>최대 10초까지 늘릴</b> 수 있어요.</p>
+        <div class="sty-row">
+          <label>시작</label>
+          <input type="number" id="trimStart" class="trim-num" min="-10" step="0.5"> <span class="unit">초</span>
+          <label style="width:auto">끝</label>
+          <input type="number" id="trimEnd" class="trim-num" min="0" max="{{ '%.1f'|format(clip.end - clip.start + 10) }}" step="0.5"> <span class="unit">초</span>
+        </div>
+      </section>
+
+      <section class="ed-card">
+        <h2>스타일</h2>
+        <div class="sty-row">
+          <label>화면</label>
+          <select id="fillMode">
+            <option value="fit">풀 화면 (유튜브 원본 그대로, 안 잘림)</option>
+            <option value="cover">화면 확대 (세로 꽉 채움, 좌우·하단 잘림)</option>
+          </select>
+        </div>
+        <div class="sty-h">제목 — 글꼴 · 크기 · 정렬 · 자간</div>
+        <div class="sty-grid">
+          <select id="titleFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
+          <input type="number" id="titleSize" min="20" max="400" step="2" title="크기(px)">
+          <select id="titleAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
+          <input type="number" id="titleSpacing" step="0.5" title="자간(px)">
+        </div>
+        <div class="sty-h">자막 — 글꼴 · 크기 · 정렬 · 자간</div>
+        <div class="sty-grid">
+          <select id="captionFont" class="fontopt">{% for f in fonts %}<option value="{{ f.family }}" style="font-family:'{{ f.family }}',sans-serif">{{ f.name }}</option>{% endfor %}</select>
+          <input type="number" id="captionSize" min="20" max="300" step="2" title="크기(px)">
+          <select id="captionAlign"><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select>
+          <input type="number" id="captionSpacing" step="0.5" title="자간(px)">
+        </div>
+      </section>
+
+      <section class="ed-card">
+        <h2>자막</h2>
+        <p class="cap-sub">왼쪽 두 칸은 시작·끝 시간(클립 시작 기준 초). 내용을 고치고 칸을 추가/삭제하세요.</p>
+        <div id="capList">
+          {% for c in caption_lines %}
+          <div class="cap-row">
+            <input type="number" class="cap-num cap-start" step="0.1" value="{{ '%.1f'|format(c.start - clip.start) }}">
+            <input type="number" class="cap-num cap-end" step="0.1" value="{{ '%.1f'|format(c.end - clip.start) }}">
+            <input type="text" class="cap-input" value="{{ c.text }}">
+            <button type="button" class="cap-del" title="삭제">&times;</button>
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="cap-add" id="capAdd">+ 자막 칸 추가</button>
+      </section>
+    </div>
+  </details>
+
+  <div class="prog-card hidden" id="renderProg" style="margin-top:16px">
+    <div class="prog-head">
+      <div class="prog-headL"><span class="prog-msg" id="rpMsg">렌더링 준비...</span><span class="prog-eta" id="rpEta">예상 시간 계산 중…</span></div>
+      <span class="prog-pct" id="rpPct">0%</span>
+    </div>
+    <div class="stepper">
+      <div class="rail"><div class="rail-fill" id="rpFill"></div></div>
+      <div class="step" data-min="0" data-max="50"><span class="dot"></span><span class="lbl">자막 인식</span></div>
+      <div class="step" data-min="50" data-max="99"><span class="dot"></span><span class="lbl">렌더링</span></div>
+      <div class="step" data-min="99" data-max="100"><span class="dot"></span><span class="lbl">완성</span></div>
+    </div>
+  </div>
+  <div id="renderResult"></div>
+</div>
+
+<script>
+const SCALE = {{ layout.scale }};
+const state = {
+  title: { x: {{ clip.title_offset_x }}, y: {{ clip.title_offset_y }} },
+  caption: { x: {{ clip.caption_offset_x }}, y: {{ clip.caption_offset_y }} },
+};
+const bases = {
+  title: { left: {{ layout.resolution[0] / 2 * layout.scale }}, top: {{ layout.title_base_margin_v * layout.scale }} },
+  caption: { left: {{ layout.resolution[0] / 2 * layout.scale }}, top: {{ layout.caption_base_margin_v * layout.scale }} },
+};
+
+function render(el, key) {
+  el.style.left = (bases[key].left + state[key].x * SCALE) + 'px';
+  el.style.top = (bases[key].top + state[key].y * SCALE) + 'px';
+}
+
+function makeDraggable(el, key) {
+  let dragging = false;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
+
+  el.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    el.classList.add('dragging');
+    el.setPointerCapture(e.pointerId);
+    startX = e.clientX; startY = e.clientY;
+    origX = state[key].x; origY = state[key].y;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    state[key].x = origX + (e.clientX - startX) / SCALE;
+    state[key].y = origY + (e.clientY - startY) / SCALE;
+    render(el, key);
+  });
+  const stop = () => { dragging = false; el.classList.remove('dragging'); };
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointercancel', stop);
+}
+
+const titleEl = document.getElementById('titleBox');
+const captionEl = document.getElementById('captionBox');
+const titleInput = document.getElementById('titleInput');
+const CLIP_START = {{ clip.start }};
+const CLIP_DUR = {{ '%.2f'|format(clip.end - clip.start) }};
+const TITLE_BASE_FS = {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }};
+
+// 실제 렌더(libass)는 제목/자막을 프레임 폭(좌우 여백 40px 제외) 안에 맞춘다. 하지만
+// 브라우저는 한글 글리프를 libass보다 넓게 그려서, 같은 폰트 크기라도 미리보기에서만
+// 글자가 캔버스를 넘쳐 "과도하게 커" 보였다. 그래서 미리보기도 실제처럼 사용 가능한
+// 프레임 폭 안에 들어가도록 폰트를 축소해, 결과물과 시각적으로 일치시킨다.
+const USABLE_W = ({{ layout.resolution[0] }} - 80) * SCALE;
+function fitToWidth(el, maxPx) {
+  let fs = parseFloat(getComputedStyle(el).fontSize);
+  let guard = 0;
+  while (el.scrollWidth > maxPx && fs > 5 && guard < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; guard++; }
+}
+fitToWidth(titleEl, USABLE_W);
+fitToWidth(captionEl, USABLE_W);
+
+makeDraggable(titleEl, 'title');
+makeDraggable(captionEl, 'caption');
+render(titleEl, 'title');
+render(captionEl, 'caption');
+
+// 제목 편집 → 미리보기 즉시 반영(폰트도 다시 맞춤)
+titleInput.addEventListener('input', () => {
+  titleEl.textContent = titleInput.value || ' ';
+  titleEl.style.fontSize = TITLE_BASE_FS + 'px';
+  fitToWidth(titleEl, USABLE_W);
+});
+
+// 추천 제목 후보: 누르면 제목 칸에 적용 + 미리보기 갱신.
+document.querySelectorAll('.title-cand').forEach(function(chip) {
+  chip.addEventListener('click', function() {
+    titleInput.value = chip.textContent.trim();
+    titleInput.dispatchEvent(new Event('input'));
+    document.querySelectorAll('.title-cand').forEach(x => x.classList.remove('sel'));
+    chip.classList.add('sel');
+  });
+});
+
+// 자막 칸 추가/삭제
+const capList = document.getElementById('capList');
+function addRow(startRel, endRel, text) {
+  const row = document.createElement('div');
+  row.className = 'cap-row';
+  row.innerHTML =
+    '<input type="number" class="cap-num cap-start" step="0.1">' +
+    '<input type="number" class="cap-num cap-end" step="0.1">' +
+    '<input type="text" class="cap-input">' +
+    '<button type="button" class="cap-del" title="삭제">&times;</button>';
+  row.querySelector('.cap-start').value = startRel.toFixed(1);
+  row.querySelector('.cap-end').value = endRel.toFixed(1);
+  row.querySelector('.cap-input').value = text || '';
+  capList.appendChild(row);
+}
+document.getElementById('capAdd').addEventListener('click', () => {
+  const rows = capList.querySelectorAll('.cap-row');
+  let s = 0;
+  if (rows.length) s = parseFloat(rows[rows.length - 1].querySelector('.cap-end').value) || 0;
+  addRow(s, s + 2, '');
+});
+capList.addEventListener('click', (e) => {
+  if (e.target.classList.contains('cap-del')) e.target.closest('.cap-row').remove();
+});
+
+function collectCaptions() {
+  return [...capList.querySelectorAll('.cap-row')].map(function(r) {
+    const s = parseFloat(r.querySelector('.cap-start').value);
+    const en = parseFloat(r.querySelector('.cap-end').value);
+    return { start: CLIP_START + (isNaN(s) ? 0 : s), end: CLIP_START + (isNaN(en) ? 0 : en),
+             text: r.querySelector('.cap-input').value };
+  });
+}
+// 스타일 컨트롤 초기값 세팅(클립에 저장된 값 우선, 없으면 config 기본값)
+const CUR = {
+  fill_mode: '{{ clip.fill_mode or defaults.fill_mode }}',
+  title_font: '{{ clip.title_font or defaults.title_font }}',
+  title_size: {{ clip.title_size or defaults.title_size }},
+  title_align: '{{ clip.title_align or "center" }}',
+  title_spacing: {{ clip.title_spacing or 0 }},
+  caption_font: '{{ clip.caption_font or defaults.caption_font }}',
+  caption_size: {{ clip.caption_size or defaults.caption_size }},
+  caption_align: '{{ clip.caption_align or "center" }}',
+  caption_spacing: {{ clip.caption_spacing or 0 }},
+};
+function setVal(id, v) { const el = document.getElementById(id); if (el != null) el.value = v; }
+setVal('fillMode', CUR.fill_mode);
+setVal('titleFont', CUR.title_font); setVal('titleSize', CUR.title_size);
+setVal('titleAlign', CUR.title_align); setVal('titleSpacing', CUR.title_spacing);
+setVal('captionFont', CUR.caption_font); setVal('captionSize', CUR.caption_size);
+setVal('captionAlign', CUR.caption_align); setVal('captionSpacing', CUR.caption_spacing);
+setVal('trimStart', '0'); setVal('trimEnd', CLIP_DUR.toFixed(1));
+function val(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+// 선택한 글꼴을 캔버스 미리보기에 즉시 반영(@font-face로 로드된 실제 글꼴)
+function applyFontPreview() {
+  if (titleEl && val('titleFont')) titleEl.style.fontFamily = "'" + val('titleFont') + "', sans-serif";
+  if (captionEl && val('captionFont')) captionEl.style.fontFamily = "'" + val('captionFont') + "', sans-serif";
+  titleEl.style.fontSize = TITLE_BASE_FS + 'px';
+  fitToWidth(titleEl, USABLE_W);
+}
+document.getElementById('titleFont').addEventListener('change', applyFontPreview);
+document.getElementById('captionFont').addEventListener('change', applyFontPreview);
+document.fonts && document.fonts.ready.then(applyFontPreview);
+applyFontPreview();
+
+function payload() {
+  const p = {
+    title: titleInput.value,
+    title_offset_x: state.title.x, title_offset_y: state.title.y,
+    caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
+    captions: collectCaptions(),
+    fill_mode: val('fillMode'),
+    title_font: val('titleFont'), title_size: val('titleSize'),
+    title_align: val('titleAlign'), title_spacing: val('titleSpacing'),
+    caption_font: val('captionFont'), caption_size: val('captionSize'),
+    caption_align: val('captionAlign'), caption_spacing: val('captionSpacing'),
+  };
+  // 영상 길이를 실제로 조절했을 때만 전송(안 건드리면 문장 끝 자동 확장 유지).
+  const ts = parseFloat(val('trimStart')) || 0;
+  const te = parseFloat(val('trimEnd'));
+  if (Math.abs(ts - 0) > 0.05 || Math.abs((isNaN(te) ? CLIP_DUR : te) - CLIP_DUR) > 0.05) {
+    p.clip_start = CLIP_START + ts;
+    p.clip_end = CLIP_START + (isNaN(te) ? CLIP_DUR : te);
+  }
+  return p;
+}
+async function save() {
+  const res = await fetch('/video/{{ video_id }}/clip/{{ idx }}/position', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload()),
+  });
+  return res.ok;
+}
+
+const statusEl = document.getElementById('saveStatus');
+document.getElementById('resetBtn').addEventListener('click', () => {
+  state.title = { x: 0, y: 0 };
+  state.caption = { x: 0, y: 0 };
+  render(titleEl, 'title');
+  render(captionEl, 'caption');
+});
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  statusEl.innerText = '저장 중...';
+  statusEl.innerText = (await save()) ? '저장됨. "저장하고 영상 만들기"로 렌더링하세요.' : '저장 실패';
+});
+
+// 저장하고 영상 만들기 (+ 진행바)
+const prog = document.getElementById('renderProg');
+const rpFill = document.getElementById('rpFill');
+const rpMsg = document.getElementById('rpMsg');
+const rpPct = document.getElementById('rpPct');
+const steps = [...prog.querySelectorAll('.step')];
+function paint(pct, msg) {
+  pct = Math.max(0, Math.min(100, pct || 0));
+  rpFill.style.width = pct + '%';
+  rpPct.textContent = Math.round(pct) + '%';
+  if (msg) rpMsg.textContent = msg;
+  steps.forEach(function(s) {
+    var mn = parseFloat(s.dataset.min), mx = parseFloat(s.dataset.max);
+    s.classList.remove('active', 'done');
+    if (pct >= mx) s.classList.add('done'); else if (pct >= mn) s.classList.add('active');
+  });
+}
+document.getElementById('renderBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('renderBtn');
+  statusEl.innerText = '저장 중...';
+  if (!(await save())) { statusEl.innerText = '저장 실패'; return; }
+  statusEl.innerText = '';
+  btn.disabled = true;
+  prog.classList.remove('hidden');
+  document.getElementById('renderResult').innerHTML = '';
+  paint(0, '렌더링 시작...');
+  const r = await fetch('/video/{{ video_id }}/render', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ indices: [{{ idx }}] }),
+  });
+  if (!r.ok) { paint(0, '렌더 요청 실패'); btn.disabled = false; return; }
+  var rpEta = document.getElementById('rpEta');
+  function fmtEta(s) {
+    if (s == null || s < 0) return '';
+    s = Math.round(s);
+    if (s < 60) return '약 ' + Math.max(1, s) + '초 남음';
+    return '약 ' + Math.round(s / 60) + '분 남음';
+  }
+  function poll() {
+    fetch('/video/{{ video_id }}/status').then(x => x.json()).then(function(j) {
+      paint(j.render_pct, j.render_message);
+      if (rpEta) rpEta.textContent = fmtEta(j.render_eta_seconds) || '예상 시간 계산 중…';
+      if (j.render_error) { rpMsg.textContent = '오류: ' + j.render_error; btn.disabled = false; return; }
+      if (!j.rendering) {
+        paint(100, '완성');
+        if (rpEta) rpEta.textContent = '거의 완료…';
+        document.getElementById('renderResult').innerHTML =
+          '<video controls src="/media/{{ video_id }}/{{ idx + 1 }}.mp4?t=' + Date.now() + '"></video>';
+        btn.disabled = false; return;
+      }
+      setTimeout(poll, 650);
+    }).catch(function() { setTimeout(poll, 1200); });
+  }
+  setTimeout(poll, 800);
+});
+</script>
+</body>
+</html>

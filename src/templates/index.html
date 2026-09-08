@@ -1,0 +1,278 @@
+
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>교회 쇼츠 시스템</title>
+__BASE_STYLE__
+<style>
+  .adv { margin-top: 12px; }
+  .adv summary {
+    cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted);
+    padding: 4px 2px; user-select: none; list-style-position: inside;
+  }
+  .adv summary:hover { color: var(--text); }
+  .seg { display: flex; gap: 2px; background: rgba(120,120,128,0.12); -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px); padding: 3px; border-radius: 12px; }
+  .seg label {
+    flex: 1; text-align: center; cursor: pointer; border-radius: 9px; padding: 18px 8px;
+    font-size: 14.5px; font-weight: 700; color: var(--text-muted); transition: background .2s, color .2s, box-shadow .2s;
+  }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label:has(input:checked) { background: #fff; color: var(--accent);
+    box-shadow: 0 1px 1px rgba(0,0,0,.04), 0 3px 8px rgba(15,23,42,.10); }
+  /* 우측 상단 버튼 행 — 둥근 흰색 배경 + 그림자(애플 느낌) */
+  .head-btns { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+  .force-toggle {
+    flex: 0 0 auto; padding: 16px 26px; font-size: 15px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 999px; background: #fff; color: var(--text-muted); cursor: pointer;
+    box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 10px 26px rgba(15,23,42,.10);
+    transition: color .15s, box-shadow .15s, transform .1s; white-space: nowrap;
+  }
+  .force-toggle:hover { box-shadow: 0 3px 10px rgba(15,23,42,.10), 0 12px 30px rgba(15,23,42,.14); }
+  .force-toggle:active { transform: scale(0.97); }
+  .force-toggle[aria-pressed="true"] {
+    color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent) inset, 0 2px 6px rgba(15,23,42,.08), 0 10px 26px rgba(15,23,42,.10);
+  }
+  /* 분석 시작 — 파란색 유지, 우측 상단으로 이동(사용자 요청 2026-09-06) */
+  .analyze-btn {
+    flex: 0 0 auto; padding: 16px 30px; font-size: 15px; font-weight: 700; font-family: inherit;
+    color: #fff; background: linear-gradient(180deg, #2a9bff, var(--accent));
+    border: none; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 1px 1px rgba(255,255,255,.35) inset, 0 6px 16px rgba(10,132,255,.32);
+    transition: background .15s, box-shadow .15s, transform .1s;
+  }
+  .analyze-btn:hover { background: linear-gradient(180deg, #1f92ff, var(--accent-hover)); }
+  .analyze-btn:active { transform: scale(0.97); }
+  /* 파일 드래그앤드롭 박스 — 애플 점선 업로드 카드 */
+  .dropzone {
+    margin-top: 14px; padding: 36px 20px; text-align: center; cursor: pointer;
+    border: 1.5px dashed rgba(60,60,67,0.28); border-radius: 18px;
+    background: rgba(120,120,128,0.05); transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  .dropzone:hover { border-color: var(--accent); background: rgba(10,132,255,0.05); }
+  .dropzone.drag { border-color: var(--accent); background: rgba(10,132,255,0.09);
+    box-shadow: 0 0 0 5px rgba(10,132,255,0.08); }
+  .dropzone-icon {
+    width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 50%;
+    background: rgba(10,132,255,0.10); color: var(--accent); font-size: 20px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .dropzone-text { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .dropzone-text b { color: var(--accent); }
+  .dropzone-file { font-size: 13.5px; color: var(--accent); font-weight: 700; margin-top: 4px; }
+  /* 찬양 제목 — 곡마다 개별 입력칸 + 추가 버튼(애플 스타일) */
+  .song-title-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .song-title-row:first-child { margin-top: 0; }
+  .song-title-input {
+    flex: 1; min-width: 0; padding: 12px 16px; font-size: 14.5px; font-family: inherit;
+    border: 1px solid rgba(255,255,255,0.8); border-radius: 12px; background: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 18px rgba(15,23,42,.08);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .song-title-input:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(10,132,255,.14), 0 6px 18px rgba(15,23,42,.08);
+  }
+  .song-title-remove {
+    flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: rgba(120,120,128,0.10); color: var(--text-faint); font-size: 16px; line-height: 1;
+    cursor: pointer; transition: background .15s, color .15s;
+  }
+  .song-title-remove:hover { background: rgba(255,59,48,0.12); color: #ff3b30; }
+  .add-song-btn {
+    margin-top: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 700; font-family: inherit;
+    border: none; border-radius: 999px; background: #fff; color: var(--accent); cursor: pointer;
+    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.08);
+    transition: background .15s, box-shadow .15s, transform .1s;
+  }
+  .add-song-btn:hover { background: #f5f8ff; box-shadow: 0 2px 6px rgba(15,23,42,.08), 0 6px 18px rgba(15,23,42,.10); }
+  .add-song-btn:active { transform: scale(0.97); }
+  /* 사용자 요청(2026-09-06): 제목을 더 굵고 크게 + 말씀/찬양·유튜브 링크 입력·업로드
+     영역을 전체적으로 약 2배 확대. h1/.seg/#url/.dropzone은 BASE_STYLE(전역)에도 있지만
+     아래는 인덱스 페이지 전용 <style> 블록 안이라 다른 페이지(후보 목록 등)에는 영향 없다.
+     2차 피드백(2026-09-06): "글씨 크기가 아니라 칸(박스) 전체를 키우라는 것" — 넓은
+     화면에 비해 카드 자체가 작아 보였던 게 진짜 문제. 그래서 폭·패딩·버튼까지 전부 확대.
+     3차 피드백(2026-09-06): "100% 비율로 보면 너무 크고 67% 비율이 적당" — 2차 확대판을
+     브라우저 67% 축소로 봤을 때가 딱 맞다는 뜻이므로, 아래 모든 값에 0.67을 곱해 축소. */
+  .wrap { max-width: 750px; }
+  .card { padding: 32px 35px; border-radius: 19px; }
+  .page-head { margin-bottom: 6px; }
+  #mainTitle { font-size: 26px; font-weight: 650; letter-spacing: -0.025em; }
+  .force-toggle { padding: 15px 25px; font-size: 13px; }
+  .analyze-btn { padding: 15px 28px; font-size: 13px; }
+  .seg { padding: 4px; border-radius: 12px; margin-bottom: 16px !important; }
+  .seg label { font-size: 17px; padding: 24px 9px; border-radius: 9px; }
+  #url { font-size: 17px; padding: 23px 20px; border-radius: 15px; margin-top: 13px; }
+  .dropzone { padding: 60px 27px; margin-top: 13px; border-radius: 16px; }
+  .dropzone-icon { width: 67px; height: 67px; font-size: 28px; margin-bottom: 15px; }
+  .dropzone-text { font-size: 17px; }
+  .dropzone-file { font-size: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <h1 id="mainTitle">교회 쇼츠 시스템</h1>
+    </div>
+    <div class="head-btns">
+      <button type="button" class="force-toggle" id="forceToggle" aria-pressed="false">새로 분석</button>
+      <button class="analyze-btn" type="submit" form="f">분석 시작</button>
+    </div>
+  </div>
+  <div class="card">
+    <form id="f">
+      <div class="seg" style="margin-bottom:14px">
+        <label><input type="radio" name="mode" value="sermon" checked>말씀</label>
+        <label><input type="radio" name="mode" value="praise">찬양</label>
+      </div>
+      <input type="text" id="url" placeholder="유튜브 링크" autofocus>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="vfile" accept="video/*,.mp4,.mov,.mkv,.avi" style="display:none">
+        <div class="dropzone-icon">&#8593;</div>
+        <div class="dropzone-text" id="dropzoneText">동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b></div>
+      </div>
+      <div id="songTitlesWrap" style="display:none;margin-top:10px">
+        <div id="songTitleRows"></div>
+        <button type="button" id="addSongTitle" class="add-song-btn">+ 찬양 추가</button>
+      </div>
+      <details class="adv">
+        <summary>고급 옵션</summary>
+        <textarea id="transcript" rows="5" placeholder="(선택) 자막 붙여넣기"></textarea>
+      </details>
+    </form>
+  </div>
+  <div class="status-box" id="status" style="display:none"></div>
+</div>
+<script>
+const f = document.getElementById('f');
+const statusEl = document.getElementById('status');
+// '분석 시작' 버튼은 우측 상단으로 옮겨 폼 바깥에 있다 — form="f" 속성으로 제출과
+// 연결되므로 querySelector는 문서 전체에서 찾아야 한다(f.querySelector는 못 찾음).
+const submitBtn = document.querySelector('.analyze-btn');
+// 찬양 모드일 때만 '곡 제목' 입력란을 보여준다(제목 → 정식 가사 자막).
+const songTitlesWrap = document.getElementById('songTitlesWrap');
+const songTitleRows = document.getElementById('songTitleRows');
+const addSongTitleBtn = document.getElementById('addSongTitle');
+function addSongTitleRow(value) {
+  const row = document.createElement('div');
+  row.className = 'song-title-row';
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'song-title-input'; input.placeholder = '찬양 제목 (또는 벅스 가사 페이지 URL)';
+  input.value = value || '';
+  const remove = document.createElement('button');
+  remove.type = 'button'; remove.className = 'song-title-remove'; remove.setAttribute('aria-label', '삭제');
+  remove.innerHTML = '&times;';
+  remove.addEventListener('click', () => { row.remove(); ensureAtLeastOneSongTitleRow(); });
+  row.appendChild(input); row.appendChild(remove);
+  songTitleRows.appendChild(row);
+}
+function ensureAtLeastOneSongTitleRow() {
+  if (!songTitleRows.children.length) addSongTitleRow();
+}
+function getSongTitlesValue() {
+  return Array.from(songTitleRows.querySelectorAll('.song-title-input'))
+    .map((i) => i.value.trim()).filter(Boolean).join('\n');
+}
+addSongTitleBtn.addEventListener('click', () => addSongTitleRow());
+ensureAtLeastOneSongTitleRow();
+function syncSongTitlesVisibility() {
+  const mode = (f.querySelector('input[name="mode"]:checked') || {}).value || 'sermon';
+  songTitlesWrap.style.display = (mode === 'praise') ? 'block' : 'none';
+}
+f.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener('change', syncSongTitlesVisibility));
+syncSongTitlesVisibility();
+// '새로 분석' 토글 — 저장된 후보를 무시하고 다시 뽑을지 여부(우측 상단 버튼으로 이동).
+const forceToggle = document.getElementById('forceToggle');
+forceToggle.addEventListener('click', () => {
+  const on = forceToggle.getAttribute('aria-pressed') !== 'true';
+  forceToggle.setAttribute('aria-pressed', String(on));
+});
+// 파일 드래그앤드롭
+const dropzone = document.getElementById('dropzone');
+const vfile = document.getElementById('vfile');
+const dropzoneText = document.getElementById('dropzoneText');
+function showPickedFile(file) {
+  dropzoneText.innerHTML = file
+    ? '<span class="dropzone-file">' + file.name + '</span>'
+    : '동영상 파일을 여기로 끌어다 놓거나 <b>클릭해서 선택</b>';
+}
+dropzone.addEventListener('click', () => vfile.click());
+vfile.addEventListener('change', () => showPickedFile(vfile.files[0] || null));
+['dragenter', 'dragover'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+  e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag');
+}));
+['dragleave', 'drop'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+  e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('drag');
+}));
+dropzone.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) { vfile.files = e.dataTransfer.files; showPickedFile(file); }
+});
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (submitBtn.disabled) return;  // 중복 클릭 방지: 하이라이트 선정은 AI가 실제로 읽고 고르는
+                                    // 단계라 보통 2~5분 걸린다. 재클릭하면 같은 영상 분석이
+                                    // 중복 실행돼 진행률이 널뛰고 세션 한도만 낭비된다.
+  submitBtn.disabled = true;
+  const url = document.getElementById('url').value;
+  const vf = vfile.files[0] || null;
+  const transcript_text = document.getElementById('transcript').value;
+  const force = forceToggle.getAttribute('aria-pressed') === 'true';  // 기본은 캐시 재사용
+  const mode = (f.querySelector('input[name="mode"]:checked') || {}).value || 'sermon';
+  if (!url.trim() && !vf) {
+    statusEl.style.display = 'block';
+    statusEl.innerText = '유튜브 링크를 넣거나 동영상 파일을 선택해 주세요.';
+    submitBtn.disabled = false; return;
+  }
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = vf
+    ? '<span class="spinner"></span>동영상 업로드 중… (파일이 크면 시간이 걸려요)'
+    : '<span class="spinner"></span>진행률 화면으로 이동 중… (곧 %와 남은 예상시간이 표시돼요)';
+  try {
+    let res;
+    if (vf) {
+      // 파일 업로드 경로: multipart로 보내고, 서버가 저장 후 whisper 직접 전사부터 시작한다.
+      const fd = new FormData();
+      fd.append('file', vf); fd.append('mode', mode); fd.append('model', '');
+      if (mode === 'praise') fd.append('song_titles', getSongTitlesValue());
+      // fetch는 업로드 진행률을 알려주지 않아, 수백 MB 영상을 올리는 내내 화면이 멈춘 것처럼
+      // 보였다("초반에 왜 이렇게 오래 분석하냐" — 실은 아직 업로드 중, 2026-09-07).
+      // XHR로 바꿔 실제 업로드 %와 MB를 보여준다.
+      res = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/analyze_upload');
+        xhr.upload.onprogress = (ev) => {
+          if (!ev.lengthComputable) return;
+          const pct = Math.round(ev.loaded / ev.total * 100);
+          const mb = (ev.total / 1048576).toFixed(0);
+          statusEl.innerHTML = '<span class="spinner"></span>동영상 업로드 중… ' + pct + '% (' + mb + 'MB)'
+            + (pct >= 100 ? ' — 업로드 완료, 분석 시작 중…' : '');
+        };
+        xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, json: async () => JSON.parse(xhr.responseText) });
+        xhr.onerror = () => reject(new Error('업로드 실패 (네트워크)'));
+        xhr.send(fd);
+      });
+    } else {
+      const song_titles = mode === 'praise' ? getSongTitlesValue() : '';
+      res = await fetch('/analyze', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url, transcript_text, force, model: '', mode, song_titles})
+      });
+    }
+    const data = await res.json();
+    if (!res.ok) { statusEl.innerText = '오류: ' + data.error; submitBtn.disabled = false; return; }
+    // 진행률(%)과 ETA는 영상 진행바 페이지에서 폴링으로 실시간 표시된다. 링크만 넣어도
+    // 이 페이지로 즉시 이동해 %가 바로 보이게 한다(예전엔 이 인덱스 문구에 %가 없어
+    // "몇 %인지 안 나온다"는 오해가 있었다).
+    window.location.replace('/video/' + data.video_id);
+  } catch (err) {
+    statusEl.innerText = '오류: ' + err;
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
