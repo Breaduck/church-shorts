@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -426,6 +427,34 @@ def _ass_time(sec: float) -> str:
     m, rem = divmod(rem, 6000)
     s, cs = divmod(rem, 100)
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+_ASS_DIALOGUE_RE = re.compile(r"^(Dialogue:\s*-?\d+,)(\d+:\d\d:\d\d\.\d\d),(\d+:\d\d:\d\d\.\d\d),")
+
+
+def _parse_ass_time(t: str) -> float:
+    h, m, s = t.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def shift_ass_times(ass_text: str, delta_sec: float) -> str:
+    """모든 Dialogue 이벤트를 delta_sec만큼 이동한다(음수면 앞당김). 이동 후 끝이 0 이하인
+    이벤트는 버리고, 시작이 0 밑으로 가면 0으로 자른다.
+
+    용도: '실제 결과' 미리보기(render.render_truth_frame). 원본 정지화면 한 장을 입력으로
+    쓰면 필터 타임라인이 0에서 시작하므로, 클립 기준 t초에 떠 있어야 할 자막을 0 근처로
+    끌어와야 같은 ASS로 그 시점 화면을 그릴 수 있다."""
+    out = []
+    for line in ass_text.splitlines():
+        m = _ASS_DIALOGUE_RE.match(line)
+        if m:
+            a = _parse_ass_time(m.group(2)) + delta_sec
+            b = _parse_ass_time(m.group(3)) + delta_sec
+            if b <= 0:
+                continue
+            line = f"{m.group(1)}{_ass_time(max(0.0, a))},{_ass_time(b)},{line[m.end():]}"
+        out.append(line)
+    return "\n".join(out) + "\n"
 
 
 def _karaoke_text(

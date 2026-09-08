@@ -1711,6 +1711,42 @@ def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict])
         return lines
 
 
+def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path) -> list:
+    """이 클립의 자막을 만들 전사 세그먼트 — 실제 렌더가 쓰는 것과 같은 소스를 고른다.
+    정밀 재전사 캐시가 있고 '구멍'이 없으면 그것, 아니면 유튜브 자동자막(transcript.json).
+    편집기 초안(_caption_lines_for_clip)과 실제결과 미리보기(clip_truth_frame)가 공유한다."""
+    from src.main import (
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_worst_hole,
+        json_load_transcript,
+    )
+    segs = None
+    try:
+        w = cfg["whisper"]
+        tdata = json_load_transcript(transcript_path)
+        base_text_all = " ".join((s.text or "") for s in tdata["segments"])
+        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+        sig = hashlib.md5(
+            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+        ).hexdigest()[:8]
+        model = w.get("precise_model_size", w["model_size"])
+        segs = _precise_cache_find(
+            OUTPUT_ROOT / video_id / "precise_cache", model, sig, clip.start, clip.end + 4.0
+        )
+        # 렌더와 같은 '구멍' 검사: 앞/중간이 통째로 빈 불량 캐시(VAD/배치 사고)를 신뢰하면
+        # 초안 자체가 십수 초 어긋난다(실측: 19초 구멍 캐시 → 초안 전체 밀림).
+        if segs is not None and _precise_worst_hole(
+            tdata["segments"], segs, clip.start, clip.end
+        ) >= 5.0:
+            segs = None
+    except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
+        segs = None
+    if segs is None:
+        segs = json_load_transcript(transcript_path)["segments"]
+    # 오탈자 교정도 렌더와 동일하게 적용(예전엔 편집기 초안에만 미적용 → 저장 시 오탈자 굳음).
+    _apply_corrections(segs, cfg.get("captions", {}).get("corrections") or {})
+    return segs
+
+
 def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
@@ -1756,31 +1792,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     # 수십 줄이 전부 '정확한 정밀 자막 → 부정확한 자동자막 초안'으로 통째로 바뀌어 굳었다.
     # 이제 정밀 재전사 캐시가 있으면 그걸 초안 소스로 쓴다(렌더와 같은 결과) — 한 줄만
     # 고치면 정말 그 한 줄만 달라진다. 캐시가 없으면 예전처럼 자동자막 폴백.
-    segs = None
-    try:
-        w = cfg["whisper"]
-        tdata = json_load_transcript(transcript_path)
-        base_text_all = " ".join((s.text or "") for s in tdata["segments"])
-        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
-        sig = hashlib.md5(
-            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
-        ).hexdigest()[:8]
-        model = w.get("precise_model_size", w["model_size"])
-        segs = _precise_cache_find(
-            OUTPUT_ROOT / video_id / "precise_cache", model, sig, clip.start, clip.end + 4.0
-        )
-        # 렌더와 같은 '구멍' 검사: 앞/중간이 통째로 빈 불량 캐시(VAD/배치 사고)를 신뢰하면
-        # 초안 자체가 십수 초 어긋난다(실측: 19초 구멍 캐시 → 초안 전체 밀림).
-        if segs is not None and _precise_worst_hole(
-            tdata["segments"], segs, clip.start, clip.end
-        ) >= 5.0:
-            segs = None
-    except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
-        segs = None
-    if segs is None:
-        segs = json_load_transcript(transcript_path)["segments"]
-    # 오탈자 교정도 렌더와 동일하게 적용(예전엔 편집기 초안에만 미적용 → 저장 시 오탈자 굳음).
-    _apply_corrections(segs, cfg.get("captions", {}).get("corrections") or {})
+    segs = _segments_for_clip(video_id, clip, cfg, transcript_path)
     # 필러 제거 설정도 렌더와 동일하게(예전엔 기본값이라 렌더가 지우는 '그/막/뭐'가 초안에 남았다).
     words = _collect_words_in_range(
         segs, clip.start, clip.end,
@@ -5572,6 +5584,44 @@ def clip_preview_frame(video_id: str, idx: int):
     return send_file(out_path)
 
 
+@app.route("/media/<video_id>/truth/<int:idx>.jpg")
+def clip_truth_frame(video_id: str, idx: int):
+    """'실제 결과' 미리보기: 절대시각 t의 화면을 실제 렌더와 **같은 ASS·같은 필터**로 그린다.
+    CSS 미리보기(_compute_layout)는 근사치라 결과물과 어긋날 수 있다 — 이건 render_clip이
+    쓰는 함수(render.build_clip_ass 등)를 그대로 호출하므로 정의상 결과물과 같다.
+    캐시하지 않는다(자막·스타일을 고칠 때마다 달라져야 하므로). 카드/블러 레이아웃만 지원."""
+    clips_path = OUTPUT_ROOT / video_id / "clips.json"
+    if not clips_path.exists():
+        return jsonify({"error": "해당 영상 작업을 찾을 수 없습니다"}), 404
+    clips = load_clips_json(clips_path)
+    if idx < 0 or idx >= len(clips):
+        return jsonify({"error": "invalid index"}), 404
+    clip = clips[idx]
+    if _is_upload_praise(video_id, clip):
+        return jsonify({"error": "업로드 찬양(원본 비율) 클립은 아직 지원하지 않습니다"}), 400
+    try:
+        t = float(request.args.get("t", clip.start))
+    except ValueError:
+        return jsonify({"error": "bad t"}), 400
+    t = max(clip.start, min(clip.end - 0.05, t))
+    video_dir = OUTPUT_ROOT / video_id
+    source = video_dir / "source.mp4"
+    if not source.exists():
+        return jsonify({"error": "원본 영상이 없습니다"}), 404
+    cfg = _load_config()
+    segs = _segments_for_clip(video_id, clip, cfg, video_dir / "transcript.json")
+    out = (video_dir / "clips" / f"_truth_{idx}.jpg").resolve()
+    from src.render import render_truth_frame
+    try:
+        render_truth_frame(source, segs, clip, cfg["render"], cfg["captions"], t, out)
+    except Exception as e:  # noqa: BLE001 - 실패 사유를 팝업에 그대로 보여준다
+        traceback.print_exc()
+        return jsonify({"error": str(e)[:600]}), 500
+    resp = send_file(out, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/media/<video_id>/source.mp4")
 def serve_source_video(video_id: str):
     """'만들기 전 확인' 팝업의 <video>용 원본 서빙. conditional=True로 HTTP Range를 지원해
@@ -5966,6 +6016,15 @@ PREVIEW_MODAL_JS = r"""
   .pv-ok:hover { background: #1b64da; }
   .pv-edit-link { display: block; text-align: center; margin-top: 10px; font-size: 12.5px; color: #8b95a1; text-decoration: none; }
   .pv-edit-link:hover { color: #3182f6; }
+  .pv-truth-btn { padding: 8px 12px; border: 1.5px solid #d1d6db; border-radius: 999px; background: #fff; color: #191f28;
+    font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .pv-truth-btn:hover { border-color: #3182f6; background: #f0f6ff; }
+  .pv-truth-ov { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+  .pv-truth-card { background: #fff; border-radius: 18px; padding: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.35); }
+  .pv-truth-head { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; font-size: 13px; color: #4e5968; }
+  .pv-truth-head b { color: #191f28; font-size: 14px; }
+  .pv-truth-head .pv-x { margin-left: auto; }
+  .pv-truth-card img { display: block; border-radius: 12px; }
   `;
 
   function injectOnce(id, cssText) {
@@ -6004,6 +6063,7 @@ PREVIEW_MODAL_JS = r"""
       '  <div class="pv-head"><b>만들기 전 확인' + (total > 1 ? ' (' + seq + '/' + total + ')' : '') + '</b>' +
       '    <div class="pv-head-r">' +
       '      <button type="button" class="pv-capedit-btn">자막 수정</button>' +
+      '      <button type="button" class="pv-truth-btn" title="지금 화면 시점을 실제 렌더와 똑같은 자막 엔진(ffmpeg+ASS)으로 그려서 보여줍니다. 미리보기와 다르면 이쪽이 진짜 결과입니다.">실제 결과</button>' +
       '      <button class="pv-reanalyze" title="주제는 그대로 두고 이 장면의 시작·끝만 다시 잡아 새 후보로 추가합니다(원본 유지)">구간 재분석</button>' +
       '      <a class="pv-studio-btn" href="/video/' + VIDEO_ID + '/clip/' + idx + '/studio" title="타임라인·트랙이 있는 프리미어식 편집 화면으로 이동합니다">스튜디오</a>' +
       '      <button type="button" class="pv-fullbtn" title="팝업을 화면 가득 띄우고 미리보기를 크게 봅니다">전체화면</button>' +
@@ -6616,6 +6676,30 @@ PREVIEW_MODAL_JS = r"""
     }}
     capRowsBox.addEventListener('input', () => { capsDirty = true; });
     $('.pv-capedit-btn').addEventListener('click', () => capSec.classList.toggle('hidden'));
+    // ── 실제 결과: 이 시점을 진짜 렌더 엔진으로 한 장 그려 겹쳐 보여준다(미리보기 검증용) ──
+    const truthBtn = $('.pv-truth-btn');
+    truthBtn.addEventListener('click', async () => {
+      const t = video.currentTime;
+      truthBtn.disabled = true; truthBtn.textContent = '그리는 중…';
+      const url = '/media/' + VIDEO_ID + '/truth/' + idx + '.jpg?t=' + t.toFixed(2) + '&_=' + Date.now();
+      let r = null;
+      try { r = await fetch(url); } catch (e) { r = null; }
+      truthBtn.disabled = false; truthBtn.textContent = '실제 결과';
+      if (!r || !r.ok) {
+        const d = r ? await r.json().catch(() => ({})) : {};
+        alert('실제 결과를 못 그렸어요: ' + (d.error || '네트워크 오류')); return;
+      }
+      const blob = await r.blob();
+      const ov = document.createElement('div');
+      ov.className = 'pv-truth-ov';
+      ov.innerHTML = '<div class="pv-truth-card"><div class="pv-truth-head"><b>실제 결과</b> <span>' + t.toFixed(1) + '초 · 렌더 엔진이 그린 그대로</span><button class="pv-x">&times;</button></div><img></div>';
+      ov.querySelector('img').src = URL.createObjectURL(blob);
+      ov.querySelector('img').style.height = H + 'px';
+      const close = () => { ov.remove(); };
+      ov.querySelector('.pv-x').addEventListener('click', close);
+      ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+      back.appendChild(ov);
+    });
     $('.pv-capadd').addEventListener('click', () => {
       const rows = capRowsBox.querySelectorAll('.pv-caprow');
       const s = rows.length ? (parseFloat(rows[rows.length - 1].querySelector('.pv-cap-end').value) || 0) : 0;

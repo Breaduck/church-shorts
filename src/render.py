@@ -6,7 +6,7 @@ import subprocess
 import traceback
 from pathlib import Path
 
-from src.captions import build_ass_for_clip
+from src.captions import build_ass_for_clip, shift_ass_times
 from src.highlights import Clip
 from src.transcribe import Segment
 
@@ -644,80 +644,159 @@ def _build_video_filter(
     return ",".join(parts)
 
 
-def render_clip(
+def _effective_render_cfg(clip: Clip, render_cfg: dict) -> dict:
+    """클립별 화면모드(fill_mode)·얼굴추적(cover 강제)을 반영한 render 설정.
+    렌더와 실제결과 미리보기가 같은 함수를 써야 '미리보기 ≠ 결과물'이 안 생긴다."""
+    clip_fill = getattr(clip, "fill_mode", "") or ""
+    if clip_fill:
+        render_cfg = {**render_cfg, "card_layout": {**render_cfg.get("card_layout", {}), "fill_mode": clip_fill}}
+    # 얼굴 추적 리프레이밍은 cover 크롭에서만 의미가 있다(fit은 옆을 안 자름) → 켜지면 cover 강제.
+    if render_cfg.get("facetrack"):
+        render_cfg = {**render_cfg, "card_layout": {**render_cfg.get("card_layout", {}), "fill_mode": "cover"}}
+    return render_cfg
+
+
+def _resolve_card_layout(render_cfg: dict, resolution: tuple[int, int], source_resolution: tuple[int, int]) -> dict | None:
+    """카드형이면 영상 박스 높이/y를 채운 card_layout, 아니면 None.
+    자막 위치 계산(build_ass_for_clip)과 실제 필터(_build_card_filter_complex)가 반드시
+    같은 값을 써야 캡션이 영상 박스 바로 아래에 정확히 붙는다 — 그래서 한 곳에서만 계산."""
+    if render_cfg.get("background_mode", "blur") != "card":
+        return None
+    card = render_cfg["card_layout"]
+    vbh = _compute_card_video_box_height(card, source_resolution)
+    vby = _compute_card_video_box_y(card, resolution, vbh)
+    return {**card, "video_box_height": vbh, "video_box_y": vby}
+
+
+TRUTH_LEAD_SEC = 0.6  # 정지화면 타임라인에서 자막을 찍는 시점. 페이드인(\fad, 300ms 이하)이 끝난 뒤.
+
+
+def render_truth_frame(
     video_path: Path,
     segments: list[Segment],
     clip: Clip,
-    output_path: Path,
     render_cfg: dict,
     captions_cfg: dict,
-) -> None:
+    at_sec: float,
+    out_path: Path,
+) -> Path:
+    """클립의 절대시각 at_sec 화면을 **실제 렌더와 같은 ASS·같은 카드 필터**로 한 장 그린다.
+
+    왜 있나: 편집기 미리보기는 CSS로 다시 그린 근사치라 결과물과 어긋날 수 있다. 이 함수는
+    render_clip이 쓰는 build_clip_ass / _build_card_filter_complex / _build_video_filter를
+    그대로 호출하므로 '정의상' 결과물과 같다. 두 단계로 나눈 이유: 원본을 클립 시작부터
+    필터링해 t초 프레임까지 가면 수십 초가 걸린다. 대신 (1) at_sec 원본 프레임 한 장만
+    빠르게 뽑고 (2) 그 정지화면을 입력으로 카드 필터+자막을 입힌다. ASS는 at_sec에 뜰
+    이벤트가 정지화면 타임라인의 TRUTH_LEAD_SEC에 오도록 shift_ass_times로 이동한다.
+
+    생략하는 것: 무음 제거/keep_ranges(프레임 한 장엔 무관), 훅 배속, 무음 기반 단어 싱크
+    보정(카라오케 강조 단어가 ±0.3초 다를 수 있음). 위치·크기·글꼴·박스·색은 전부 실제와 동일."""
     resolution = tuple(render_cfg.get("resolution", [1080, 1920]))
-    duration = clip.end - clip.start
-
-    # 편집기에서 클립별로 화면모드(풀 화면=fit / 화면 확대=cover)를 고른 경우 config 기본값을 덮어쓴다.
-    clip_fill = getattr(clip, "fill_mode", "") or ""
-    if clip_fill:
-        _card = {**render_cfg.get("card_layout", {}), "fill_mode": clip_fill}
-        render_cfg = {**render_cfg, "card_layout": _card}
-    # 얼굴 추적 리프레이밍은 cover 크롭에서만 의미가 있다(fit은 옆을 안 자름) → 켜지면 cover 강제.
-    if render_cfg.get("facetrack"):
-        _card = {**render_cfg.get("card_layout", {}), "fill_mode": "cover"}
-        render_cfg = {**render_cfg, "card_layout": _card}
-
-    silences: list[tuple[float, float]] = []
-    if render_cfg.get("remove_silence", True):
-        silences = _detect_silences(
-            video_path,
-            clip.start,
-            clip.end,
-            render_cfg.get("silence_threshold_db", -35),
-            render_cfg.get("silence_min_duration_sec", 0.6),
-        )
-    # 자막 생성보다 먼저 계산해야 한다: 무음 제거로 영상 타임라인이 압축되는데,
-    # 자막 타임스탬프도 똑같이 압축해서 리매핑하지 않으면 뒤로 갈수록 자막이 밀린다.
-    silence_keep = _build_keep_segments(duration, silences) if silences else None
-    # 확인 팝업에서 분할·삭제한 구간(keep_ranges)이 있으면 무음 제거와 합쳐 최종 남길 구간을 만든다.
-    keep_segments = _combine_keep(
-        duration, clip.start, getattr(clip, "keep_ranges", None) or None, silence_keep
-    )
-
+    render_cfg = _effective_render_cfg(clip, render_cfg)
     is_card = render_cfg.get("background_mode", "blur") == "card"
-    card_layout = render_cfg.get("card_layout") if is_card else None
-    if is_card:
-        # 영상 박스 높이는 원본 비율을 그대로 유지해서 계산 (옆을 잘라 확대하지 않음).
-        # 자막 위치 계산(build_ass_for_clip)과 실제 필터(_build_card_filter_complex)가
-        # 반드시 같은 값을 써야 캡션이 영상 박스 바로 아래에 정확히 붙는다.
-        source_resolution = _probe_resolution(video_path)
-        vbh = _compute_card_video_box_height(card_layout, source_resolution)
-        vby = _compute_card_video_box_y(card_layout, resolution, vbh)
-        card_layout = {**card_layout, "video_box_height": vbh, "video_box_y": vby}
+    source_resolution = _probe_resolution(video_path) if is_card else (0, 0)
+    card_layout = _resolve_card_layout(render_cfg, resolution, source_resolution)
 
-    # 자막 싱크 교정용 무음 지도: Whisper가 쉼(pause)을 다음 단어 발화 시간에 흡수해
-    # 자막이 실제 말보다 1~2초 먼저 뜨는 문제(실측)를, 실제 오디오의 무음 구간으로
-    # 단어 start를 교정해 잡는다. remove_silence(-35dB/1.2s)와 별개로, 짧은 쉼까지
-    # 잡도록 더 민감한 값(-32dB/0.3s)을 쓴다. ffmpeg 한 번이라 클립당 2~3초면 끝난다.
-    voice_silences: list[tuple[float, float]] | None = None
-    if captions_cfg.get("enabled", True):
-        # 편집 자막(caption_overrides) 경로에도 적용한다: 카라오케 단어 시각은 어느 경로든
-        # 전사 단어를 쓰므로, 여기서 빼면 편집 클립만 "자막이 말보다 빠른" 문제가 남는다
-        # (실제 신고된 잔존 싱크 문제의 원인 중 하나).
-        voice_silences = _detect_silences(video_path, clip.start, clip.end, -32.0, 0.3)
+    ass = build_clip_ass(segments, clip, render_cfg, captions_cfg, resolution, card_layout, None, None, None)
+    rel = max(0.0, min(clip.end - clip.start, at_sec - clip.start))
+    ass = shift_ass_times(ass, TRUTH_LEAD_SEC - rel)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ass_path = out_path.with_suffix(".ass")
+    ass_path.write_text(ass, encoding="utf-8")
+    ass_path_ff = str(ass_path).replace("\\", "/").replace(":", "\\:")
+    from src.fonts import default_font_dir_for_ass
+    font_dir = default_font_dir_for_ass()
 
-    # 훅 배속: 초반 first_sec초를 factor배로 빠르게(card + 분할/무음제거 안 한 클립에서만).
-    hs_cfg = render_cfg.get("hook_speedup") or {}
-    _hs_first = float(hs_cfg.get("first_sec", 0) or 0)
-    _hs_factor = float(hs_cfg.get("factor", 1.0) or 1.0)
-    warp_active = bool(
-        is_card and hs_cfg.get("enabled") and _hs_factor > 1.0 and _hs_first > 0
-        and not keep_segments and duration > _hs_first + 0.5
-    )
-    hook_speedup = (_hs_first, _hs_factor) if warp_active else None
-    # 배속 후 실제 본문 길이(warp_time(duration))
-    warped_dur = (_hs_first / _hs_factor + (duration - _hs_first)) if warp_active else duration
+    # 1) at_sec 원본 프레임 한 장 (입력 시크라 즉시)
+    raw = out_path.with_suffix(".raw.png")
+    proc = subprocess.run([
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{at_sec:.3f}", "-i", str(video_path), "-frames:v", "1", str(raw),
+    ], capture_output=True, text=True)
+    if proc.returncode != 0 or not raw.exists():
+        raise RuntimeError(f"원본 프레임 추출 실패:\n{proc.stderr[-1500:]}")
 
-    ass_path = output_path.with_suffix(".ass")
-    ass_content = build_ass_for_clip(
+    # 2) 정지화면을 fps짜리 짧은 스트림으로 돌려 실제 필터 체인을 통과시키고 LEAD 시점 프레임만 저장
+    fps = 25.0
+    dur = TRUTH_LEAD_SEC + 0.5
+    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-loop", "1", "-framerate", str(fps), "-t", str(dur), "-i", str(raw)]
+    pick = f"select='gte(t,{TRUTH_LEAD_SEC})'"
+    try:
+        if is_card:
+            mask_path = _get_or_create_rounded_mask(
+                card_layout["video_box_width"], card_layout["video_box_height"], card_layout["corner_radius"]
+            )
+            cmd += ["-loop", "1", "-framerate", str(fps), "-t", str(dur), "-i", str(mask_path)]
+            fc, vout = _build_card_filter_complex(
+                render_cfg, captions_cfg, resolution, dur, None, ass_path_ff, font_dir, fps,
+                card_layout["video_box_height"], card_layout["video_box_y"],
+            )
+            fc += f";{vout}{pick}[truth]"
+            cmd += ["-filter_complex", fc, "-map", "[truth]"]
+        else:
+            vf = _build_video_filter(render_cfg, captions_cfg, resolution, None, ass_path_ff, font_dir, fps)
+            cmd += ["-vf", f"{vf},{pick}"]
+        cmd += ["-frames:v", "1", "-q:v", "2", str(out_path)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not out_path.exists():
+            raise RuntimeError(f"실제결과 프레임 합성 실패:\n{proc.stderr[-1500:]}")
+    finally:
+        raw.unlink(missing_ok=True)
+    return out_path
+
+
+def _clip_font_style(clip: Clip) -> dict:
+    """클립의 글꼴/자막 스타일 필드를 build_ass_for_clip의 font_style 딕셔너리로 모은다.
+    렌더(render_clip)와 실제결과 미리보기(render_truth_frame)가 같은 함수를 써야
+    미리보기 스타일 ≠ 결과물 스타일이 생기지 않는다."""
+    return {
+        "title_font": getattr(clip, "title_font", "") or "",
+        "title_size": getattr(clip, "title_size", 0) or 0,
+        "title_align": getattr(clip, "title_align", "") or "",
+        "title_spacing": getattr(clip, "title_spacing", 0.0) or 0.0,
+        "caption_font": getattr(clip, "caption_font", "") or "",
+        "caption_size": getattr(clip, "caption_size", 0) or 0,
+        "caption_size_en": getattr(clip, "caption_size_en", 0) or 0,
+        "caption_align": getattr(clip, "caption_align", "") or "",
+        "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
+        "caption_text_color": getattr(clip, "caption_text_color", "") or "",
+        "caption_box": bool(getattr(clip, "caption_box", False)),
+        "caption_box_color": getattr(clip, "caption_box_color", "") or "#000000",
+        "caption_box_opacity": getattr(clip, "caption_box_opacity", 0.55),
+        "caption_box_radius": getattr(clip, "caption_box_radius", 40.0),
+        "caption_box_width_pct": getattr(clip, "caption_box_width_pct", 28.0),
+        "caption_box_height_pct": getattr(clip, "caption_box_height_pct", 28.0),
+        "caption_box_offset_x": getattr(clip, "caption_box_offset_x", 0.0),
+        "caption_box_offset_y": getattr(clip, "caption_box_offset_y", 0.0),
+        "caption_bold": bool(getattr(clip, "caption_bold", True)),
+        "caption_italic": bool(getattr(clip, "caption_italic", False)),
+        "caption_underline": bool(getattr(clip, "caption_underline", False)),
+        "caption_text_opacity": getattr(clip, "caption_text_opacity", 1.0),
+        "caption_outline_enabled": bool(getattr(clip, "caption_outline_enabled", True)),
+        "caption_outline_color": getattr(clip, "caption_outline_color", "") or "",
+        "caption_outline_width": getattr(clip, "caption_outline_width", -1.0),
+        "caption_glow": bool(getattr(clip, "caption_glow", False)),
+        "caption_glow_color": getattr(clip, "caption_glow_color", "") or "",
+    }
+
+
+def build_clip_ass(
+    segments: list[Segment],
+    clip: Clip,
+    render_cfg: dict,
+    captions_cfg: dict,
+    resolution: tuple[int, int],
+    card_layout: dict | None,
+    keep_segments: list[tuple[float, float]] | None,
+    voice_silences: list[tuple[float, float]] | None,
+    hook_speedup: tuple[float, float] | None,
+) -> str:
+    """이 클립의 최종 ASS 자막 문자열. render_clip에서 분리한 이유: 실제결과 미리보기
+    (render_truth_frame)가 **완전히 같은** 인자로 같은 ASS를 만들어야 하기 때문이다.
+    여기서 인자 하나만 어긋나도 '미리보기 ≠ 결과물'이 다시 생긴다 — 이 함수 밖에서
+    build_ass_for_clip을 직접 부르지 말 것."""
+    return build_ass_for_clip(
         segments=segments,
         clip_start=clip.start,
         clip_end=clip.end,
@@ -732,35 +811,7 @@ def render_clip(
         caption_offset_x=clip.caption_offset_x,
         caption_offset_y=clip.caption_offset_y,
         caption_overrides=getattr(clip, "caption_overrides", None) or None,
-        font_style={
-            "title_font": getattr(clip, "title_font", "") or "",
-            "title_size": getattr(clip, "title_size", 0) or 0,
-            "title_align": getattr(clip, "title_align", "") or "",
-            "title_spacing": getattr(clip, "title_spacing", 0.0) or 0.0,
-            "caption_font": getattr(clip, "caption_font", "") or "",
-            "caption_size": getattr(clip, "caption_size", 0) or 0,
-            "caption_size_en": getattr(clip, "caption_size_en", 0) or 0,
-            "caption_align": getattr(clip, "caption_align", "") or "",
-            "caption_spacing": getattr(clip, "caption_spacing", 0.0) or 0.0,
-            "caption_text_color": getattr(clip, "caption_text_color", "") or "",
-            "caption_box": bool(getattr(clip, "caption_box", False)),
-            "caption_box_color": getattr(clip, "caption_box_color", "") or "#000000",
-            "caption_box_opacity": getattr(clip, "caption_box_opacity", 0.55),
-            "caption_box_radius": getattr(clip, "caption_box_radius", 40.0),
-            "caption_box_width_pct": getattr(clip, "caption_box_width_pct", 28.0),
-            "caption_box_height_pct": getattr(clip, "caption_box_height_pct", 28.0),
-            "caption_box_offset_x": getattr(clip, "caption_box_offset_x", 0.0),
-            "caption_box_offset_y": getattr(clip, "caption_box_offset_y", 0.0),
-            "caption_bold": bool(getattr(clip, "caption_bold", True)),
-            "caption_italic": bool(getattr(clip, "caption_italic", False)),
-            "caption_underline": bool(getattr(clip, "caption_underline", False)),
-            "caption_text_opacity": getattr(clip, "caption_text_opacity", 1.0),
-            "caption_outline_enabled": bool(getattr(clip, "caption_outline_enabled", True)),
-            "caption_outline_color": getattr(clip, "caption_outline_color", "") or "",
-            "caption_outline_width": getattr(clip, "caption_outline_width", -1.0),
-            "caption_glow": bool(getattr(clip, "caption_glow", False)),
-            "caption_glow_color": getattr(clip, "caption_glow_color", "") or "",
-        },
+        font_style=_clip_font_style(clip),
         voice_silences=voice_silences,
         hook_speedup=hook_speedup,
         # 자막 형광 강조 대상: 클립의 명시적 강조어(caption_highlights)를 우선하고,
@@ -786,6 +837,69 @@ def render_clip(
             and not getattr(clip, "caption_overrides_en", None)
         ),
         auto_translate_model=render_cfg.get("caption_translate_model", "") or "",
+    )
+
+
+def render_clip(
+    video_path: Path,
+    segments: list[Segment],
+    clip: Clip,
+    output_path: Path,
+    render_cfg: dict,
+    captions_cfg: dict,
+) -> None:
+    resolution = tuple(render_cfg.get("resolution", [1080, 1920]))
+    duration = clip.end - clip.start
+    render_cfg = _effective_render_cfg(clip, render_cfg)
+
+    silences: list[tuple[float, float]] = []
+    if render_cfg.get("remove_silence", True):
+        silences = _detect_silences(
+            video_path,
+            clip.start,
+            clip.end,
+            render_cfg.get("silence_threshold_db", -35),
+            render_cfg.get("silence_min_duration_sec", 0.6),
+        )
+    # 자막 생성보다 먼저 계산해야 한다: 무음 제거로 영상 타임라인이 압축되는데,
+    # 자막 타임스탬프도 똑같이 압축해서 리매핑하지 않으면 뒤로 갈수록 자막이 밀린다.
+    silence_keep = _build_keep_segments(duration, silences) if silences else None
+    # 확인 팝업에서 분할·삭제한 구간(keep_ranges)이 있으면 무음 제거와 합쳐 최종 남길 구간을 만든다.
+    keep_segments = _combine_keep(
+        duration, clip.start, getattr(clip, "keep_ranges", None) or None, silence_keep
+    )
+
+    is_card = render_cfg.get("background_mode", "blur") == "card"
+    source_resolution = _probe_resolution(video_path) if is_card else (0, 0)
+    card_layout = _resolve_card_layout(render_cfg, resolution, source_resolution)
+
+    # 자막 싱크 교정용 무음 지도: Whisper가 쉼(pause)을 다음 단어 발화 시간에 흡수해
+    # 자막이 실제 말보다 1~2초 먼저 뜨는 문제(실측)를, 실제 오디오의 무음 구간으로
+    # 단어 start를 교정해 잡는다. remove_silence(-35dB/1.2s)와 별개로, 짧은 쉼까지
+    # 잡도록 더 민감한 값(-32dB/0.3s)을 쓴다. ffmpeg 한 번이라 클립당 2~3초면 끝난다.
+    voice_silences: list[tuple[float, float]] | None = None
+    if captions_cfg.get("enabled", True):
+        # 편집 자막(caption_overrides) 경로에도 적용한다: 카라오케 단어 시각은 어느 경로든
+        # 전사 단어를 쓰므로, 여기서 빼면 편집 클립만 "자막이 말보다 빠른" 문제가 남는다
+        # (실제 신고된 잔존 싱크 문제의 원인 중 하나).
+        voice_silences = _detect_silences(video_path, clip.start, clip.end, -32.0, 0.3)
+
+    # 훅 배속: 초반 first_sec초를 factor배로 빠르게(card + 분할/무음제거 안 한 클립에서만).
+    hs_cfg = render_cfg.get("hook_speedup") or {}
+    _hs_first = float(hs_cfg.get("first_sec", 0) or 0)
+    _hs_factor = float(hs_cfg.get("factor", 1.0) or 1.0)
+    warp_active = bool(
+        is_card and hs_cfg.get("enabled") and _hs_factor > 1.0 and _hs_first > 0
+        and not keep_segments and duration > _hs_first + 0.5
+    )
+    hook_speedup = (_hs_first, _hs_factor) if warp_active else None
+    # 배속 후 실제 본문 길이(warp_time(duration))
+    warped_dur = (_hs_first / _hs_factor + (duration - _hs_first)) if warp_active else duration
+
+    ass_path = output_path.with_suffix(".ass")
+    ass_content = build_clip_ass(
+        segments, clip, render_cfg, captions_cfg, resolution, card_layout,
+        keep_segments, voice_silences, hook_speedup,
     )
     ass_path.write_text(ass_content, encoding="utf-8")
 
