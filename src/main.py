@@ -1532,6 +1532,7 @@ def analyze(
                     score_thinking_tokens=int(h.get("score_thinking_tokens", 1024)),
                     extra_block=feedback_block,
                     on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
+                    debug_path=video_dir / "selection_debug.json",
                 )
             except QuotaExceededError:
                 # 한도 소진은 폴백 대상이 아니다. v1을 또 부르면 확정 실패할 CLI 호출을

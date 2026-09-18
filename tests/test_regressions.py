@@ -35,6 +35,7 @@ from src.sermon_cut import (
     _starts_with_structure_marker,
     build_sentences,
     dedupe_cuts,
+    merge_adjacent_cuts,
     verify_and_fix,
 )
 from src.transcribe import Segment, Transcript, Word
@@ -149,6 +150,77 @@ def test_dedupe_cuts_drops_overlapping():
     ]
     kept = dedupe_cuts(cuts, sents)
     assert [k["start"] for k in kept] == [0, 7]
+
+
+def test_build_sentences_splits_glued_token():
+    """'돼.이'처럼 토큰 가운데 마침표가 박힌 자동자막 토큰은 두 문장으로 갈라져야 한다.
+    2026-09-18 실측(1GM): 이 토큰 14개 때문에 문장이 붙어 '그래서 우리가 …' 접속어 훅이 나왔다."""
+    tr = Transcript(language="ko", duration_sec=10.0, segments=[Segment(
+        start=0.0, end=10.0, text="",
+        words=[W(0.0, 1.0, "마음을"), W(1.0, 2.0, "가져야"), W(2.0, 3.0, "돼.이"), W(3.0, 4.0, "이"),
+               W(4.0, 5.0, "지역에도"), W(5.0, 6.0, "있습니다.")],
+    )])
+    sents = build_sentences(tr)
+    assert [x.text for x in sents] == ["마음을 가져야 돼.", "이 이 지역에도 있습니다."]
+    assert sents[1].start < 3.0 <= sents[1].end  # 뒤 조각 시각이 앞당겨져 있어야 한다
+
+
+def test_verify_and_fix_repairs_connector_start_backward():
+    """첫 문장이 '그래서/그니까'로 시작하면 바로 앞의 깨끗한 문장으로 시작을 옮긴다(hook 3점 원인)."""
+    sents = [
+        S(0, 0.0, 6.0, "하나님이 우리를 눈여겨 보시는 거예요."),
+        S(1, 6.0, 12.0, "그래서 우리가 하나님의 마음을 가져야 돼."),
+        S(2, 12.0, 30.0, "이 지역에도 예수 모르는 사람이 있습니다."),
+        S(3, 30.0, 40.0, "하나님이 버리셨느냐? 그럴 수 없느니라."),
+    ]
+    cut, log = verify_and_fix({"core": 3, "start": 1, "end": 3}, sents, 15.0, 60.0, 90.0)
+    assert cut is not None and cut["start"] == 0, log
+
+
+def test_verify_and_fix_repairs_connector_start_forward_after_amen():
+    """앞이 '아멘'(생각의 끝)이라 뒤로 못 가면 앞으로 첫 깨끗한 문장으로 옮긴다 — 앞 대지를 끌어오면 안 된다."""
+    sents = [
+        S(0, 0.0, 6.0, "은혜 베푸신 줄 믿습니다."),
+        S(1, 6.0, 7.0, "아멘."),
+        S(2, 7.0, 12.0, "그러니까 이게 중요한 거예요."),
+        S(3, 12.0, 30.0, "기도하는 사람은 세상에 오염되지 않습니다."),
+        S(4, 30.0, 45.0, "예수님은 인기에 오염되지 않으셨어요."),
+    ]
+    cut, log = verify_and_fix({"core": 3, "start": 2, "end": 4}, sents, 15.0, 60.0, 90.0)
+    assert cut is not None and cut["start"] == 3, log
+
+
+def test_verify_and_fix_strips_filler_start():
+    """'예.', '응.' 같은 추임새 문장이 첫 문장이면 뗀다."""
+    sents = [
+        S(0, 0.0, 1.0, "예."),
+        S(1, 1.0, 20.0, "성도는 거룩해야 합니다."),
+        S(2, 20.0, 40.0, "거룩은 구별입니다."),
+    ]
+    cut, log = verify_and_fix({"core": 2, "start": 0, "end": 2}, sents, 15.0, 60.0, 90.0)
+    assert cut is not None and cut["start"] == 1, log
+
+
+def test_merge_adjacent_cuts_joins_one_flow():
+    """설정→반전→착지가 이어지는 한 흐름을 둘로 쪼갠 컷은 합쳐야 한다(1GM '이뻐 죽겠어'+'그럴 수 없느니라')."""
+    sents = [S(i, i * 10.0, i * 10.0 + 10.0, f"문장{i}입니다.") for i in range(10)]
+    cuts = [{"core": 1, "start": 0, "end": 3, "appeal": "위로", "why": "A"},
+            {"core": 5, "start": 4, "end": 6, "appeal": "선언", "why": "B"}]
+    merged, log = merge_adjacent_cuts(cuts, sents, 90.0)
+    assert len(merged) == 1 and merged[0]["start"] == 0 and merged[0]["end"] == 6
+    assert merged[0]["core"] == 1 and merged[0]["appeal"] == "위로"  # 강한 쪽 유지
+
+
+def test_merge_adjacent_cuts_respects_landing_and_limit():
+    """앞 컷이 축복 착지로 끝났거나 합치면 상한을 넘기면 합치지 않는다."""
+    sents = [S(i, i * 10.0, i * 10.0 + 10.0, f"문장{i}입니다.") for i in range(12)]
+    sents[3] = S(3, 30.0, 40.0, "되시기를 축복합니다.")
+    cuts = [{"core": 1, "start": 0, "end": 3}, {"core": 5, "start": 4, "end": 6}]
+    merged, _ = merge_adjacent_cuts(cuts, sents, 90.0)
+    assert len(merged) == 2
+    cuts = [{"core": 1, "start": 0, "end": 5}, {"core": 8, "start": 6, "end": 10}]  # 합치면 110초
+    merged, _ = merge_adjacent_cuts(cuts, sents, 90.0)
+    assert len(merged) == 2
 
 
 # ───────────────────────── 자막 줄바꿈 (1줄 폭 규칙) ─────────────────────────

@@ -45,6 +45,26 @@ _FINAL_ENDING = re.compile(r"(습니다|ㅂ니다|입니다|니다|세요|어요
 _MAX_SENT_SEC = 12.0
 _MAX_SENT_WORDS = 25
 _GAP_SPLIT_SEC = 1.2
+# 자동자막/whisper 단어 토큰에 마침표가 '가운데' 박힌 경우("돼.이", "아멘.에", "없습니다.에 에").
+# 2026-09-18 실측(1GM): 이런 토큰이 14개인데 문장 분할이 토큰 '끝'의 구두점만 보니까 앞 문장과
+# 뒤 문장이 한 문장으로 붙었다. 붙은 문장이 컷의 시작이 되면 "그래서 우리가 하나님의 마음을
+# 가져야 돼. 이 지역에도 많은 영혼들이…"처럼 접속어로 시작하는 훅이 나온다(hook 3점 원인).
+_GLUED_TOKEN = re.compile(r"^(.*?[.?!。])(\S+)$")
+
+
+def _split_glued_token(start: float, end: float, text: str) -> list[tuple[float, float, str]]:
+    """'돼.이' 같은 토큰을 '돼.' + '이'로 나누고 시각은 글자 수 비례로 배분한다."""
+    m = _GLUED_TOKEN.match(text)
+    if not m:
+        return [(start, end, text)]
+    head, tail = m.group(1), m.group(2)
+    if not tail.strip() or len(head) < 2:
+        return [(start, end, text)]
+    if head[-2].isdigit() and tail[0].isdigit():  # "10.5" 같은 소수는 그대로
+        return [(start, end, text)]
+    total = max(1, len(head) + len(tail))
+    mid = start + (end - start) * (len(head) / total)
+    return [(start, mid, head)] + _split_glued_token(mid, end, tail)
 
 
 def build_sentences(transcript: Transcript) -> list[Sentence]:
@@ -59,7 +79,7 @@ def build_sentences(transcript: Transcript) -> list[Sentence]:
                 t = (w.text or "").replace(">>", "").strip()
                 if not t or _NOISE_TOKEN.match(t):
                     continue
-                words.append((float(w.start), float(w.end), t))
+                words.extend(_split_glued_token(float(w.start), float(w.end), t))
         else:
             t = (seg.text or "").strip()
             if t:
@@ -162,6 +182,12 @@ def build_thesis_cut_prompt(
 - 길이: 40~60초 목표, 온전한 이야기·크레센도는 90초까지. 설정 없이 명제 한 문장만 뗀 15~20초 조각은 미달
   (크레센도+축복 착지가 붙은 25초부터 허용). 넘치면 끝을 당기지 말고 **앞의 도입·중복 해설을 잘라라.**
 - 한 컷 = 명제 하나. 컷끼리 같은 예화·같은 문장을 반복하지 마라(겹치면 더 강한 쪽 하나만).
+  단, 이 규칙은 "다른 주제를 섞지 마라"는 뜻이지 **이어지는 한 이야기를 두 토막으로 내라는 뜻이 아니다.**
+  설정(예: "하나님이 우리를 보실 때 이뻐 죽겠어") → 전환("그러나 이방인들도…") → 착지("하나님이 버리셨느냐?
+  그럴 수 없느니라 … 믿습니다")가 연달아 이어지면 그건 컷 하나(90초까지)다. 반으로 쪼개면 앞토막은 착지가 없고
+  뒤토막은 설정이 없어 둘 다 죽는다(실측).
+- start 문장이 "그래서/그니까/그러나/이런"으로 시작하면 그 문장은 시작이 아니다 — 바로 앞의 질문·선언 문장으로
+  올리고 대신 끝쪽 부연을 잘라 길이를 맞춰라.
 - appeal: 이 컷이 만드는 감정 — 위로 / 선언 / 뜨끔 / 감동 / 재미. 후보 절반 이상이 같은 appeal이면 나머지를
   놓친 것이니(특히 뜨끔·감동·재미) 찌르는 대목·예화 클라이맥스·웃긴 대목을 다시 찾아라.
 
@@ -222,6 +248,36 @@ _STRONG_LANDING = re.compile(r"(축복합니다|축복하십니다|축원합니�
 _LANDING_FOLLOW_SEC = 8.0
 _SHORT_TARGET_SEC = 30.0       # 이보다 짧은 컷은 앞 설정을 보강
 _SHORT_EXTEND_CAP_SEC = 45.0   # 보강해도 이 길이는 넘기지 않음
+# 추임새만 있는 문장("예.", "응.", "어.", "아멘.", "할렐루야.") — 컷의 첫 문장으로는 죽은 1~2초.
+_FILLER_ONLY = re.compile(r"^(>>\s*)?(예|네|응|어|음|에|아|자|그|아멘|할렐루야|그렇죠|그죠)[.!?,]*$")
+_FILLER_PREFIX = re.compile(r"^(>>\s*)?((예|네|응|어|음|에|아)[.,!]?\s+)+")  # "에 에 환상과…", "어 그런데…"
+_CONNECTOR_LOOKBACK = 3        # 접속어 시작을 고칠 때 뒤로 살펴볼 문장 수
+_CONNECTOR_LOOKBACK_SEC = 20.0 # 뒤로 넓혀도 이만큼까지만
+_TRANSITION_MAX_WORDS = 8      # 이보다 긴 접속어 문장은 '전환 추임새'가 아니라 내용 문장 → 앞으로 옮겨 버리지 않는다
+_MERGE_GAP_SEC = 20.0          # 이 간격 이내로 붙은 두 컷은(사이에 대지 전환·착지가 없으면) 한 흐름으로 본다
+
+
+def _is_dirty_start(text: str) -> bool:
+    """첫 문장으로 두면 '중간을 툭 자른' 훅이 되는 문장(접속어·지시어·구조 표지·추임새 시작)."""
+    t = text.strip()
+    if not t or _FILLER_ONLY.match(t) or _FILLER_PREFIX.match(t):
+        return True
+    return bool(_CONNECTOR_START.match(t) or _starts_with_structure_marker(t))
+
+
+def _is_clean_start(text: str) -> bool:
+    """시작을 옮길 때 '후보'로 삼아도 되는 문장인가 — 더럽지 않고, 착지도 아니고, 조각도 아님.
+    (현재 시작이 고칠 대상인지는 _is_dirty_start로 본다: "놀라운 신분이에요." 같은 짧은 선언은
+    시작으로 이미 괜찮으므로 건드리지 않는다.)"""
+    t = text.strip()
+    if _is_dirty_start(t):
+        return False
+    if _STRONG_LANDING.search(t) or re.fullmatch(r"(>>\s*)?아멘[.!]?", t):
+        return False
+    # "피신하십시오." "권유를 합니다." 같은 1~2단어 조각은 시작으로 세울 수 없다(질문은 짧아도 훅이 된다).
+    if len(t.split()) < 3 and not t.endswith("?"):
+        return False
+    return True
 
 
 def _is_incomplete(text: str) -> bool:
@@ -274,9 +330,14 @@ def verify_and_fix(
     def dur(a: int, b: int) -> float:
         return sentences[b].end - sentences[a].start
 
-    # (2) 첫 문장이 구조 표지("둘째,", "자, 그러면")면 떼어낸다
-    while start < core and _starts_with_structure_marker(sentences[start].text):
-        log.append(f"start S{start} 구조 표지 제거 → S{start+1}"); start += 1
+    # (2) 첫 문장이 구조 표지("둘째,", "자, 그러면")·추임새("예.", "응.")면 떼어낸다
+    while start < core and (
+        _starts_with_structure_marker(sentences[start].text) or _FILLER_ONLY.match(sentences[start].text.strip())
+    ):
+        log.append(f"start S{start} 구조 표지/추임새 제거 → S{start+1}"); start += 1
+    # 끝이 "예."/"응." 같은 추임새면 뗀다("아멘."은 착지라 유지)
+    while end > core and _FILLER_ONLY.match(sentences[end].text.strip()) and not re.search(r"아멘", sentences[end].text):
+        log.append(f"end S{end} 추임새 제거 → S{end-1}"); end -= 1
     # (3) 끝이 미완(접속형·질문·쉼표)이면 착지까지 확장(최대 4문장, 상한 내)
     steps = 0
     while _is_incomplete(sentences[end].text) and end + 1 < n and steps < 4:
@@ -327,10 +388,123 @@ def verify_and_fix(
             committed = probe
     if committed != start:
         log.append(f"start S{start} → S{committed} (짧은 컷 앞 설정 보강)"); start = committed
+    # (7) 첫 문장이 접속어·지시어("그래서/그니까/그러나/이런…")로 시작하면 앞 문맥을 전제하는
+    #     '중간을 툭 자른' 훅이다(2026-09-18 실측 1GM: 6개 중 3개가 이렇게 시작, hook 3~4점).
+    #     모델에게 하지 말라고 써 놔도 실행마다 다르게 나오므로 여기서 결정론적으로 고친다:
+    #     먼저 뒤로 최대 3문장(20초) 안에서 깨끗한 문장을 찾되 축복 착지·아멘·구조 표지(=앞 생각의
+    #     끝/새 대지)를 넘어가진 않는다. 못 찾으면 앞으로(핵심 문장까지) 첫 깨끗한 문장으로 옮긴다.
+    if _is_dirty_start(sentences[start].text):
+        moved = None
+        nearest_clean = None
+        for k in range(1, _CONNECTOR_LOOKBACK + 1):
+            j = start - k
+            if j < 0:
+                break
+            sj = sentences[j]
+            if (
+                _starts_with_structure_marker(sj.text)
+                or _STRONG_LANDING.search(sj.text)
+                or re.fullmatch(r"(>>\s*)?아멘[.!]?", sj.text.strip())
+                or sentences[start].start - sj.start > _CONNECTOR_LOOKBACK_SEC
+                or dur(j, end) > hard_max_sec
+            ):
+                break
+            if _is_clean_start(sj.text):
+                if nearest_clean is None:
+                    nearest_clean = j
+                # 질문 문장("베드로가 어디 가서 순교합니까?")은 벤치마크형 훅이라 창 안에 있으면 그쪽을 택한다
+                if sj.text.strip().endswith("?"):
+                    moved = j
+                    break
+        if moved is None:
+            moved = nearest_clean
+        # 앞으로 옮기는 건 첫 문장이 짧은 전환("그래서 우리가 하나님의 마음을 가져야 돼.")일 때만.
+        # "그래서 베드로가 … 쿠오바디스 영화의 한 장면에 보면 …"처럼 긴 내용 문장은 '그래서'가
+        # 말버릇일 뿐 설정이 들어 있어 잘라내면 이야기가 무너진다(실측 1GM 쿠오바디스).
+        if moved is None and len(sentences[start].text.split()) <= _TRANSITION_MAX_WORDS:
+            for j in range(start + 1, core + 1):
+                if _is_clean_start(sentences[j].text) and dur(j, end) >= min_sec * 0.8:
+                    moved = j
+                    break
+        if moved is not None:
+            log.append(f"start S{start} 접속어 시작 → S{moved} (깨끗한 첫 문장)"); start = moved
     if dur(start, end) < min_sec * 0.8:
         return None, log + [f"길이 {dur(start,end):.0f}초 < 하한 → 탈락"]
     fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end})
     return fixed, log
+
+
+def merge_adjacent_cuts(
+    cuts: list[dict], sentences: list[Sentence], hard_max_sec: float, gap_sec: float = _MERGE_GAP_SEC,
+) -> tuple[list[dict], list[str]]:
+    """한 흐름을 둘로 쪼갠 컷을 합친다(강한 쪽의 core·appeal을 유지).
+
+    2026-09-18 실측(1GM): "우리를 보실 때 이뻐 죽겠어"(33초)와 "하나님이 버리셨느냐? 그럴 수
+    없느니라"(34초)는 설정→반전→착지가 이어지는 하나의 흐름인데, '한 컷 = 명제 하나' 규칙 때문에
+    모델이 둘로 나눠 냈고 각각은 훅이 죽은 반쪽이 됐다. 두 컷이 8초 이내로 붙어 있고, 앞 컷이
+    축복·아멘 착지로 끝나지 않았으며(=생각이 아직 안 끝남), 합쳐도 상한 이내면 하나로 만든다.
+    50% 이상 겹치는 컷은 같은 장면의 중복이라 여기서 합치지 않고 dedupe_cuts가 강한 쪽만 남긴다."""
+    cuts = [dict(c) for c in cuts]
+    log: list[str] = []
+
+    def _t(c: dict) -> tuple[float, float]:
+        return sentences[c["start"]].start, sentences[c["end"]].end
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(cuts)):
+            for j in range(i + 1, len(cuts)):
+                a, b = cuts[i], cuts[j]
+                first, second = (a, b) if _t(a)[0] <= _t(b)[0] else (b, a)
+                f0, f1 = _t(first); s0, s1 = _t(second)
+                inter = max(0.0, min(f1, s1) - max(f0, s0))
+                if inter / max(1e-6, min(f1 - f0, s1 - s0)) >= 0.5:
+                    continue  # 중복 → dedupe 담당
+                if s0 - f1 > gap_sec:
+                    continue
+                end_text = sentences[first["end"]].text
+                if _STRONG_LANDING.search(end_text) or re.fullmatch(r"(>>\s*)?아멘[.!]?", end_text.strip()):
+                    continue  # 앞 컷이 착지로 끝남 = 다른 생각
+                # 두 컷 사이의 다리 문장에 대지 전환("마지막으로")·축복 착지·아멘이 있으면 다른 생각
+                bridge = sentences[first["end"] + 1: second["start"]]
+                if any(
+                    _starts_with_structure_marker(x.text) or _STRONG_LANDING.search(x.text)
+                    or re.fullmatch(r"(>>\s*)?아멘[.!]?", x.text.strip())
+                    for x in bridge
+                ):
+                    continue
+                new_start, new_end = first["start"], max(first["end"], second["end"])
+                if sentences[new_end].end - sentences[new_start].start > hard_max_sec:
+                    # 합치면 넘칠 때: 뒤 컷의 핵심 문장 이후 가장 늦은 착지(축복·믿습니다·아멘)까지로 끝을 당겨
+                    # 상한에 맞춘다(실측 1GM: 모델이 뒤 컷을 마지막 축복 기도까지 늘려 102초가 됐지만
+                    # "…은혜 베푸신 줄 믿습니다. 아멘."에서 끊으면 77초로 한 흐름이 온전히 들어간다).
+                    late_core = max(first["core"], second["core"])
+                    trimmed = None
+                    for cand in range(new_end - 1, late_core - 1, -1):
+                        if sentences[cand].end - sentences[new_start].start > hard_max_sec:
+                            continue
+                        tx = sentences[cand].text
+                        if _STRONG_LANDING.search(tx) or re.fullmatch(r"(>>\s*)?아멘[.!]?", tx.strip()):
+                            trimmed = cand
+                            break
+                    if trimmed is None:
+                        continue
+                    new_end = trimmed
+                merged = dict(a)  # 강한 쪽(a=i)의 core/appeal/thesis 유지
+                merged["start"], merged["end"] = new_start, new_end
+                if b.get("why"):
+                    merged["why"] = f"{a.get('why', '')} + {b['why']}".strip(" +")
+                log.append(
+                    f"컷 S{a['start']}~S{a['end']} + S{b['start']}~S{b['end']} → S{new_start}~S{new_end} (한 흐름 병합)"
+                )
+                cuts[i] = merged
+                del cuts[j]
+                changed = True
+                break
+            if changed:
+                break
+    return cuts, log
 
 
 def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.5) -> list[dict]:
@@ -404,7 +578,10 @@ def select_highlights_v2(
     extra_block: str = "",
     timeout_sec: int = 900,
     on_progress=None,
+    debug_path=None,
 ) -> list[Clip]:
+    """debug_path가 있으면 1차 원시 컷·검증 로그·병합 결과를 JSON으로 남긴다(선정 품질 불만이
+    왔을 때 '모델이 뭘 줬고 검증이 뭘 바꿨는지'를 사후에 볼 수 있게 — 예전엔 아무것도 안 남았다)."""
     sentences = build_sentences(transcript)
     if not sentences:
         return []
@@ -426,13 +603,31 @@ def select_highlights_v2(
 
     # --- 검증·보정
     fixed: list[dict] = []
+    verify_logs: list[dict] = []
     for i, rc in enumerate(raw_cuts):
         cut, log = verify_and_fix(rc, sentences, min_duration_sec, max_duration_sec, hard_max_duration_sec)
         if log:
             print(f"[v2] 검증 컷{i}: " + " / ".join(log), flush=True)
+        verify_logs.append({"raw": rc, "fixed": cut, "log": log})
         if cut is not None:
             fixed.append(cut)
+    fixed, merge_log = merge_adjacent_cuts(fixed, sentences, hard_max_duration_sec)
+    for m in merge_log:
+        print(f"[v2] 병합: {m}", flush=True)
     fixed = dedupe_cuts(fixed, sentences)
+    if debug_path is not None:
+        try:
+            import json
+            from pathlib import Path
+            dbg = {
+                "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
+                "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log,
+                "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end}
+                               for c in fixed],
+            }
+            Path(debug_path).write_text(json.dumps(dbg, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - 디버그 저장 실패는 선정에 영향 없음
+            print(f"[v2] 디버그 저장 실패: {exc}", flush=True)
     if not fixed:
         return []
 
