@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.highlights import Clip, _invoke_claude_json
 from src.scoring import compute_scores
@@ -35,6 +35,7 @@ class Sentence:
     start: float
     end: float
     text: str
+    words: list = field(default_factory=list)  # [(start, end, text)] — 첫 단어 말버릇 트림용
 
 
 _NOISE_TOKEN = re.compile(r"^\[[^\]]*\]$|^>>$|^>>\S*$")  # [노래] [음악] [한숨] >> 등
@@ -94,7 +95,7 @@ def build_sentences(transcript: Transcript) -> list[Sentence]:
             return
         text = " ".join(w[2] for w in cur).strip()
         if text:
-            sentences.append(Sentence(len(sentences), cur[0][0], max(w[1] for w in cur), text))
+            sentences.append(Sentence(len(sentences), cur[0][0], max(w[1] for w in cur), text, list(cur)))
         cur = []
 
     for i, (ws, we, wt) in enumerate(words):
@@ -113,6 +114,29 @@ def build_sentences(transcript: Transcript) -> list[Sentence]:
             _flush()
     _flush()
     return sentences
+
+
+# 첫 문장 맨 앞의 말버릇·추임새 단어("그래서", "그니까", "근데", "어", "자", "예"). 문장이 최소 단위라
+# "그래서 베드로가 … 쿠오바디스 영화의 한 장면에 보면 …"처럼 설정이 든 긴 문장은 통째로 버릴 수 없다 →
+# 단어 시각을 이용해 그 단어(0.2~0.5초)만 잘라내고 다음 단어부터 클립을 시작한다(2026-09-18, 실측 1GM).
+_LEAD_TRIM_WORDS = {
+    "그래서", "그러니까", "그니까", "그런데", "근데", "그리고", "그러나", "그러면", "그럼", "그래도", "그래가지고",
+    "자", "어", "응", "음", "에", "아", "예", "네", "그", "저", "이제", "또", "뭐", "인제",
+}
+_LEAD_TRIM_MAX_WORDS = 2
+
+
+def trim_lead_words(sent: Sentence) -> tuple[float, str]:
+    """문장 앞의 말버릇 단어를 떼고 (실제 시작 시각, 남은 텍스트)를 돌려준다. 못 떼면 원래 값."""
+    ws = list(sent.words)
+    if len(ws) < 4:
+        return sent.start, sent.text
+    k = 0
+    while k < _LEAD_TRIM_MAX_WORDS and k < len(ws) - 3 and re.sub(r"[.,!?]+$", "", ws[k][2]) in _LEAD_TRIM_WORDS:
+        k += 1
+    if k == 0:
+        return sent.start, sent.text
+    return ws[k][0], " ".join(w[2] for w in ws[k:]).strip()
 
 
 def _fmt_ts(sec: float) -> str:
@@ -661,6 +685,7 @@ def select_highlights_v2(
         s, e = sentences[c["start"]], sentences[c["end"]]
         r = scored.get(i, {})
         core_line = sentences[c["core"]].text
+        clip_start, hook_text = trim_lead_words(s)  # "그래서 베드로가…" → "베드로가…"부터
         computed = compute_scores(r if r else {"core_score": 6, "hook": 6, "retention": 6, "emotion": 6,
                                                "relatability": 6, "payoff": 6, "quotability": 6})
 
@@ -671,7 +696,7 @@ def select_highlights_v2(
                 return None
 
         clips.append(Clip(
-            start=s.start, end=e.end,
+            start=clip_start, end=e.end,
             title=str(r.get("title") or c.get("thesis") or core_line).strip()[:40],
             caption=str(r.get("caption", "")).strip(),
             hashtags=[str(h) for h in (r.get("hashtags") or ["#설교", "#은혜", "#말씀"])],
@@ -680,7 +705,7 @@ def select_highlights_v2(
             hook_score=_f("hook"), retention_score=_f("retention"), emotion_score=_f("emotion"),
             relatability_score=_f("relatability"), payoff_score=_f("payoff"), quotability_score=_f("quotability"),
             appeal=str(c.get("appeal", "")).strip(),
-            hook_line=s.text, payoff_line=e.text, core_line=core_line,
+            hook_line=hook_text, payoff_line=e.text, core_line=core_line,
             insight=str(r.get("insight", "")).strip(),
             anchored=True,  # 경계가 문장 시각으로 확정됨 — 렌더의 끝 스냅은 미세조정만
             title_candidates=[str(t).strip() for t in (r.get("title_candidates") or []) if str(t).strip()],

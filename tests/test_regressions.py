@@ -36,6 +36,7 @@ from src.sermon_cut import (
     build_sentences,
     dedupe_cuts,
     merge_adjacent_cuts,
+    trim_lead_words,
     verify_and_fix,
 )
 from src.transcribe import Segment, Transcript, Word
@@ -199,6 +200,21 @@ def test_verify_and_fix_strips_filler_start():
     ]
     cut, log = verify_and_fix({"core": 2, "start": 0, "end": 2}, sents, 15.0, 60.0, 90.0)
     assert cut is not None and cut["start"] == 1, log
+
+
+def test_trim_lead_words_cuts_connector_from_first_sentence():
+    """문장이 최소 단위라 못 버리는 긴 설정 문장은 첫 단어 '그래서'만 단어 시각으로 잘라낸다(쿠오바디스 실측)."""
+    tr = Transcript(language="ko", duration_sec=10.0, segments=[Segment(
+        start=0.0, end=10.0, text="",
+        words=[W(0.0, 0.4, "그래서"), W(0.4, 1.0, "베드로가"), W(1.0, 2.0, "로마에서"), W(2.0, 3.0, "죽임을"),
+               W(3.0, 4.0, "당하는데"), W(4.0, 5.0, "영화를"), W(5.0, 6.0, "보면.")],
+    )])
+    sent = build_sentences(tr)[0]
+    start, text = trim_lead_words(sent)
+    assert start == 0.4 and text.startswith("베드로가")
+    short = build_sentences(Transcript(language="ko", duration_sec=3.0, segments=[Segment(
+        start=0.0, end=3.0, text="", words=[W(0, 1, "그래서"), W(1, 2, "믿습니다."), W(2, 3, "아멘.")])]))[0]
+    assert trim_lead_words(short) == (short.start, short.text)  # 너무 짧으면 건드리지 않는다
 
 
 def test_merge_adjacent_cuts_joins_one_flow():
