@@ -192,8 +192,10 @@
   .vbox { position: absolute; background: #000; overflow: hidden; }
   .vbox video { width: 100%; height: 100%; display: block; background: #000; }
   .ttl-ov { position: absolute; left: 50%; transform: translateX(-50%); text-align: center;
-    white-space: nowrap; width: max-content; pointer-events: none; font-weight: 800;
-    color: #191f28; line-height: 1.25; z-index: 3; }
+    white-space: nowrap; width: max-content; font-weight: 800; cursor: grab; touch-action: none;
+    color: #191f28; line-height: 1.25; z-index: 3; padding: 1px 5px; border-radius: 7px; border: 1.5px dashed transparent; }
+  .ttl-ov:hover, .ttl-ov.dragging { border-color: var(--hot); background: rgba(75,155,255,.16); }
+  .ttl-ov.dragging { cursor: grabbing; }
   .cap-ov { position: absolute; left: 50%; transform: translateX(-50%); text-align: center;
     width: max-content; max-width: 96%; font-weight: 800; color: #191f28; line-height: 1.25;
     z-index: 4; cursor: grab; touch-action: none; padding: 1px 5px; border-radius: 7px;
@@ -202,8 +204,8 @@
   .cap-ov.dragging { cursor: grabbing; }
   .cap-ov .en { display: block; font-weight: 600; color: #8b95a1; }
   /* 영상 위 오버레이(업로드 찬양)는 실제 렌더가 흰 글씨 + 검은 외곽선이다. */
-  .cap-ov.onvideo { color: #fff;
-    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.7); }
+  .cap-ov.onvideo { color: #fff; }
+  .cap-ov .ko { paint-order: stroke fill; }
   .cap-ov.onvideo .en { color: #f2f2f2; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
   .safe { position: absolute; pointer-events: none; border: 1px dashed rgba(255,80,80,.5); display: none; z-index: 2; }
   .safe.right { top: 0; bottom: 0; right: 0; width: 13%; }
@@ -570,6 +572,9 @@
                 <div class="prm"><span class="stop"></span><span class="pn">세로 위치</span><div class="pv"><button class="stp" data-nudge="pY:-6" title="위로">&minus;</button><input class="hot" type="number" id="pY" min="-700" max="700" step="1"><button class="stp" data-nudge="pY:6" title="아래로">+</button><span class="unit">px</span></div></div>
                 <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn">안전 여백</span><div class="pv"><input class="chk" type="checkbox" id="pSafe" checked><span class="dimtxt">휴대폰 UI 가이드(우측·하단)</span></div></div>
                 <div class="prm"><span class="stop" style="visibility:hidden"></span><span class="pn"></span><div class="pv"><span class="dimtxt">미리보기의 자막을 끌어서 옮길 수도 있어요</span></div></div>
+                <div class="prm" id="pTitleRowX"><span class="stop"></span><span class="pn">제목 가로</span><div class="pv"><button class="stp" data-nudge="pTX:-6" title="왼쪽으로">&minus;</button><input class="hot" type="number" id="pTX" min="-400" max="400" step="1"><button class="stp" data-nudge="pTX:6" title="오른쪽으로">+</button><span class="unit">px</span></div></div>
+                <div class="prm" id="pTitleRowY"><span class="stop"></span><span class="pn">제목 세로</span><div class="pv"><button class="stp" data-nudge="pTY:-6" title="위로">&minus;</button><input class="hot" type="number" id="pTY" min="-700" max="700" step="1"><button class="stp" data-nudge="pTY:6" title="아래로">+</button><span class="unit">px</span></div></div>
+                <div class="prm" id="pTitleRowHint"><span class="stop" style="visibility:hidden"></span><span class="pn"></span><div class="pv"><span class="dimtxt">미리보기의 제목도 끌어서 옮길 수 있어요</span></div></div>
               </div>
             </div>
             <div class="ec-sec">자막(영어)</div>
@@ -877,6 +882,9 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   bindNum('pSize', C.caption_size || defSize);
   bindNum('pX', C.caption_offset_x || 0);
   bindNum('pY', C.caption_offset_y || 0);
+  bindNum('pTX', C.title_offset_x || 0);
+  bindNum('pTY', C.title_offset_y || 0);
+  ['pTX', 'pTY'].forEach((id) => $(id).addEventListener('input', () => { pushUndoBurst(); updateTitleOv(); }));
   bindNum('pSizeEn', C.caption_size_en || 0);
   bindNum('pSpacing', C.caption_spacing || 0);
   applyPreviewFonts(info);
@@ -1122,11 +1130,13 @@ function initCaptionStyleUi(info) {
   $('pGlowColor').addEventListener('input', () => { capGlowColor = $('pGlowColor').value; markDirty(); updateOverlay(); });
   syncCapStyleInputs();
 }
-// 제목(카드형에서만 존재). 스튜디오에서 편집하지는 않고, 자막 위치를 잡을 때 기준이
-// 되도록 실제 크기·위치 그대로 보여준다.
+// 제목. 실제 크기·위치 그대로 보여주고, 끌거나 숫자(pTX/pTY)로 위치를 옮긴다(2026-09-20:
+// "스튜디오에서도 제목 위치 수정할 수 있게"). 값은 title_offset_x/y로 저장된다(편집기와 같은 필드).
 function updateTitleOv() {
   const el = $('ttlOv'); if (!L) return;
-  if (L.no_title || !C || !C.title) { el.style.display = 'none'; return; }
+  const hasTitle = !(L.no_title || !C || !C.title);
+  ['pTitleRowX', 'pTitleRowY', 'pTitleRowHint'].forEach((id) => { $(id).style.display = hasTitle ? '' : 'none'; });
+  if (!hasTitle) { el.style.display = 'none'; return; }
   el.style.display = 'block';
   el.textContent = '';
   String(C.title).split('\n').forEach((part, i) => {
@@ -1140,9 +1150,27 @@ function updateTitleOv() {
   const cap = (L.resolution[0] - 80) * SC;
   let guard = 0;
   while (el.scrollWidth > cap && fs > 6 && guard++ < 300) { fs -= 0.5; el.style.fontSize = fs + 'px'; }
-  el.style.left = ((L.resolution[0] / 2 + (C.title_offset_x || 0)) * SC) + 'px';
-  el.style.top = (((L.title_base_margin_v || 0) + (C.title_offset_y || 0)) * SC) + 'px';
+  el.style.left = ((L.resolution[0] / 2 + (parseFloat($('pTX').value) || 0)) * SC) + 'px';
+  el.style.top = (((L.title_base_margin_v || 0) + (parseFloat($('pTY').value) || 0)) * SC) + 'px';
 }
+// 미리보기에서 제목을 직접 끌어 옮긴다(자막 드래그와 같은 방식).
+(function () {
+  const el = $('ttlOv');
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); pushUndo();
+    el.classList.add('dragging'); el.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY;
+    const ox = parseFloat($('pTX').value) || 0, oy = parseFloat($('pTY').value) || 0;
+    const move = (ev) => {
+      $('pTX').value = Math.round(ox + (ev.clientX - sx) / SC);
+      $('pTY').value = Math.round(oy + (ev.clientY - sy) / SC);
+      markDirty(); updateTitleOv();
+    };
+    const up = () => { el.classList.remove('dragging'); document.removeEventListener('pointermove', move); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  });
+})();
 $('ddFit').addEventListener('change', () => { fitMode = $('ddFit').value; fitVideo(); });
 window.addEventListener('resize', () => { fitVideo(); renderAll(); });
 
@@ -1241,8 +1269,10 @@ function updateOverlay() {
   koEl.style.fontStyle = capItalic ? 'italic' : 'normal';
   koEl.style.textDecoration = capUnderline ? 'underline' : 'none';
   ov.style.opacity = (parseFloat($('pTextOpacity').value) || 100) / 100;
+  // 렌더의 Outline은 1080폭 기준 px이며 글자 바깥으로만 두께가 생긴다. CSS 획은 글자 경계 중앙에
+  // 그려져 절반이 안쪽으로 들어가므로 (폭×배율×2)로 주고 paint-order로 글자를 위에 덮는다.
   koEl.style.webkitTextStroke = capOutlineOn
-    ? ((parseFloat($('pOutlineWidth').value) || 0) + 'px ' + (capOutlineColor || '#000000')) : '0px transparent';
+    ? (((parseFloat($('pOutlineWidth').value) || 0) * SC * 2).toFixed(2) + 'px ' + (capOutlineColor || '#000000')) : '0px transparent';
   koEl.style.textShadow = capGlow
     ? ('0 0 6px ' + (capGlowColor || '#0ff') + ', 0 0 14px ' + (capGlowColor || '#0ff')) : '';
   // 박스(캡컷 스타일): inline 요소에 배경+box-decoration-break:clone을 주면 줄바꿈된 자막도
@@ -2377,7 +2407,12 @@ function applyFx(kind) {
   if (kind === 'sync') {
     // 싱크가 끝나면 영어 자막도 이어서 만든다(사용자 요청 2026-09-07). 번역 입력은 방금
     // 싱크된 줄(collect())이라 영어 트랙의 시간이 한국어와 정확히 같아진다.
-    aiCall(kind, base + 'sync_captions', { captions: collect() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 맞춤: ' + (j.source || '')); })
+    aiCall(kind, base + 'sync_captions', { captions: collect() }, (j) => {
+      const before = caps.length;
+      caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text }));
+      const removed = Math.max(0, before - caps.length);
+      setStatus('싱크 맞춤: ' + caps.length + '줄 재정렬' + (removed ? ', 빈 줄 ' + removed + '개 삭제' : '') + ' · ' + (j.source || ''));
+    })
       .then((ok) => {
         if (!ok) return;
         setStatus('싱크 완료 — 영어 자막 만드는 중…');
@@ -2404,6 +2439,7 @@ function snapshot() {
     capFont, capAlign, capTextColor, capBox, capBoxColor, capBoxOpacity,
     capBold, capItalic, capUnderline, capOutlineOn, capOutlineColor, capGlow, capGlowColor,
     pSize: $('pSize').value, pX: $('pX').value, pY: $('pY').value, pSizeEn: $('pSizeEn').value,
+    pTX: $('pTX').value, pTY: $('pTY').value,
     pSpacing: $('pSpacing').value, pBoxRadius: $('pBoxRadius').value,
     pBoxW: $('pBoxW').value, pBoxH: $('pBoxH').value, pBoxOX: $('pBoxOX').value, pBoxOY: $('pBoxOY').value,
     pTextOpacity: $('pTextOpacity').value, pOutlineWidth: $('pOutlineWidth').value,
@@ -2429,6 +2465,7 @@ function restore(s) {
     $('pFont').value = capFont;
     document.querySelectorAll('.align-btn').forEach((x) => x.classList.toggle('on', x.dataset.align === capAlign));
     $('pSize').value = s.pSize; $('pX').value = s.pX; $('pY').value = s.pY;
+    if (s.pTX !== undefined) { $('pTX').value = s.pTX; $('pTY').value = s.pTY; updateTitleOv(); }
     $('pSizeEn').value = s.pSizeEn; $('pSpacing').value = s.pSpacing;
     $('pTextOpacity').value = s.pTextOpacity; $('pOutlineWidth').value = s.pOutlineWidth;
     syncCapStyleInputs();
@@ -2457,6 +2494,8 @@ function payload() {
     caption_size_en: parseInt($('pSizeEn').value, 10) || 0,
     caption_offset_x: parseFloat($('pX').value),
     caption_offset_y: parseFloat($('pY').value),
+    title_offset_x: parseFloat($('pTX').value) || 0,
+    title_offset_y: parseFloat($('pTY').value) || 0,
     caption_font: capFont,
     caption_align: capAlign,
     caption_spacing: parseFloat($('pSpacing').value) || 0,

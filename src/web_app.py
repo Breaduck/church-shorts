@@ -2321,6 +2321,7 @@ def sync_captions_route(video_id: str, idx: int):
         return _re.sub(r"[^0-9가-힣a-zA-Z]", "", s or "")
 
     out = []
+    matched_idx: list[int] = []  # out 안에서 확신 매칭(>=0.6)된 인덱스들
     wi = 0  # 순차 정렬: 다음 줄은 이전 줄 매칭 지점 이후에서 찾는다
     n_words = len(words)
     matched_n = 0
@@ -2328,8 +2329,8 @@ def sync_captions_route(video_id: str, idx: int):
         text = str(ln.get("text", "")).strip()
         target = norm(text)
         cur = {"start": float(ln.get("start", 0)), "end": float(ln.get("end", 0)), "text": text}
+        out.append(cur)
         if not target or wi >= n_words:
-            out.append(cur)
             continue
         best = None  # (score, i, j)
         for i in range(wi, min(wi + 30, n_words)):
@@ -2347,7 +2348,52 @@ def sync_captions_route(video_id: str, idx: int):
             cur["end"] = round(max(words[j].end, words[i].start + 0.3) + sync_off, 2)
             wi = j + 1
             matched_n += 1
-        out.append(cur)
+            matched_idx.append(len(out) - 1)
+    # 매칭 실패(신뢰도<0.6, 또는 단어 소진)한 줄은 예전 절대 시각이 그대로 남는다 — 매칭된
+    # 줄들은 '새' 시간대로 옮겨졌는데 얘들만 '옛' 시간대에 남아 뒤섞이는 게 실제 신고
+    # ("빈 칸 삭제는 되는데 싱크가 안 맞다", 2026-09-20)의 원인이다. 매칭된 앵커들 사이를
+    # 원래 줄 길이 비율로 새 시간대 위에 재배치하고, 첫/마지막 앵커 앞뒤도 같은 방식으로
+    # 이어 붙인다(매칭이 하나도 없으면 옛 시각 그대로 — 폴백).
+    if matched_idx:
+        def _orig_dur(k: int) -> float:
+            return max(0.05, float(in_lines[k].get("end", 0)) - float(in_lines[k].get("start", 0)))
+
+        for ai in range(len(matched_idx) - 1):
+            a, b = matched_idx[ai], matched_idx[ai + 1]
+            mids = list(range(a + 1, b))
+            if not mids:
+                continue
+            span = out[b]["start"] - out[a]["end"]
+            gap = max(0.0, float(in_lines[b].get("start", 0)) - float(in_lines[a].get("end", 0)))
+            lens = [_orig_dur(k) for k in mids]
+            total = sum(lens) + gap
+            if span <= 0 or total <= 0:
+                step = max(0.3, span / (len(mids) + 1)) if span > 0 else 0.3
+                t = out[a]["end"]
+                for k in mids:
+                    t += step
+                    out[k]["start"] = round(t - step, 2)
+                    out[k]["end"] = round(t, 2)
+                continue
+            scale = span / total
+            t = out[a]["end"] + gap * scale
+            for k, dur in zip(mids, lens):
+                out[k]["start"] = round(t, 2)
+                t += dur * scale
+                out[k]["end"] = round(t, 2)
+        first = matched_idx[0]
+        t = out[first]["start"]
+        for k in range(first - 1, -1, -1):
+            out[k]["end"] = round(t, 2)
+            t = max(0.0, t - _orig_dur(k))
+            out[k]["start"] = round(t, 2)
+        last = matched_idx[-1]
+        t = out[last]["end"]
+        for k in range(last + 1, len(out)):
+            dur = _orig_dur(k)
+            out[k]["start"] = round(t, 2)
+            t += dur
+            out[k]["end"] = round(t, 2)
     # 줄끼리 겹치지 않게(다음 줄 시작 - 0.02까지만) 정리해 화면에 두 줄이 겹쳐 뜨는 것 방지.
     for k in range(len(out) - 1):
         if out[k]["end"] > out[k + 1]["start"]:

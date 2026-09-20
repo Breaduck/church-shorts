@@ -233,13 +233,15 @@ def build_thesis_cut_prompt(
 
 ## 1단계 — 장면 지도 (명제 지도가 아니다)
 먼저 설교 전체를 읽고 **장면**을 전부 찾아 나열하라. 장면이란 설교자가 추상 대신 **구체**로 말한 대목이다:
-- 일상 상황을 **대사까지 넣어 재연**한 곳("원장님 기도해 주세요… 신학교 가야 된다고, 누구랑 결혼해야 된다고"),
-  "여러분, 아이들 유치원 재롱잔치 가면 다른 애들 보여요? 우리만 보이잖아요"처럼 시청자가 겪어본 구체 상황,
-- 유머·자학·흉내(청중이 웃었을 곳 — 전사에 [웃음]이 있으면 그 직전 문장들이 핵심), 설교자 자신의 경험담·고백,
-- 구체 숫자·고유명사가 있는 실화("여행비를 두 배 세 배 내고, 전문 셰프를 데리고 와서 호텔 옆방을 통째로 빌려요",
-  "이 동네에도 양복 깔끔하게 입은 두세 명이 영어 가르쳐 준다고 청년들에게 접근해요"),
-- 시청자를 정면으로 찌르는 직격("그거 점쟁이지 뭐예요?", "이단이 다른 사람이 아니에요"), 같은 말이 반복되며
-  고조되는 크레센도, 예화가 꺾이는 반전의 한마디("주여 어디로 가시나이까?" — "네가 버리고 가는 로마로").
+- 일상 상황을 **대사까지 넣어 재연**한 곳("야 교회 한 번만 가자" — "아 진짜 그 말 좀 하지 말라고"),
+  "여러분, 아이 재롱잔치 가면 다른 집 애 보여요? 내 애만 보이잖아요"처럼 **시청자 자신이 겪어본** 구체 상황,
+- 유머·자학·흉내(청중이 웃었을 곳 — 전사에 [웃음]이 있으면 그 직전 문장들이 핵심), 설교자 자신의 경험담·고백
+  ("저도 해외 가게 되니까 자꾸 뭘 찾게 되냐면요, 짐 적게 꾸리는 새로운 물건들"),
+- 구체 숫자·고유명사가 있는 실화, 성경 인물 이야기가 **꺾이는 반전의 한마디**("주여 어디로 가시나이까?" 뒤에
+  돌아온 대답), 같은 말이 반복되며 고조되는 크레센도("뭐 하러 그렇게까지 하냐?" 5번),
+- 시청자 **자신의 삶**을 정면으로 찌르는 직격("딱 맞아떨어진다고 다 하나님의 뜻은 아닙니다").
+**장면의 주인공은 시청자 자신이어야 한다.** 남(이단·타종교·다른 목회자·특정 집단)을 두고 "저 사람들은 이렇다"고
+설명·경계·폭로하는 대목은 아무리 이야기가 구체적이고 흥미로워도 장면이 아니다 — 아래 '절대 제외'.
 장면마다 **그 장면이 착지하는 명제 문장**(설교자가 한 문장으로 못 박은 결론)을 짝지어라. 장면 없이 명제만 있는
 대목("~은 ~입니다"라는 선언만 있고 구체가 없는 곳)은 지도에 넣되 **[명제만]**이라고 표시하라 — 후보 상한은 2개다.
 25~40분 설교면 장면은 보통 6~12개다. 4개 미만이면 못 찾은 것이니 본문 해설 사이에 툭 튀어나온 일상 언어·숫자·
@@ -272,8 +274,7 @@ def build_thesis_cut_prompt(
 청중이 "아, 그렇구나" 하고 끝나지 "내 얘기다/찔린다/위로된다"가 안 생기면 후보에서 빼라. 실패 실측(이 규칙이
 없어서 실제로 나온 지루한 후보들 — 절대 이런 식으로 뽑지 마라):
 - "회사 비전은 비전 아닙니다": '환상'과 '꿈'의 사전적 차이를 설명하는 대목. 갈등도 적용도 없다 → 제외.
-- "환상이라고 다 하나님 아닙니다": 가짜 계시를 분별해야 한다는 **같은 주제를 두 번** 뽑음(다른 명제가 이미
-  이단·기도원장 얘기로 이 주제를 다뤘다면 겹치는 쪽은 버려라).
+- "환상이라고 다 하나님 아닙니다": 같은 주제(분별)를 **두 번** 뽑음 — 겹치면 더 강한 쪽 하나만.
 - 예화가 있어도 **결말이 "~한 삶을 사는 것이다" 식 해설로 끝나면** 웃기거나 뭉클한 채로 안 끝난다 → 결말을
   감정이 남는 문장(놀람·웃음·뭉클함·찔림)으로 다시 잡거나 후보에서 빼라.
 판별식: 이 명제를 시청자에게 그대로 들려줬을 때 "그렇군" 이상의 반응(웃음/뭉클/찔림/위로/도전)이 실제로
@@ -283,6 +284,12 @@ def build_thesis_cut_prompt(
 ## 절대 제외
 - 정치·특정 국가/민족/정당/정권/이념/전쟁을 다루거나 미화하는 구간, "역사적·국가적 사건 = 하나님의 직접 개입/섭리"
   비약(예: 소련 대사가 배탈로 회의에 빠져 대한민국이 살았다 → 섭리). 개인의 영적 진리가 아니면 제외.
+- **남을 비판·경계·폭로하는 대목**: 이단·사이비·타종교·타교단·다른 목회자/기도원/특정 집단·직군을 두고 "저들은
+  가짜다/조심하라/그 유래는 이렇다"고 말하는 구간 전부(예: 이단 교주의 창시 일화, "○○ 사람들 조심하세요",
+  "그거 점쟁이지 뭐예요", "이단이 다른 사람이 아니에요"). 이야기가 아무리 구체적이고 흥미로워도 **시청자에게 남는
+  감정이 웃음·뭉클·위로·찔림이 아니라 '남 욕·경계'**라 감동도 재미도 없고 공유되지 않으며, 채널이 이단 논쟁에 끌려
+  들어간다(실측 실패: 이런 클립 두 개가 1·2위로 올라와 사용자가 "감동도 재미도 없다"고 전부 폐기). 시청자 자신의
+  삶·믿음·마음을 다루는 대목만 후보다. 경고형 명제("~조심해야 됩니다", "~은 가짜다")가 착지인 컷도 같은 이유로 제외.
 - 본문 해설·강의만 있고 명제가 없는 것.
 {extra}
 ## 개수
@@ -584,6 +591,58 @@ def merge_adjacent_cuts(
     return cuts, log
 
 
+# 남을 비판·경계·폭로하는 주제(이단·사이비·타종교·점쟁이…)의 표지어. 프롬프트에 "절대 제외"라고 써 놔도
+# 모델은 이야기가 구체적이면 "재미"로 뽑아 올린다(실측 2026-09-20, 1GM: 기도원장 점쟁이/이단 클립과 몰몬경
+# 금판 클립이 1·2위 — 사용자 "감동도 재미도 없구만"). 그래서 여기서 결정론적으로 거른다.
+# 전사 오타까지 잡는다(몰몽경/몰경 = 몰몬경).
+_POLEMIC_RE = re.compile(
+    r"이단|사이비|몰몬|몰몽|몰경|신천지|여호와의\s*증인|통일교|안식교|구원파|하나님의\s*교회|점쟁이|무당|굿을|"
+    r"혹세\s*무민|거짓\s*계시|거짓\s*선지자|미혹|교주|사교|포교"
+)
+_POLEMIC_MIN_SENTENCES = 2  # 컷 안에서 표지어가 든 문장이 이만큼이면 주제 자체가 타자 비판이다
+
+
+def polemic_reason(cut: dict, sentences: list[Sentence]) -> str:
+    """컷이 '남 비판·경계' 주제면 그 근거 문자열을, 아니면 빈 문자열을 돌려준다.
+
+    판정: (a) 핵심 문장(core)·모델이 적은 장면/명제 요약에 표지어가 있거나,
+          (b) 컷 본문에서 표지어가 든 문장이 2개 이상."""
+    try:
+        core = sentences[int(cut["core"])].text
+        body = sentences[int(cut["start"]): int(cut["end"]) + 1]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return ""
+    m = _POLEMIC_RE.search(core)
+    if m:
+        return f"핵심 문장에 '{m.group(0)}'"
+    for key in ("scene", "thesis"):
+        m = _POLEMIC_RE.search(str(cut.get(key) or ""))
+        if m:
+            return f"{key}에 '{m.group(0)}'"
+    hits = [s for s in body if _POLEMIC_RE.search(s.text)]
+    if len(hits) >= _POLEMIC_MIN_SENTENCES:
+        words = sorted({_POLEMIC_RE.search(s.text).group(0) for s in hits})
+        return f"본문 {len(hits)}문장에 {'/'.join(words)}"
+    return ""
+
+
+def drop_polemic_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[list[dict], list[str]]:
+    """타자 비판 주제 컷을 제외한다. 전부 제외돼 후보가 1개 이하로 남으면(설교 자체가 그 주제)
+    제외 대신 맨 뒤로 보내고 표시만 남긴다 — 결과 0개보다는 낫다."""
+    kept, dropped, log = [], [], []
+    for c in cuts:
+        why = polemic_reason(c, sentences)
+        if why:
+            dropped.append({**c, "polemic": why})
+            log.append(f"S{c['start']}~S{c['end']} 타자 비판 주제 제외 ({why})")
+        else:
+            kept.append(c)
+    if len(kept) < 2 and dropped:
+        log.append(f"남는 후보 {len(kept)}개 → 제외 대신 뒤로 보냄")
+        kept = kept + dropped
+    return kept, log
+
+
 def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.5) -> list[dict]:
     """겹치는 컷은 앞(강한) 것만 남긴다."""
     kept: list[dict] = []
@@ -620,6 +679,8 @@ hook(첫 문장만 따로 읽고 멈추게 하는가 — 구체 상황·대사·
 retention(전진감·죽은 구간 없음), emotion(웃음·뭉클·찔림 스파이크 — 옳은 말은 0점, 실제 감정 반응만), relatability("내 얘기"),
 payoff(끝이 힘 있게 착지), quotability(스샷 떠 공유할 한 문장). 눈금: 5=쓸 만함, 7=이 설교의 손꼽는 대목,
 8=잘 되는 채널 상위 클립 수준, 9~10=채널 1위감(드묾). 정직하게 — 약하면 낮게.
+주된 내용이 남(이단·사이비·타종교·다른 목회자·특정 집단)을 비판·경계·폭로하는 것이면 emotion·relatability·core_score
+모두 3 이하 — 남 욕·경계는 흥미로워도 시청자 자신의 감정(웃음·뭉클·위로)이 아니고 공유되지 않는다.
 
 title = 핵심 문장을 벤치마크 스타일로 다듬은 15~20자 구어체 한 줄(예: "기도하는 사람은 오염되지 않습니다").
 insight = 이 클립이 시청자 삶의 어떤 문제에 어떻게 닿는가 한 줄. caption = 훅 한 문장. hashtags 3개.
@@ -693,6 +754,9 @@ def select_highlights_v2(
     fixed, merge_log = merge_adjacent_cuts(fixed, sentences, hard_max_duration_sec)
     for m in merge_log:
         print(f"[v2] 병합: {m}", flush=True)
+    fixed, polemic_log = drop_polemic_cuts(fixed, sentences)
+    for m in polemic_log:
+        print(f"[v2] 주제 필터: {m}", flush=True)
     fixed = dedupe_cuts(fixed, sentences)
     if debug_path is not None:
         try:
@@ -700,7 +764,7 @@ def select_highlights_v2(
             from pathlib import Path
             dbg = {
                 "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
-                "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log,
+                "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log, "polemic_log": polemic_log,
                 "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end}
                                for c in fixed],
             }
@@ -743,6 +807,9 @@ def select_highlights_v2(
         clip_start, hook_text = trim_lead_words(s)  # "그래서 베드로가…" → "베드로가…"부터
         computed = compute_scores(r if r else {"core_score": 6, "hook": 6, "retention": 6, "emotion": 6,
                                                "relatability": 6, "payoff": 6, "quotability": 6})
+        if c.get("polemic"):
+            # 후보 부족으로 살려 둔 타자 비판 컷: 점수 상한을 걸어 항상 맨 아래
+            computed["score"] = min(int(computed["score"]), 30)
 
         def _f(k: str):
             try:
