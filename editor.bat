@@ -27,6 +27,15 @@ if not exist "%HERE%venv\Scripts\python.exe" (
   goto :eof
 )
 
+REM 코드 자동 업데이트(2026-09-21): "여기서 고친 게 상대방한테도 자동으로 가야지" 요청으로
+REM 추가. 매 실행마다 GitHub 최신 코드로 조용히 갱신한다(사용자 영상·설정·비밀키·가상환경은
+REM 절대 안 건드림, editor.bat/install.bat 자기 자신도 실행 중 수정 위험 때문에 제외).
+REM 오프라인 등으로 실패해도 조용히 넘어가고 에디터 실행은 계속된다.
+"%HERE%venv\Scripts\python.exe" "%HERE%scripts\auto_update.py"
+if errorlevel 1 (
+  echo [i] code updated just now - if the editor was already running, close it and run this file again.
+)
+
 REM Claude CLI가 없으면 AI 분석이 안 되므로 미리 알려준다(install.bat이 설치해 준다).
 where claude >nul 2>&1
 if errorlevel 1 (
