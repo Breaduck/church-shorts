@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -41,7 +42,7 @@ if errorlevel 1 (
 )
 
 REM ---------------- 4) deno (yt-dlp javascript runtime) ----------------
-set PATH=%LOCALAPPDATA%\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%
+set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%"
 where deno >nul 2>&1
 if errorlevel 1 (
   echo [4/6] deno not found - installing via winget...
@@ -54,7 +55,7 @@ if errorlevel 1 (
 REM ---------------- 5) claude code cli ----------------
 REM 네이티브 설치본(claude.ai/install.ps1)은 %USERPROFILE%\.local\bin 에 들어가고,
 REM npm 전역 설치본은 %APPDATA%\npm 에 들어간다. 새 터미널을 안 열어도 찾도록 둘 다 PATH에 얹는다.
-set PATH=%USERPROFILE%\.local\bin;%APPDATA%\npm;%PATH%
+set "PATH=%USERPROFILE%\.local\bin;%APPDATA%\npm;%PATH%"
 where claude >nul 2>&1
 if errorlevel 1 (
   echo [5/6] Claude Code CLI not found - installing ^(official installer^)...
@@ -99,7 +100,7 @@ if defined NEEDNEWSHELL (
   echo     and run this file once more so PATH is refreshed.
   goto :end
 )
-echo [ok] setup done. run  편집기.bat  to open the editor.
+echo [ok] setup done. run  editor.bat  to open the editor.
 echo ------------------------------------------------
 goto :end
 

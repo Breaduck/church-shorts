@@ -41,13 +41,13 @@
 1. 소스 받기 - 둘 중 하나
    - git 없이: <https://github.com/Breaduck/church-shorts/archive/refs/heads/master.zip> 내려받아 압축 해제
    - git으로: `git clone https://github.com/Breaduck/church-shorts.git`
-2. 폴더 안의 **`설치.bat`** 실행 - venv 생성, 파이썬 패키지, ffmpeg, deno,
+2. 폴더 안의 **`install.bat`** 실행 - venv 생성, 파이썬 패키지, ffmpeg, deno,
    Claude Code CLI(없으면 공식 설치 스크립트로 자동 설치)까지 한 번에 처리합니다.
    (ffmpeg/deno가 새로 설치되면 창을 닫고 한 번 더 실행하라고 안내합니다.)
 3. 새 터미널에서 `claude`를 한 번 실행해 **본인 Claude 계정으로 로그인**.
    (자동 설치가 실패했다면 `npm install -g @anthropic-ai/claude-code`로 수동 설치.)
-4. **`편집기.bat`** 실행 → 브라우저에서 `http://localhost:5000` 이 열립니다.
-   (venv가 없으면 편집기.bat이 알아서 설치.bat을 먼저 돌립니다.)
+4. **`editor.bat`** 실행 → 브라우저에서 `http://localhost:5000` 이 열립니다.
+   (venv가 없으면 editor.bat이 알아서 install.bat을 먼저 돌립니다.)
 
 Cloudflare Pages 소개 페이지에도 같은 zip 다운로드 버튼과 위 3단계가 적혀 있어
 그 링크 하나만 전달하면 됩니다.
