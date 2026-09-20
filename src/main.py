@@ -517,7 +517,9 @@ def _prewarm_praise_sync_cache(video_path: Path, video_dir: Path, clips: list[Cl
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], cfg: dict) -> None:
+def _sync_praise_clips_bg(
+    video_path: Path, video_dir: Path, clips: list[Clip], cfg: dict, video_id: str = "",
+) -> None:
     """제목 기반 찬양 클립의 '노래 속도 정밀 싱크'를 백그라운드에서 계산해 clips.json에 반영한다.
 
     _title_based_praise_clips가 반환하는 clips는 이미 글자 수 균등 분배 자막을 갖고 있어
@@ -537,6 +539,18 @@ def _sync_praise_clips_bg(video_path: Path, video_dir: Path, clips: list[Clip], 
     }
 
     def _run():
+        # 유튜브 링크로 받은 찬양(dl_local=False)은 영상 파일이 백그라운드로 아직
+        # 다운로드되고 있을 수 있다(2026-09-21: title_lines 경로를 유튜브 링크에도 열면서
+        # 추가) — 정밀 싱크는 어차피 백그라운드라 여기서 기다려도 편집기 화면엔 영향 없다.
+        if video_id:
+            try:
+                wait_for_download(video_id)
+            except Exception:  # noqa: BLE001 - 다운로드 실패해도 균등 분배 자막은 이미 저장돼 있다
+                traceback.print_exc()
+                return
+        if not video_path.exists():
+            print(f"[praise-sync] 영상 파일이 없어 정밀 싱크를 건너뜀: {video_path}")
+            return
         # 싱크 전사 모델은 medium(praise_model_size)이 정답이다. 이 경로는 단어의 '시각'과
         # 자모 유사도만 쓰고 텍스트 품질은 안 쓰는데, large-v3는 같은 곡에서 3배 넘게
         # 느리면서 단어를 오히려 덜 잡았다(실측 2026-09-07, 124초 찬양 클립:
@@ -1213,14 +1227,21 @@ def analyze(
         video_dir = output_root / dl.video_id
         video_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── 업로드 찬양 + 곡 제목 직접 입력: 전사 없이 '정식 가사'로 자막 ─────────────
+        # ── 찬양 + 곡 제목 직접 입력: 전사 없이 '정식 가사'로 자막 ─────────────────
         # whisper가 회중 찬양(노래)을 심하게 오인식하는 문제를 근본 우회한다(사용자 요청
         # 2026-09-05: "전사 정확도가 너무 낮다. 곡 제목만 알면 정식 가사를 넣어달라").
         # 유명 찬송가·CCM은 모델이 정식 가사를 이미 알아 크롤링이 필요 없다. 전사를 통째로
         # 건너뛰므로 빠르고(노래 전사는 느리고 부정확), 자막 텍스트는 정확하다.
+        # 2026-09-21 버그 수정: 예전엔 dl_local(업로드 파일)일 때만 이 경로를 탔다 — 인덱스
+        # 페이지의 '찬양 제목' 입력칸은 업로드/유튜브 링크 구분 없이 항상 보이고 항상
+        # song_titles를 서버로 보내는데, 유튜브 링크로 찬양을 분석하면 제목을 입력해도
+        # 조용히 무시되고 전사 경로로 빠졌다("제목 입력했는데 왜 자막이 자동으로 안 들어가냐"
+        # 신고의 원인). _title_based_praise_clips는 dl.duration_sec만 쓰고 영상 파일이
+        # 당장 필요 없으므로(정밀 싱크는 아래에서 백그라운드로 미룸) 유튜브 링크에도 그대로
+        # 쓸 수 있다 — dl_local 조건을 뺐다.
         title_lines = (
             [t.strip() for t in song_titles.splitlines() if t.strip()]
-            if (mode == "praise" and dl_local and song_titles.strip()) else []
+            if (mode == "praise" and song_titles.strip()) else []
         )
         if title_lines:
             sp.advance("자막 준비 중...")
@@ -1237,7 +1258,7 @@ def analyze(
                 )
             with CLIPS_LOCK:
                 save_clips_json(clips, clips_path)
-            _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg)
+            _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
             sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크는 백그라운드에서 계속돼요)")
             return video_dir, clips
 
@@ -1259,7 +1280,7 @@ def analyze(
                 if clips:
                     with CLIPS_LOCK:
                         save_clips_json(clips, clips_path)
-                    _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg)
+                    _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
                     sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크는 백그라운드에서 계속돼요)")
                     return video_dir, clips
                 sp.message(f"'{guessed}' 가사를 찾지 못해 정밀 분석으로 진행합니다...")
