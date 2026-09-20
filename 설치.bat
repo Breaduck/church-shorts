@@ -52,14 +52,24 @@ if errorlevel 1 (
 )
 
 REM ---------------- 5) claude code cli ----------------
+REM 네이티브 설치본(claude.ai/install.ps1)은 %USERPROFILE%\.local\bin 에 들어가고,
+REM npm 전역 설치본은 %APPDATA%\npm 에 들어간다. 새 터미널을 안 열어도 찾도록 둘 다 PATH에 얹는다.
+set PATH=%USERPROFILE%\.local\bin;%APPDATA%\npm;%PATH%
 where claude >nul 2>&1
 if errorlevel 1 (
-  echo [5/6] Claude Code CLI not found.
+  echo [5/6] Claude Code CLI not found - installing ^(official installer^)...
   echo     this project picks highlights with YOUR OWN claude subscription,
-  echo     so it must be installed and logged in on this pc:
-  echo         npm install -g @anthropic-ai/claude-code
-  echo         claude          ^<- run once and log in
-  set NEEDCLAUDE=1
+  echo     so it must be installed and logged in on this pc.
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex"
+  where claude >nul 2>&1
+  if errorlevel 1 (
+    echo [!] automatic install failed. install manually, then run this file again:
+    echo         npm install -g @anthropic-ai/claude-code
+    set NEEDCLAUDE=1
+  ) else (
+    echo [5/6] claude CLI installed.
+    set NEEDCLAUDE=1
+  )
 ) else (
   echo [5/6] claude CLI ok.
 )
@@ -81,7 +91,8 @@ if exist assets\fonts\malgunbd.ttf (
 echo.
 echo ------------------------------------------------
 if defined NEEDCLAUDE (
-  echo [!] install + log in to Claude Code CLI before using the editor.
+  echo [!] before using the editor, open a NEW terminal, run   claude
+  echo     once and log in with your own Claude account. ^(no api key needed^)
 )
 if defined NEEDNEWSHELL (
   echo [!] a tool was just installed. CLOSE this window, open a new one,

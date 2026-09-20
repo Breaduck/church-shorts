@@ -6,49 +6,89 @@
 <title>교회 쇼츠 편집기</title>
 <style>
   :root {
-    --bg: #f7f8fa; --card: #ffffff; --text: #191f28; --muted: #6b7684;
-    --faint: #8b95a1; --accent: #3182f6; --accent-hover: #1b64da; --border: #f0f1f3;
+    --bg: #f5f5f7; --card: rgba(255,255,255,.72); --text: #1d1d1f; --muted: #6e6e73;
+    --faint: #86868b; --accent: #0071e3; --border: rgba(0,0,0,.06);
+    --pill: #ffffff; --pill-text: #1d1d1f;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08);
+    --shadow-hover: 0 2px 4px rgba(0,0,0,.08), 0 14px 36px rgba(0,0,0,.14);
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#151617; --card:#1f2123; --text:#ececea; --muted:#9a9aa2;
-            --faint:#77777e; --accent:#5aa2ff; --accent-hover:#7ab4ff; --border:#2e3033; }
+    :root { --bg:#000; --card: rgba(28,28,30,.72); --text:#f5f5f7; --muted:#a1a1a6;
+            --faint:#86868b; --accent:#2997ff; --border: rgba(255,255,255,.08);
+            --pill:#2c2c2e; --pill-text:#f5f5f7;
+            --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+            --shadow-hover: 0 2px 4px rgba(0,0,0,.5), 0 14px 36px rgba(0,0,0,.6); }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "SF Pro KR", "Segoe UI", "Malgun Gothic", sans-serif;
     line-height: 1.6; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: antialiased; padding: 24px 0;
   }
   .card {
-    background: var(--card); border-radius: 24px; max-width: 420px; width: calc(100% - 40px);
-    padding: 40px 32px; text-align: center;
-    box-shadow: 0 2px 8px rgba(15,23,42,.04), 0 1px 2px rgba(15,23,42,.03);
+    background: var(--card); border: 1px solid var(--border);
+    -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+    border-radius: 28px; max-width: 440px; width: calc(100% - 40px);
+    padding: 40px 32px 32px; text-align: center; box-shadow: var(--shadow);
   }
-  .logo { font-size: 40px; margin-bottom: 14px; }
-  h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 8px; }
-  p { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  .logo { font-size: 44px; margin-bottom: 12px; line-height: 1; }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
+  p { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
   .btn {
-    display: block; width: 100%; background: var(--accent); color: #fff;
-    border: none; border-radius: 14px; padding: 16px; font-size: 15px; font-weight: 600;
-    cursor: pointer; text-decoration: none; transition: background .15s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; background: var(--pill); color: var(--pill-text);
+    border: none; border-radius: 999px; padding: 15px 20px; font-size: 15px; font-weight: 600;
+    cursor: pointer; text-decoration: none; box-shadow: var(--shadow);
+    transition: transform .15s ease, box-shadow .15s ease;
   }
-  .btn:hover { background: var(--accent-hover); }
-  .state { font-size: 12.5px; color: var(--faint); margin: 16px 0 0; }
-  .state .ok { color: #12b886; font-weight: 600; }
+  .btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+  .btn:active { transform: translateY(0) scale(.99); }
+  .btn.primary { color: var(--accent); }
+  .btn + .btn { margin-top: 10px; }
+  .state { font-size: 12.5px; color: var(--faint); margin: 14px 0 0; }
+  .state .ok { color: #34c759; font-weight: 600; }
+  .divider { height: 1px; background: var(--border); margin: 26px 0 20px; }
+  h2 { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: var(--muted);
+       margin: 0 0 12px; text-transform: none; }
+  ol { text-align: left; margin: 0 0 16px; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+  ol li { margin: 4px 0; }
+  ol li b { color: var(--text); font-weight: 600; }
   code {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-    padding: 2px 7px; font-size: 12px;
+    background: rgba(0,0,0,.05); border-radius: 6px; padding: 2px 7px; font-size: 12px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--text);
   }
+  @media (prefers-color-scheme: dark) { code { background: rgba(255,255,255,.08); } }
+  .note { font-size: 12px; color: var(--faint); margin: 0; }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="logo">🎬</div>
     <h1>교회 쇼츠 편집기</h1>
-    <p>편집기는 이 PC 안에서 실행돼요.<br>아래 버튼을 누르면 편집기가 열립니다.</p>
-    <a class="btn" href="http://localhost:5000/">편집기 열기</a>
-    <p class="state" id="state">꺼져 있다면 프로젝트 폴더의 <code>편집기.bat</code> 을 더블클릭해 켜주세요.</p>
+    <p>편집기는 각자 PC 안에서 실행돼요.<br>AI 분석은 그 PC에 로그인된 <b>본인 Claude 구독</b>으로 돌아갑니다.</p>
+
+    <a class="btn primary" href="http://localhost:5000/">편집기 열기</a>
+    <p class="state" id="state">켜져 있으면 자동으로 이동합니다. 꺼져 있다면 프로젝트 폴더의 <code>편집기.bat</code> 을 더블클릭하세요.</p>
+
+    <div class="divider"></div>
+
+    <h2>이 PC에 처음 설치한다면</h2>
+    <a class="btn" href="https://github.com/Breaduck/church-shorts/archive/refs/heads/master.zip" id="dl">
+      <span>⬇</span><span>설치 파일 내려받기 (zip)</span>
+    </a>
+    <a class="btn" href="https://github.com/Breaduck/church-shorts" target="_blank" rel="noopener">
+      <span>🔗</span><span>GitHub에서 보기</span>
+    </a>
+    <p class="state" style="margin-bottom:16px">git이 없어도 됩니다. 내려받아 압축을 풀면 끝.</p>
+
+    <ol>
+      <li>zip 압축을 풀고 폴더 안의 <b>설치.bat</b> 더블클릭<br>
+          <span class="note">(Python·ffmpeg·deno·Claude CLI를 확인하고 없으면 설치. 새로 설치된 게 있으면 창을 닫고 한 번 더.)</span></li>
+      <li>터미널에서 <code>claude</code> 를 한 번 실행해 <b>본인 Claude 계정으로 로그인</b></li>
+      <li><b>편집기.bat</b> 더블클릭 → 브라우저에 편집기가 열립니다</li>
+    </ol>
+    <p class="note">API 키를 주고받을 필요가 없어요. AI 사용량은 각자 구독에서 나갑니다.</p>
   </div>
 
 <script>
