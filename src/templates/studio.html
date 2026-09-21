@@ -269,6 +269,14 @@
     border-radius: 3px; padding: 1px 7px; cursor: pointer; }
   .fx-item:hover .apply { display: inline-block; }
   .fx-item.busy .nm::after { content: ' · 처리 중…'; color: var(--hot); }
+  /* 싱크 맞추기 대상 선택(한글/영어) — 둘 다 켜거나 하나만 켤 수 있다. */
+  .fx-opt { display: flex; align-items: center; gap: 6px; padding: 1px 8px 5px 30px; }
+  .fx-opt .ol { color: #8a8a8a; font-size: 10.5px; }
+  .fx-opt .opill { font-size: 10.5px; line-height: 1.5; color: #bdbdbd; background: #2a2a2a;
+                   border: 1px solid #3a3a3a; border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+  .fx-opt .opill:hover { border-color: #5a5a5a; }
+  .fx-opt .opill.on { color: #1a1a1a; background: #fff; border-color: #fff; font-weight: 600;
+                      box-shadow: 0 1px 3px rgba(0,0,0,.45); }
 
   /* ── 하단 우측: 도구 막대 + 타임라인 + 오디오 미터 ── */
   .bottom-right { display: flex; min-width: 0; min-height: 0; gap: 3px; }
@@ -627,6 +635,11 @@
         <div class="fx-fold"><div class="fh"><span class="tri">▼</span><span class="fico">▰</span>AI 자막 도구</div>
           <div class="fl">
             <div class="fx-item" data-fx="sync"><span class="fxi">fx</span><span class="nm">싱크 맞추기</span><button class="apply">적용</button></div>
+            <div class="fx-opt" id="syncOpt">
+              <span class="ol">대상</span>
+              <button type="button" class="opill on" id="syncKo" title="한국어 자막의 시작·끝 시간을 실제 발화에 맞춥니다">한글 자막</button>
+              <button type="button" class="opill" id="syncEn" title="영어 자막을 만듭니다(한국어와 같은 시간). 끄면 싱크만 맞춥니다">영어 자막</button>
+            </div>
             <div class="fx-item" data-fx="correct"><span class="fxi">fx</span><span class="nm">AI 교정</span><button class="apply">적용</button></div>
             <div class="fx-item" data-fx="translate"><span class="fxi">fx</span><span class="nm">영어 번역</span><button class="apply">적용</button></div>
             <div class="fx-item" data-fx="lyrics" id="fxLyrics" style="display:none"><span class="fxi">fx</span><span class="nm">가사 가져오기</span><button class="apply">적용</button></div>
@@ -873,7 +886,7 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   const title = (C.title || ('클립 ' + (IDX + 1)));
   ['projName', 'projName2', 'progName', 'tlName'].forEach(id => $(id).textContent = title);
   $('ecMaster').textContent = '마스터 * ' + title; $('ecSeq').textContent = title + ' * 자막';
-  if (C.clip_type === 'praise') $('fxLyrics').style.display = '';
+  if (C.clip_type === 'praise') { $('fxLyrics').style.display = ''; $('syncEn').style.display = 'none'; }
   const basePad = Math.max((C.end - C.start) * 0.08, 3);
   view = C.show_full_source_once ? { a: 0, b: dur } : { a: Math.max(0, C.start - basePad), b: Math.min(dur, C.end + basePad) };
   homeView = { a: view.a, b: view.b };
@@ -2441,6 +2454,16 @@ async function runSync() {
 }
 async function runSyncInner(fxItem) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
+  // 대상 선택(2026-09-21 요청: "싱크 맞추기 눌렀다고 영어 자막까지 넣지는 말고, 한글·영어를
+  // 동시에 고를 수 있게"). 기본은 한글만 — 영어는 켠 사람만 만든다.
+  const doKo = $('syncKo').classList.contains('on');
+  const doEn = $('syncEn').classList.contains('on') && $('syncEn').style.display !== 'none';
+  if (!doKo && !doEn) { setStatus('한글 자막 · 영어 자막 중 적어도 하나는 켜 주세요'); return; }
+  if (!doKo) {  // 영어만: 지금 자막 시간 그대로 번역만 만든다
+    setStatus('영어 자막 만드는 중…');
+    await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 자막 ' + j.lines.length + '줄'); });
+    return;
+  }
   // 두 번째 이상 누르면: 먼저 최고 정밀로 다시 인식하고 맞춘다(같은 캐시면 결과가 똑같아
   // "눌러도 안 바뀐다"가 되기 때문). 찬양 클립은 서버가 fresh를 받아 알아서 재전사한다.
   const fresh = syncPresses > 0;
@@ -2467,11 +2490,24 @@ async function runSyncInner(fxItem) {
       if (!ok) return;
     }
   }
-  // 싱크가 끝나면 영어 자막도 이어서 만든다(사용자 요청 2026-09-07). 번역 입력은 방금
-  // 싱크된 줄(collect())이라 영어 트랙의 시간이 한국어와 정확히 같아진다.
+  if (!doEn) return;   // 한글만 선택 — 영어는 건드리지 않는다
+  // 영어도 켰으면 이어서 만든다. 번역 입력은 방금 싱크된 줄(collect())이라 영어 트랙의
+  // 시간이 한국어와 정확히 같아진다.
   setStatus('싱크 완료 — 영어 자막 만드는 중…');
   await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
 }
+// 대상 토글(한글/영어) — 선택은 브라우저에 기억시켜 다음 클립에서도 유지한다.
+['syncKo', 'syncEn'].forEach((id) => {
+  try { if (localStorage.getItem('studio.' + id) === 'off') $(id).classList.remove('on');
+        else if (localStorage.getItem('studio.' + id) === 'on') $(id).classList.add('on'); } catch (e) {}
+  $(id).addEventListener('click', () => {
+    const on = $(id).classList.toggle('on');
+    try { localStorage.setItem('studio.' + id, on ? 'on' : 'off'); } catch (e) {}
+    setStatus('싱크 맞추기 대상: ' + (($('syncKo').classList.contains('on') ? '한글' : '') +
+      ($('syncKo').classList.contains('on') && $('syncEn').classList.contains('on') ? ' + ' : '') +
+      ($('syncEn').classList.contains('on') ? '영어' : '') || '(없음)'));
+  });
+});
 function applyFx(kind) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
   if (kind === 'sync') runSync();

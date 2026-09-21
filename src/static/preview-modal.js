@@ -272,7 +272,7 @@
       '  <div class="pv-capsec hidden">' +
       '    <div class="pv-capfont-row"><span>자막 글꼴</span> <select class="pv-capfont"></select>' +
       '      <button type="button" class="pv-retrans" title="이 구간만 정밀 음성인식(large-v3)을 새로 돌려 자막 초안을 다시 뽑습니다 (1~3분, 토큰 비용 없음)">꼼꼼 재분석</button>' +
-      '      <button type="button" class="pv-syncbtn" title="자막 내용·분할은 그대로 두고 각 줄의 시작·끝 시간만 실제 발화에 다시 맞춥니다. 맞춘 뒤 영어 자막까지 자동으로 만들어 둡니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다">싱크 맞추기</button>' +
+      '      <button type="button" class="pv-syncbtn" title="한국어 자막의 시작·끝 시간만 실제 발화에 다시 맞추고, 줄 사이 빈 칸을 메웁니다(내용·분할은 유지). 영어 자막은 오른쪽 [영어 자막 만들기] 버튼으로 따로 만듭니다. 한 번 더 누르면 최고 정밀 모델로 처음부터 재분석합니다">싱크 맞추기</button>' +
       '      <button type="button" class="pv-correctbtn" title="AI가 문맥·성경지식으로 자막 오타를 고치고 핵심 단어를 형광 강조합니다 (줄 수·시간 유지, 토큰 사용)">AI 자막 교정</button>' +
       '      <button type="button" class="pv-lyricsbtn" hidden title="곡 제목으로 정식 가사를 인터넷에서 검색해 가져오고, 이 영상의 노래 속도에 맞춰 자막을 채웁니다 (토큰 사용)">가사 자동 가져오기</button>' +
       '      <button type="button" class="pv-translatebtn" title="자막을 영어로 번역해 영어 트랙으로 저장합니다. 한국어는 그대로 유지되고, 만들 때 \'영어 자막\' 옵션으로 전환됩니다 (토큰 사용)">영어 자막 만들기</button>' +
@@ -1004,22 +1004,14 @@
       // 싱크 맞추기는 '줄의 시작·끝 시간'만 다시 맞춘다 — 파란 강조(카라오케)는 켜지 않는다.
       // (사용자 요청 2026-09-05: 흰 자막이 그대로 떠 있어야 하고, 파란색은 '파란 강조' 버튼으로만.)
       capSec.classList.remove('hidden');
-      // 영어 자막도 여기서 같이 만든다(사용자 요청 2026-09-07: "영어 자막 만들기를 따로
-      // 안 눌러도 되게"). 싱크 결과는 위에서 이미 화면에 반영했고 번역은 그 다음에 돌린다 —
-      // 싱크 자체가 번역(10~30초)을 기다리느라 느려 보이지 않게 하려는 순서다.
-      // 번역 입력은 서버가 돌려준 j.lines(분할까지 반영된 최종 줄)를 쓴다.
-      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤 — 영어 자막 만드는 중…';
-      let enMsg = '';
-      try {
-        const rt = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/translate_captions', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ captions: j.lines, model: '' }),
-        });
-        const jt = rt && rt.ok ? await rt.json().catch(() => null) : null;
-        if (jt && jt.lines) { capOverridesEn = jt.lines; enMsg = ' + 영어 ' + jt.lines.length + '줄'; }
-        else enMsg = ' (영어 번역 실패 — 아래 버튼으로 다시)';
-      } catch (e) { enMsg = ' (영어 번역 실패 — 아래 버튼으로 다시)'; }
-      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤' + enMsg + ' (저장 필요)';
+      // 영어 자막은 여기서 만들지 않는다(2026-09-21 요청: "싱크 맞추기 눌렀다고 영어 자막을
+      // 넣지는 말고, 한글·영어를 따로 고를 수 있게"). 영어가 필요하면 바로 옆 '영어 자막
+      // 만들기' 버튼으로 따로 만든다 — 싱크도 그만큼 빨리 끝난다.
+      const tidy = [];
+      if (j.dropped) tidy.push('빈 줄 ' + j.dropped + '개 삭제');
+      if (j.filled) tidy.push('빈 칸 ' + j.filled + '개 메움');
+      syncBtn.textContent = '✓ ' + j.matched + '/' + j.total + '줄 맞춤'
+        + (tidy.length ? ' · ' + tidy.join(', ') : '') + ' (저장 필요)';
       setTimeout(() => { syncBtn.textContent = '싱크 맞추기'; }, 6000);
     });
 
