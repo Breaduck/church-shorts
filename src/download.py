@@ -31,7 +31,7 @@ def _probe_duration_sec(path: Path) -> float:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     try:
         return float(proc.stdout.strip())
@@ -47,7 +47,7 @@ def _has_audio_stream(path: Path) -> bool:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a",
          "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return bool(proc.stdout.strip())
 
@@ -194,7 +194,7 @@ def download_video(
                 ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
                  "-i", str(src), str(target)],
             ):
-                subprocess.run(cmd, capture_output=True, text=True)
+                subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
                 if target.exists() and target.stat().st_size > 0:
                     break
 
@@ -273,7 +273,7 @@ def download_video_hd(
         subprocess.run(
             ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
              "-i", str(singles[0]), "-c", "copy", str(target)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if target.exists() and target.stat().st_size > 0 and _has_audio_stream(target):
             return target

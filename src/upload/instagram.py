@@ -12,7 +12,7 @@ API 흐름 (심사 통과 후):
   1. POST /{ig-user-id}/media  (video_url, media_type=REELS, caption)
   2. POST /{ig-user-id}/media_publish (creation_id)
 
-그 전까지는 review_app.py에서 완성된 파일 + 캡션/해시태그를 다운로드해
+그 전까지는 편집기(web_app.py)에서 완성된 파일 + 캡션/해시태그를 다운로드해
 수동으로 인스타그램에 업로드하는 방식으로 대체한다.
 """
 from __future__ import annotations
@@ -23,5 +23,5 @@ from pathlib import Path
 def upload_reel(video_public_url: str, caption: str) -> str:
     raise NotImplementedError(
         "Instagram 자동 업로드는 Meta 앱 심사 통과 후 구현됩니다. "
-        "그 전까지는 review_app.py에서 파일을 다운로드해 수동으로 업로드하세요."
+        "그 전까지는 편집기(web_app.py)에서 파일을 다운로드해 수동으로 업로드하세요."
     )

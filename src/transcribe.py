@@ -196,7 +196,7 @@ def transcribe_clip_precise(
             "-ac", "1", "-ar", "16000",
             str(clip_audio_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError(f"클립 오디오 추출 실패:\n{proc.stderr[-2000:]}")
 

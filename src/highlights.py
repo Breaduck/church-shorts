@@ -368,12 +368,15 @@ def _validate_and_build_clips(
     video_duration_sec: float,
     min_duration_sec: int,
     max_duration_sec: int,
+    hard_max_duration_sec: float | None = None,
 ) -> list[Clip]:
     # 길이 상한: 프롬프트로 20~60초를 요구해도 모델이 이따금 설교 한 단락을 통째로 잡아
     # 4분짜리(예: 269초) '쇼츠'를 반환한다(실측: 16OEzTyLTao). 그런 구간은 시작 맥락도
-    # 안 맞고 쇼츠도 아니므로, 완결을 위한 여유(1.5배)를 넘으면 후보에서 제외한다.
+    # 안 맞고 쇼츠도 아니므로, 완결을 위한 여유를 넘으면 후보에서 제외한다.
+    # 상한은 config의 hard_max_duration_sec 하나로 통일한다 — 예전엔 여기만 max×1.5를 써서,
+    # max_duration_sec을 낮추면 config가 허용한다고 써 있는 길이의 클립이 조용히 잘려 나갔다.
     # (한 클립이 나쁘다고 raise로 분석 전체를 죽이지 않고, 그 클립만 건너뛴다.)
-    hard_max_duration = max_duration_sec * 1.5
+    hard_max_duration = float(hard_max_duration_sec or max_duration_sec * 1.5)
     clips: list[Clip] = []
     for i, c in enumerate(raw_clips):
         start = float(c["start"])
@@ -443,6 +446,7 @@ def select_highlights_auto(
     min_duration_sec: int,
     max_duration_sec: int,
     categories: list[str],
+    hard_max_duration_sec: float | None = None,
     timeout_sec: int = 900,
     feedback_block: str = "",
     model: str = "",
@@ -475,7 +479,8 @@ def select_highlights_auto(
         timeout_sec=timeout_sec, on_progress=on_progress, max_clips=max_clips,
     )
     return _validate_and_build_clips(
-        raw_clips, transcript.duration_sec, min_duration_sec, max_duration_sec
+        raw_clips, transcript.duration_sec, min_duration_sec, max_duration_sec,
+        hard_max_duration_sec,
     )
 
 
@@ -1074,7 +1079,8 @@ raw_text가 담고 있는 절(들)의 '정식 가사'로 복원하라.
         try:
             idx = int(item["index"])
             text = str(item.get("lyrics", "")).strip()
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
+            # index 키가 빠진 항목 하나 때문에 이미 받아둔 다른 곡 가사까지 버리면 안 된다.
             continue
         if text:
             out[idx] = text
@@ -1236,7 +1242,8 @@ def fetch_praise_lyrics_by_titles(
         try:
             idx = int(item["index"])
             text = str(item.get("lyrics", "")).strip()
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
+            # index 키가 빠진 항목 하나 때문에 이미 받아둔 다른 곡 가사까지 버리면 안 된다.
             continue
         lines = clean_lyric_lines(text.split("\n"))
         if lines:

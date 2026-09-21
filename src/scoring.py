@@ -15,7 +15,6 @@
 """
 from __future__ import annotations
 
-from typing import Optional
 
 # viral을 이루는 세부 축의 가중치 (합 = 1.0).
 # hook을 가장 크게, 그다음 리텐션·감정·공감 순. payoff(마무리)도 무겁게.

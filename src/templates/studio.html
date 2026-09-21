@@ -1300,7 +1300,7 @@ function updateOverlay() {
     enEl.style.fontSize = enPx + 'px';
     setWrapped(enEl, en, enPx, usable);
   }
-  ov.style.left = (((L.resolution[0] / 2) + parseFloat($('pX').value)) * SC) + 'px';
+  ov.style.left = (((L.resolution[0] / 2) + (parseFloat($('pX').value) || 0)) * SC) + 'px';
   const offY = parseFloat($('pY').value) || 0;
   if (L.caption_anchor === 'bottom') {
     // 영상 위 오버레이(찬양): 렌더가 '아래 기준'이라 글씨를 키우면 위로 자란다 — 미리보기도 동일.
@@ -2490,10 +2490,10 @@ function markDirty() { dirty = true; $('projEdited').textContent = ' - 편집됨
 function payload() {
   const p = {
     captions: collect(),
-    caption_size: parseInt($('pSize').value, 10),
+    caption_size: parseInt($('pSize').value, 10) || 0,
     caption_size_en: parseInt($('pSizeEn').value, 10) || 0,
-    caption_offset_x: parseFloat($('pX').value),
-    caption_offset_y: parseFloat($('pY').value),
+    caption_offset_x: parseFloat($('pX').value) || 0,
+    caption_offset_y: parseFloat($('pY').value) || 0,
     title_offset_x: parseFloat($('pTX').value) || 0,
     title_offset_y: parseFloat($('pTY').value) || 0,
     caption_font: capFont,

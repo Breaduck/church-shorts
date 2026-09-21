@@ -1504,8 +1504,11 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         clip.title = str(body["title"]).strip()
     # 영상 구간(길이 자르기). 사용자가 명시하면 그대로 존중한다(렌더 시 자동 확장/스냅 안 함).
     if body.get("clip_start") is not None and body.get("clip_end") is not None:
-        s = max(0.0, float(body["clip_start"]))  # 시작은 0(영상 맨 앞) 밑으로 못 내림
-        e = float(body["clip_end"])
+        try:
+            s = max(0.0, float(body["clip_start"]))  # 시작은 0(영상 맨 앞) 밑으로 못 내림
+            e = float(body["clip_end"])
+        except (TypeError, ValueError):
+            s = e = 0.0
         if e - s >= 1.0:  # 최소 1초
             clip.start, clip.end = s, e
             clip.trimmed = True
@@ -1525,8 +1528,14 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         clip.keep_ranges = kr
     clip.title_offset_x = float(body.get("title_offset_x", clip.title_offset_x))
     clip.title_offset_y = float(body.get("title_offset_y", clip.title_offset_y))
-    clip.caption_offset_x = float(body.get("caption_offset_x", clip.caption_offset_x))
-    clip.caption_offset_y = float(body.get("caption_offset_y", clip.caption_offset_y))
+    # 편집기의 숫자 입력칸을 비우면 JSON에 null이 실려 온다. 키는 있고 값이 null이라
+    # 기본값 인자가 안 먹으므로(float(None) → TypeError → 저장 전체가 500) 따로 막는다.
+    for _k in ("caption_offset_x", "caption_offset_y"):
+        if body.get(_k) is not None:
+            try:
+                setattr(clip, _k, float(body[_k]))
+            except (TypeError, ValueError):
+                pass
     # 자막 편집기에서 확정한 라인들(텍스트가 남아있는 것만). 저장되면 다음 렌더는 재전사 없이
     # 이 자막을 그대로 쓴다. 넘어오지 않으면(위치만 저장) 기존 caption_overrides를 유지한다.
     if "captions" in body:

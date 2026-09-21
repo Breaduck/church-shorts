@@ -27,8 +27,14 @@ def fetch_youtube_captions_json3(url: str, output_path: Path, lang: str = "ko") 
         "quiet": True,
         "noprogress": True,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    # 자막이 없거나 네트워크·403 등으로 실패해도 여기서 삼킨다. 계약이 "없으면 None"이고
+    # 호출부는 None을 받으면 로컬 Whisper로 폴백하는데, 예외가 올라가면 폴백 대신 분석
+    # 전체가 중단되기 때문이다.
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        return None
 
     candidate = Path(f"{outtmpl}.{lang}.json3")
     return candidate if candidate.exists() else None

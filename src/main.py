@@ -365,6 +365,7 @@ def reanalyze_clip_region(
             min_duration_sec=h["min_duration_sec"],
             max_duration_sec=h["max_duration_sec"],
             categories=h["categories"],
+            hard_max_duration_sec=h.get("hard_max_duration_sec"),
             feedback_block=focus,
             model=model or h.get("model", ""),
             thinking_tokens=thinking_tokens,
@@ -1570,6 +1571,7 @@ def analyze(
                 min_clips=h["min_clips"], max_clips=h["max_clips"],
                 min_duration_sec=h["min_duration_sec"], max_duration_sec=h["max_duration_sec"],
                 categories=h["categories"],
+                hard_max_duration_sec=h.get("hard_max_duration_sec"),
                 feedback_block=feedback_block,
                 # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
                 model=model or h.get("model", ""),
@@ -1621,7 +1623,7 @@ def analyze(
             clips = snap_clips_to_reference(clips, transcript, snap_reference)
         # 안전망: 스냅(또는 다른 후처리)이 경계를 늘려 길이 상한을 넘긴 클립을 최종적으로 제외한다.
         # _validate_and_build_clips의 상한은 스냅 '이전'에만 적용되므로, 여기서 한 번 더 막는다.
-        hard_max = h["max_duration_sec"] * 1.5
+        hard_max = float(h.get("hard_max_duration_sec") or h["max_duration_sec"] * 1.5)
         kept = [c for c in clips if (c.end - c.start) <= hard_max]
         if len(kept) != len(clips):
             for c in clips:

@@ -19,7 +19,7 @@ def _probe_fps(video_path: Path) -> float:
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1",
          str(video_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     raw = proc.stdout.strip()
     try:
@@ -37,7 +37,7 @@ def _probe_resolution(video_path: Path) -> tuple[int, int]:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(video_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     try:
         w_str, h_str = proc.stdout.strip().split("x")
@@ -57,7 +57,7 @@ def _probe_display_resolution(video_path: Path) -> tuple[int, int]:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json",
          str(video_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     w, h, rot = 1920, 1080, 0
     try:
@@ -92,7 +92,7 @@ def _detect_silences(
         "-af", f"silencedetect=noise={threshold_db}dB:d={min_duration_sec}",
         "-f", "null", "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     stderr = proc.stderr
 
     silences: list[tuple[float, float]] = []
@@ -231,7 +231,7 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
         "-pix_fmt", "gray",
         str(mask_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"둥근 모서리 마스크 생성 실패:\n{proc.stderr[-2000:]}")
     return mask_path
@@ -247,7 +247,7 @@ def _probe_audio_params(video_path: Path) -> tuple[int, int]:
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=sample_rate,channels",
          "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     try:
         sr, ch = proc.stdout.split()
@@ -300,11 +300,11 @@ def _get_or_create_outro_segment(
         "-shortest",
         str(seg_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0 and codec == "h264_qsv":
         fallback = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
         cmd = cmd[: cmd.index("-c:v")] + fallback + cmd[cmd.index("-c:a") :]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"아웃트로 세그먼트 생성 실패:\n{proc.stderr[-2000:]}")
     return seg_path
@@ -327,7 +327,7 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
             "-f", "concat", "-safe", "0", "-i", str(list_path),
             "-c", "copy", str(tmp_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not tmp_path.exists():
             raise RuntimeError(f"아웃트로 이어붙이기 실패:\n{proc.stderr[-2000:]}")
         tmp_path.replace(output_path)
@@ -361,10 +361,10 @@ def _apply_speed(output_path: Path, speed: float, encoder: str, fps: float) -> N
         str(tmp),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 and encoder == "h264_qsv":
             cmd = cmd[: cmd.index("-c:v")] + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + cmd[cmd.index("-c:a") :]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not tmp.exists():
             raise RuntimeError(f"배속 적용 실패:\n{proc.stderr[-2000:]}")
         tmp.replace(output_path)
@@ -410,7 +410,7 @@ def _add_sfx(output_path: Path, times: list[float], sfx_cfg: dict) -> None:
         str(tmp_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not tmp_path.exists():
             raise RuntimeError(f"효과음 믹싱 실패:\n{proc.stderr[-2000:]}")
         tmp_path.replace(output_path)
@@ -422,7 +422,7 @@ def _probe_duration(path: Path) -> float:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     try:
         return float(proc.stdout.strip())
@@ -467,7 +467,7 @@ def _mix_bgm(output_path: Path, bgm_path: Path, volume: float, offset: float = 0
         str(tmp_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not tmp_path.exists():
             raise RuntimeError(f"배경 음악 믹싱 실패:\n{proc.stderr[-2000:]}")
         tmp_path.replace(output_path)
@@ -712,7 +712,7 @@ def render_truth_frame(
     proc = subprocess.run([
         "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-ss", f"{at_sec:.3f}", "-i", str(video_path), "-frames:v", "1", str(raw),
-    ], capture_output=True, text=True)
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0 or not raw.exists():
         raise RuntimeError(f"원본 프레임 추출 실패:\n{proc.stderr[-1500:]}")
 
@@ -738,11 +738,12 @@ def render_truth_frame(
             vf = _build_video_filter(render_cfg, captions_cfg, resolution, None, ass_path_ff, font_dir, fps)
             cmd += ["-vf", f"{vf},{pick}"]
         cmd += ["-frames:v", "1", "-q:v", "2", str(out_path)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not out_path.exists():
             raise RuntimeError(f"실제결과 프레임 합성 실패:\n{proc.stderr[-1500:]}")
     finally:
         raw.unlink(missing_ok=True)
+        ass_path.unlink(missing_ok=True)  # 미리보기용 임시 자막 — 안 지우면 볼 때마다 쌓인다
     return out_path
 
 
@@ -1036,11 +1037,11 @@ def render_clip(
         video_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     tail = ["-c:a", "aac", "-b:a", "192k", str(output_path)]
 
-    proc = subprocess.run(cmd + video_args + tail, capture_output=True, text=True)
+    proc = subprocess.run(cmd + video_args + tail, capture_output=True, text=True, encoding="utf-8", errors="replace")
     used_encoder = encoder
     if proc.returncode != 0 and encoder == "h264_qsv":
         fallback_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-        proc = subprocess.run(cmd + fallback_args + tail, capture_output=True, text=True)
+        proc = subprocess.run(cmd + fallback_args + tail, capture_output=True, text=True, encoding="utf-8", errors="replace")
         used_encoder = "libx264"
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 렌더링 실패:\n{proc.stderr[-3000:]}")
@@ -1104,19 +1105,3 @@ def render_clip(
     output_path.replace(final_output_path)
     ass_path.replace(final_output_path.with_suffix(".ass"))
 
-
-def render_all_clips(
-    video_path: Path,
-    segments: list[Segment],
-    clips: list[Clip],
-    output_dir: Path,
-    render_cfg: dict,
-    captions_cfg: dict,
-) -> list[Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    outputs = []
-    for i, clip in enumerate(clips, start=1):
-        out_path = output_dir / f"short_{i}.mp4"
-        render_clip(video_path, segments, clip, out_path, render_cfg, captions_cfg)
-        outputs.append(out_path)
-    return outputs

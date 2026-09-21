@@ -1203,10 +1203,8 @@ def split_outlier_lines(
         for i, c in enumerate(chars[:-1]):
             cum += c
             target = total * len(cuts) / k
-            nxt = cum + chars[i + 1]
-            if cum >= target or abs(cum - target) < abs(nxt - target) <= 0:
-                if len(cuts) < k and cum >= target:
-                    cuts.append(i + 1)
+            if cum >= target and len(cuts) < k:
+                cuts.append(i + 1)
         start, end = float(ln.get("start", 0)), float(ln.get("end", 0))
         span = max(0.1, end - start)
         for ci, i0 in enumerate(cuts):
