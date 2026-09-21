@@ -1833,6 +1833,22 @@ def _snap_clip_start_to_sentence(
     return clip.start
 
 
+def _sync_keep_ranges(clip, old_start: float, old_end: float) -> None:
+    """경계 스냅으로 clip.start/end가 움직였으면 점프컷 구간(keep_ranges)의 양 끝을 따라 옮긴다.
+
+    2026-09-21 점프컷 도입 후의 함정: keep_ranges는 절대초라 스냅이 끝을 뒤로 늘려도 마지막 구간은
+    옛 끝에 머물러, 렌더의 select 필터가 늘린 부분을 통째로 버린다(= '말이 중간에 끊긴다'를 고치는
+    끝 스냅이 점프컷 클립에서만 조용히 무효화된다). 첫/마지막 구간만 새 경계로 맞추고, 가운데
+    들어낸 구간은 그대로 둔다. 스냅이 커서 구간이 사라지면 점프컷을 포기하고 통짜로 돌아간다."""
+    kr = [[float(a), float(b)] for a, b in (getattr(clip, "keep_ranges", None) or [])]
+    if not kr or (clip.start == old_start and clip.end == old_end):
+        return
+    kr[0][0] = clip.start          # 시작이 당겨졌으면 넓히고, 밀렸으면 좁힌다
+    kr[-1][1] = clip.end           # 끝이 늘어났으면 넓히고, 당겨졌으면 좁힌다
+    kr = [[a, b] for a, b in kr if b - a > 0.1 and a >= clip.start - 0.01 and b <= clip.end + 0.01]
+    clip.keep_ranges = kr if len(kr) > 1 else []
+
+
 def _snap_clip_end_to_sentence(
     clip: Clip, segs: list[Segment], max_extend: float = 6.0
 ) -> float:
@@ -2327,9 +2343,11 @@ def render_selected(
         # 롤링 중복 제거됨)로 충분히 정확하고, 이건 매번 똑같아 결과가 안정적이다.
         if getattr(clip, "caption_overrides", None):
             if not getattr(clip, "trimmed", False):
+                _ov_start, _ov_end = clip.start, clip.end
                 last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
                 clip.end = max(clip.end, last_ov_end + 0.3)
                 clip.end = _snap_clip_end_to_sentence(clip, base_segments)
+                _sync_keep_ranges(clip, _ov_start, _ov_end)
             out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
             out_path.parent.mkdir(parents=True, exist_ok=True)
             # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다 — 카라오케 강조가
@@ -2520,6 +2538,7 @@ def render_selected(
         used_precise = bool(segs) and (segs is not base_segments)
         # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
         if not getattr(clip, "trimmed", False):
+            _snap_orig_start, _snap_orig_end = clip.start, clip.end
             snap_src = segs if used_precise else (base_segments or segs)
             # 시작 스냅도 폴백(base) 경로에서 함께 돌린다: 이제 세그먼트가 아니라 단어 단위
             # 문장 경계 기준이라 롤링 자막에서도 안전하다(실측: 폴백 렌더가 앞 문장 꼬리
@@ -2557,6 +2576,7 @@ def render_selected(
                     base + step * 0.5,
                 )
                 clip.start = new_start
+            _sync_keep_ranges(clip, _snap_orig_start, _snap_orig_end)
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         _run_with_progress_ticker(

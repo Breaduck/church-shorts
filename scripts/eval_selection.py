@@ -9,7 +9,7 @@
     venv/Scripts/python.exe scripts/eval_selection.py            # 정답지 있는 설교 전부
     venv/Scripts/python.exe scripts/eval_selection.py NTHrx-w8hnk  # 한 편만
 
-판정: 우리 컷과 정답 구간의 겹침이 정답 길이의 50% 이상이면 '잡았다'(hit).
+판정: 정답 쇼츠가 실제로 남긴 소재(원본 구간 - 편집자가 들어낸 구간)를 우리 컷이 50% 이상 덮으면 '잡았다'(hit).
 결과는 output/_eval/eval_<video>.json 과 표로 출력.
 """
 from __future__ import annotations
@@ -56,6 +56,34 @@ def overlap(a: tuple[float, float], b: tuple[float, float]) -> float:
     return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
 
 
+def truth_kept(t: dict) -> list[tuple[float, float]]:
+    """정답 쇼츠가 실제로 **남긴** 구간(원본 구간에서 편집자가 들어낸 cuts를 뺀 것).
+
+    원본 구간으로 재현율을 재면 불공정하다: 편집자가 192초에서 68초만 남긴 클립을 우리가
+    그 68초와 똑같이 잡아도 원본 대비 겹침은 35%밖에 안 나온다. 실제 쇼츠에 들어간 소재를
+    얼마나 담았는지로 재야 한다."""
+    kept: list[tuple[float, float]] = []
+    cur = t["start"]
+    for a, b in t.get("cuts") or []:
+        if a > cur:
+            kept.append((cur, a))
+        cur = max(cur, b)
+    if cur < t["end"]:
+        kept.append((cur, t["end"]))
+    return kept
+
+
+def coverage(ours: list[dict], kept: list[tuple[float, float]]) -> tuple[float, int | None]:
+    """우리 후보 하나가 정답이 남긴 소재를 얼마나 덮는가(0~1)와 그 후보 번호."""
+    total = sum(b - a for a, b in kept) or 1e-6
+    best, best_cov = None, 0.0
+    for i, o in enumerate(ours):
+        ov = sum(overlap((o["start"], o["end"]), k) for k in kept)
+        if ov / total > best_cov:
+            best, best_cov = i, ov / total
+    return best_cov, best
+
+
 def run_one(video_id: str, truths: list[dict], cfg: dict, model: str) -> dict:
     h = cfg["highlights"]
     tr = load_transcript(video_id)
@@ -100,17 +128,16 @@ def run_one(video_id: str, truths: list[dict], cfg: dict, model: str) -> dict:
 
     results = []
     for t in truths:
-        span = (t["start"], t["end"])
-        best, best_ov = None, 0.0
-        for i, o in enumerate(ours):
-            ov = overlap(span, (o["start"], o["end"]))
-            if ov > best_ov:
-                best, best_ov = i, ov
-        ratio = best_ov / max(1e-6, t["end"] - t["start"])
+        kept = truth_kept(t)
+        cov, best = coverage(ours, kept)
         results.append({
             "short": t["short"], "views": t["views"], "title": t["title"],
-            "truth": [t["start"], t["end"]], "hit": ratio >= HIT_RATIO,
-            "ratio": round(ratio, 2), "matched": best,
+            "truth": [t["start"], t["end"]], "truth_kept_sec": round(sum(b - a for a, b in kept), 1),
+            "short_dur": t["short_dur"], "hit": cov >= HIT_RATIO,
+            "coverage": round(cov, 2), "matched": best,
+            "ours_eff": ours[best]["eff"] if best is not None else 0.0,
+            "matched_span": [ours[best]["start"], ours[best]["end"]] if best is not None else [],
+            "matched_pieces": len(ours[best]["keep_ranges"]) if best is not None else 0,
             "matched_hook": ours[best]["hook"] if best is not None else "",
         })
     return {"video": video_id, "ours": ours, "truths": results, "verify": logs}
@@ -136,11 +163,15 @@ def main() -> None:
             print(f"    {o['start']:.0f}~{o['end']:.0f} ({o['eff']:.0f}초{jc}) [{o['appeal']}] {o['hook'][:50]}")
         for r in out["truths"]:
             mark = "O 잡음" if r["hit"] else "X 놓침"
-            print(f"    {mark} ({r['ratio']:.0%}) {r['views']}회 {r['title'][:36]}")
+            print(f"    {mark} 소재 {r['coverage']:.0%} | 정답 {r['truth_kept_sec']:.0f}초→쇼츠 {r['short_dur']}초 · "
+                  f"우리 {r['ours_eff']:.0f}초/{r['matched_pieces']}조각 | {r['views']}회 {r['title'][:28]}")
             all_rows.append(r)
 
     hits = sum(1 for r in all_rows if r["hit"])
-    print(f"\n==== 정답 {len(all_rows)}개 중 {hits}개 잡음 (재현율 {hits/max(1,len(all_rows)):.0%})")
+    avg = sum(r["coverage"] for r in all_rows) / max(1, len(all_rows))
+    print("")
+    print(f"==== 정답 {len(all_rows)}개 중 {hits}개 잡음 "
+          f"(재현율 {hits/max(1,len(all_rows)):.0%}), 평균 소재 커버 {avg:.0%}")
 
 
 if __name__ == "__main__":

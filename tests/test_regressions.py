@@ -487,3 +487,162 @@ def test_tighten_caption_lines_fills_gaps_and_drops_empty():
     for a, b in zip(out, out[1:]):
         assert abs(a["end"] - b["start"]) < 0.06, f"빈 칸/겹침이 남았다: {a} {b}"
     assert filled >= 1
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-21 선정 개편: 점프컷(skip→keep_ranges) · 약한 훅 · 성경 인물 필터
+#
+# 배경: "재밌는/교훈 있는 부분을 못 잡는다"가 반복됐는데 매번 프롬프트만 고치고 감으로 판정했다.
+# 이제 정답지(output/_eval/ground_truth.json — 실제로 터진 명성교회 쇼츠를 원본 설교에 역정렬한 것)가
+# 있으므로, **검증된 상위 클립을 우리 필터가 죽이지 않는가**를 모델 호출 없이 못 박는다.
+# ---------------------------------------------------------------------------
+from src.main import _sync_keep_ranges  # noqa: E402
+from src.sermon_cut import (  # noqa: E402
+    Sentence,
+    _BIBLE_NAME_RE,
+    _eff_dur,
+    _is_weak_hook,
+    bible_story_reason,
+    cut_keep_ranges,
+    kept_runs,
+    verify_and_fix,
+)
+
+GROUND_TRUTH = Path("output/_eval/ground_truth.json")
+
+
+def _sent(idx: int, start: float, end: float, text: str) -> Sentence:
+    return Sentence(idx, start, end, text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # 실측 사고: 6.9천 조회수 '장바구니' 쇼츠가 "반드시 필요한 사람인데"의 '요한'에 걸려 제외될 뻔했다.
+        ("그거 외에도 반드시 필요한 사람인데", None),
+        ("중요한 것은 이것입니다", None),
+        ("우리가 원하는 자유다", None),
+        ("요한복음 3장 16절", None),   # 책 이름은 인물 서사가 아니다
+        ("욥바에서 환상을 봤어요", None),   # 지명(욥바)이지 욥이 아니다
+        ("신학교에서 배운 것", None),      # '에서'는 조사
+        ("엘리베이터도 하나 없는", None),
+        ("베드로가 로마를 떠났습니다", "베드로"),
+        ("요나가 니느웨에 가기 싫어", "요나"),
+        ("사도 요한이 기록하기를", "요한"),
+    ],
+)
+def test_bible_name_regex_no_false_positives(text: str, expected: str | None) -> None:
+    m = _BIBLE_NAME_RE.search(text)
+    assert (m.group(1) if m else None) == expected
+
+
+@pytest.mark.skipif(not GROUND_TRUTH.exists(), reason="정답지 없음 (scripts/build_ground_truth.py)")
+def test_proven_hit_shorts_survive_filters() -> None:
+    """실제로 터진 쇼츠(5천~7천 조회수) 전부가 성경 인물 필터를 통과해야 한다.
+
+    필터를 세게 만들 때마다 이 테스트로 '검증된 승자를 죽이는지'를 먼저 본다."""
+    from src.sermon_cut import build_sentences
+    from src.youtube_captions import parse_json3_to_transcript
+
+    gt = json.loads(GROUND_TRUTH.read_text(encoding="utf-8"))
+    cap_dir = Path("output/_eval/captions")
+    cache: dict[str, list[Sentence]] = {}
+    dropped = []
+    for short_id, g in gt.items():
+        path = cap_dir / f"{g['sermon']}.ko.json3"
+        if not path.exists():
+            pytest.skip(f"자막 없음: {path}")
+        sents = cache.setdefault(g["sermon"], build_sentences(parse_json3_to_transcript(path, 0)))
+        idx = [s.idx for s in sents if s.start >= g["start"] - 1 and s.end <= g["end"] + 1]
+        assert idx, f"{short_id}: 정답 구간을 문장에 매핑하지 못함"
+        cut = {"core": idx[len(idx) // 2], "start": idx[0], "end": idx[-1], "scene": "", "thesis": ""}
+        why = bible_story_reason(cut, sents)
+        if why:
+            dropped.append(f"{short_id}({g['views']}회): {why}")
+    assert not dropped, "검증된 상위 클립이 필터에 걸렸다:\n" + "\n".join(dropped)
+
+
+def test_weak_hook_rejects_year_and_long_sentences() -> None:
+    # 실측 zvsOYhjdmks: "2006년도 12월에 이곳에 성전 부지를 매입하고…"가 훅이 돼 hook 3점.
+    assert _is_weak_hook("2006년도 12월에 이곳에 성전 부지를 매입하고 성전을 건축하는")
+    # 실측 S65: 40단어짜리 한 문장이 29초 동안 이어진다 — 끝이 물음표여도 첫 3초가 죽는다
+    assert _is_weak_hook("복음을 " + "들고 태평양을 건너 " * 13 + "보셨습니까?")
+    assert _is_weak_hook("1971년 7월 중순에 상경하셔서")
+    assert not _is_weak_hook("전도하면 될 거라고 생각했어요.")
+    assert not _is_weak_hook("인생의 연조가 저절로 깊어지는 것은 아니지 않습니까?")
+
+
+def _story_sentences() -> list[Sentence]:
+    """설정 → (빼도 되는 부연) → 펀치 → 착지. 문장마다 10초."""
+    texts = [
+        "여러분 이런 경험 있으시죠?",              # 0 훅
+        "제가 그때 참 힘들었습니다.",               # 1
+        "이거는 사실 부연 설명입니다.",             # 2 (skip 대상)
+        "덧붙이자면 그렇다는 겁니다.",              # 3 (skip 대상)
+        "그 사람이 저한테 이렇게 말하더라고요.",       # 4 펀치 (접속어로 시작하지 않는다)
+        "우리는 다 갖고 있어도 더 원합니다.",        # 5 core
+        "그런 은혜가 있기를 축복합니다.",           # 6 착지
+    ]
+    return [_sent(i, i * 10.0, i * 10.0 + 9.5, t) for i, t in enumerate(texts)]
+
+
+def test_jump_cut_removes_middle_and_keeps_length() -> None:
+    sents = _story_sentences()
+    raw = {"core": 5, "start": 0, "end": 6, "skip": [[2, 3]], "appeal": "교훈"}
+    cut, log = verify_and_fix(raw, sents, 20, 60, 90, max_span_sec=180)
+    assert cut is not None, log
+    assert [list(s) for s in cut["skip"]] == [[2, 3]]
+    assert kept_runs(cut["start"], cut["end"], [(2, 3)]) == [(0, 1), (4, 6)]
+    # 원본 69.5초(0.0~69.5) → 가운데 두 문장을 들어내면 19.5 + 29.5 = 49.0초
+    assert round(_eff_dur(sents, cut["start"], cut["end"], [(2, 3)]), 1) == 49.0
+    ranges = cut_keep_ranges(cut, sents)
+    assert len(ranges) == 2 and ranges[0][1] < ranges[1][0]
+
+
+def test_jump_cut_rejects_unnatural_seams() -> None:
+    """이음새가 어색한 skip은 버린다 — 사용자 조건이 '자연스럽기만 하다면'이다."""
+    sents = _story_sentences()
+    # 뒤 문장이 접속어로 시작하면 앞을 전제하므로 들어내면 어색하다 → skip 무시
+    sents[4] = _sent(4, 40.0, 49.5, "그런데 그 사람이 이렇게 말하더라고요.")
+    cut, log = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
+    assert cut is not None and cut["skip"] == [], log
+    # 앞 문장이 말이 안 끝났으면(쉼표로 끝남) 그 뒤를 들어내면 어색하다 → skip 무시
+    sents = _story_sentences()
+    sents[1] = _sent(1, 10.0, 19.5, "제가 그때 참 힘들었는데,")
+    cut2, log2 = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
+    assert cut2 is not None and cut2["skip"] == [], log2
+    # 핵심 문장은 절대 못 뺀다
+    sents = _story_sentences()
+    cut3, _ = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[5, 5]]}, sents, 20, 60, 90)
+    assert cut3 is not None and cut3["skip"] == []
+
+
+def test_sync_keep_ranges_follows_boundary_snap() -> None:
+    """렌더의 끝 스냅이 clip.end를 늘리면 마지막 점프컷 구간도 따라 늘어나야 한다.
+    (안 그러면 '말이 중간에 끊긴다'를 고치는 스냅이 점프컷 클립에서만 조용히 무효화된다.)"""
+    clip = Clip(start=100.0, end=140.0, title="t", caption="", hashtags=[], reason="")
+    clip.keep_ranges = [[100.0, 110.0], [120.0, 140.0]]
+    clip.end = 143.0
+    _sync_keep_ranges(clip, 100.0, 140.0)
+    assert clip.keep_ranges == [[100.0, 110.0], [120.0, 143.0]]
+
+    clip2 = Clip(start=100.0, end=140.0, title="t", caption="", hashtags=[], reason="")
+    clip2.keep_ranges = [[100.0, 110.0], [120.0, 140.0]]
+    clip2.start = 98.0
+    _sync_keep_ranges(clip2, 100.0, 140.0)
+    assert clip2.keep_ranges == [[98.0, 110.0], [120.0, 140.0]]
+
+    # 스냅이 커서 첫 조각이 통째로 사라지면 점프컷을 포기하고 통짜로 돌아간다
+    clip3 = Clip(start=100.0, end=140.0, title="t", caption="", hashtags=[], reason="")
+    clip3.keep_ranges = [[100.0, 110.0], [120.0, 140.0]]
+    clip3.start = 125.0
+    _sync_keep_ranges(clip3, 100.0, 140.0)
+    assert clip3.keep_ranges == []
+
+
+def test_clip_duration_sec_uses_keep_ranges() -> None:
+    """후보 목록의 'N초' 라벨은 원본 구간이 아니라 실제 재생 길이여야 한다."""
+    clip = Clip(start=100.0, end=200.0, title="t", caption="", hashtags=[], reason="")
+    assert clip.duration_sec == 100.0
+    clip.keep_ranges = [[100.0, 130.0], [160.0, 200.0]]
+    assert clip.duration_sec == 70.0
