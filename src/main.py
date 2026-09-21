@@ -28,6 +28,7 @@ from src.render import _probe_display_resolution
 from src.highlights import (
     CLIPS_LOCK,
     Clip,
+    clip_effective_duration,
     QuotaExceededError,
     build_prompt,
     load_clips_json,
@@ -1555,6 +1556,8 @@ def analyze(
                     extra_block=feedback_block,
                     on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
                     debug_path=video_dir / "selection_debug.json",
+                    # 점프컷 전 원본 구간 상한(2026-09-21): 긴 이야기를 중간 들어내기로 살리기 위해 hard_max보다 넓다
+                    max_span_sec=float(h.get("max_span_sec", 180)),
                 )
             except QuotaExceededError:
                 # 한도 소진은 폴백 대상이 아니다. v1을 또 부르면 확정 실패할 CLI 호출을
@@ -1623,12 +1626,13 @@ def analyze(
             clips = snap_clips_to_reference(clips, transcript, snap_reference)
         # 안전망: 스냅(또는 다른 후처리)이 경계를 늘려 길이 상한을 넘긴 클립을 최종적으로 제외한다.
         # _validate_and_build_clips의 상한은 스냅 '이전'에만 적용되므로, 여기서 한 번 더 막는다.
+        # 점프컷(keep_ranges) 클립은 원본 구간이 아니라 실제 남는 길이로 잰다.
         hard_max = float(h.get("hard_max_duration_sec") or h["max_duration_sec"] * 1.5)
-        kept = [c for c in clips if (c.end - c.start) <= hard_max]
+        kept = [c for c in clips if clip_effective_duration(c) <= hard_max + 0.5]
         if len(kept) != len(clips):
             for c in clips:
-                if (c.end - c.start) > hard_max:
-                    print(f"[main] 스냅 후 과확장 클립 제외: {c.end - c.start:.0f}초 (상한 {hard_max:.0f}초) - {c.title!r}")
+                if clip_effective_duration(c) > hard_max + 0.5:
+                    print(f"[main] 스냅 후 과확장 클립 제외: {clip_effective_duration(c):.0f}초 (상한 {hard_max:.0f}초) - {c.title!r}")
             clips = kept
         # 검토 UI는 clips.json 배열 순서 = 표시 순서다. 모델의 배열 순서("강한 순")와
         # 시스템이 따로 계산한 통합 score(scoring.py)가 어긋나면 목록이 뒤죽박죽으로
@@ -2545,7 +2549,8 @@ def render_selected(
                     "hard_max_duration_sec", float(cfg["highlights"]["max_duration_sec"]) + 5.0
                 )
             )
-            if clip.end - clip.start > hard_len:
+            # 점프컷 클립(keep_ranges)은 원본 구간이 길어도 실제 길이는 상한 안이므로 앞을 잘라내면 안 된다.
+            if clip.end - clip.start > hard_len and not (getattr(clip, "keep_ranges", None) or []):
                 new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
                 progress(
                     f"[{i+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",

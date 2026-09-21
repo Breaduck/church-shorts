@@ -171,48 +171,31 @@ def format_sentences(sentences: list[Sentence]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2. 1차 패스 — 명제 지도 + 컷 (문장 번호로만 경계 지정)
+# 2. 1차 패스 — '쇼츠 요소' 지도 + 컷 (문장 번호로만 경계 지정, 점프컷 포함)
 # ---------------------------------------------------------------------------
-BENCHMARK_BLOCK = """## 벤치마크 — 이렇게 잘라야 한다 (잘 되는 교회 쇼츠 채널의 조회수 상위 클립 실측)
-상위 클립은 전부 같은 뼈대다: **설교자가 한 문장으로 못 박은 명제(핵심 문장)** 하나를 중심에 두고,
-그 앞의 **설정**(공감 상황·질문·명제 자체)에서 시작해, 그 명제가 **착지**하는 축복·"~줄로 믿습니다"·아멘·
-명제 재선언에서 딱 끊는다. 제목도 그 핵심 문장 그대로다. 실제 예:
-- 「기도하는 사람은 오염되지 않습니다」(59초): 첫 문장 "기도하는 사람은 세상에 오염되지 않습니다." → 예수님이
-  인기에 오염되지 않은 예 → 끝 "우리가 먼저 기도하는 것이 하나님 앞에 놀라운 은혜의 통로가 됩니다."
-- 「뭐 하러 그렇게까지 하냐?」(60초): "우리가 믿음 생활 하다 보면 종종 듣게 되는 말이 있습니다. 뭐 하러 그렇게까지
-  하냐?" → 더운 날 예배 안 나온 78명 유머 → "뭐 하러 그렇게까지 ~하냐" 5번 반복 크레센도 → 끝 "여러분 이게 믿음입니다."
-- 「아무것도 보이지 않을 때」(69초): "내가 지금 어려운 상황인데 내 옆에 도와줄 사람이 하나도 없고…" → 요나 이야기를
-  압축(성경 인물은 근거로 중간에) → 끝 "지금 보이지 않는다고 해서 없다는 말이 아닙니다 … 반드시 있을 줄로 믿습니다."
-- 「나와 상관없는 것들과 이별할 수 있어야 합니다」(42초): "이별이 쉽지 않습니다. 이별 노래가 얼마나 많아요." → 명제 →
-  끝 "내려놓는 은혜가 있기를 축복합니다 … 끝까지 사명을 감당하는 저와 여러분 될 줄로 믿습니다."
-- 「규칙보다 구원이 먼저입니다」(59초): "규칙이 신앙을 지배하면 안 됩니다. 은혜가 우리를 붙잡아야 합니다." → 십계명은
-  구원 뒤에 주신 것 → 끝 "좀 부족해도 연약해도 완벽하지 않아도 … 계명을 주신 줄로 믿습니다."
-- 「딱 맞아떨어지면 무조건 하나님의 뜻일까?」(153초, 그 채널 1위): 목사 간증 단골 레퍼토리(쌀독 긁는 소리) 유머 재연 →
+BENCHMARK_BLOCK = """## 벤치마크 — 잘 되는 교회 쇼츠 채널의 조회수 상위 클립 실측
+상위 클립의 공통 뼈대: **구체(장면·실화·대사·숫자·질문)로 시작** → 설교자가 한 문장으로 못 박은 **명제가 착지**
+(축복·"~줄로 믿습니다"·아멘 직전·명제 재선언·반전의 한마디)에서 딱 끊는다. 실제 예(조회수·길이):
+- 「담임목사의 군생활 꿀팁」(1만, 64초, 재미): 이등병 때 "야 김하나, 에프킬라 뿌려" 재연 → "필수 요소는 소리가 아닙니다"
+  → 착지 "신의 필수 조건은 하나님의 능력입니다."
+- 「목사님의 해외 출국 전 장바구니」(6.9천, 76초, 뜨끔): "저도 해외를 가게 되니까 자꾸 뭘 찾게 되냐면요" → 목베개 7개
+  자학 유머 → 착지 "우리는 다 갖고 있어도 뭔가를 더 원합니다 … 하나님께서 이것을 원하시느냐."
+- 「엄마는 교회 가자 vs 안 가겠다는 아들」(6.2천, 68초, 뜨끔): 소파 대사 재연 → 착지 "사람은 그렇게 쉽게 변화되지 않습니다."
+- 「딱 맞아떨어지면 무조건 하나님의 뜻일까?」(채널 1위, 153초, 교훈): 목사 간증 단골 레퍼토리(쌀독 긁는 소리) 재연 →
   반전 "딱 맞아떨어진다고 다 하나님의 뜻은 아닙니다" → 끝 "성도의 기준은 상황이 아닙니다." 이야기가 온전하면 길어도 터진다.
-공통점: (1) 시청자는 **교회 다니는(또는 관심 있는) 한국 사람**이다 — 성경 인물·용어는 얼마든지 나오되, **첫 문장은
-인물 소개·본문 설명이 아니라 명제/공감 상황/질문**이다. (2) 한 클립 = 명제 하나. (3) 끝은 가장 힘 있는 문장에서
-딱 끊는다. (4) 40~60초가 주류, 온전한 이야기면 90초까지 괜찮다.
-
-## 조회수 재실측(2026-09-19, 같은 채널 쇼츠 150개를 조회수순으로) — 무엇이 위이고 무엇이 아래인가
-**위(6천~1만3천)는 거의 전부 '장면' 클립이다.** 설교자가 일상 상황을 대사까지 넣어 재연하고, 청중이 웃고, 맨 끝 한두
-문장에서만 명제가 착지한다. 제목도 명제가 아니라 그 장면이다:
-- 「엄마는 교회 가자 vs 안 가겠다는 아들」(6.2천, 68초): "어머니가 교회 나서기 전에 '야 교회 한 번만 가자.' 애원도 합니다.
-  협박도 합니다. 선물도 약속합니다. 근데 뭐가 먹히던가요?" → 아들 소파 대사 재연("아 진짜 그 말 좀 하지 말라고") → 착지
-  "사람은 그렇게 쉽게 변화되지 않습니다."
-- 「목사님의 해외 출국 전 장바구니」(6.9천, 76초): "저도 해외를 가게 되니까 자꾸 뭘 찾게 되냐면요, 짐을 적게 꾸리는 새로운
-  물건들." → 안대·목베개 7개 자학 유머(청중 웃음) → 착지 "우리는 다 갖고 있어도 뭔가를 더 원합니다 … 하나님께서 이것을
-  원하시느냐."
-- 「담임목사의 군생활 꿀팁」(1만, 64초): 이등병 때 "야 김하나, 에프킬라 뿌려" 재연 → "필수 요소는 소리가 아닙니다" →
-  착지 "신의 필수 조건은 하나님의 능력입니다."
-- 「공포영화에서 살아남는 법」(4.6천): 전설의 고향 룰 재연("옆에 예쁜 여자가 와서 '가시면 큰일납니다' — 지가 여우면서")
-  → 착지 "붙잡을 때 과감하게 떠나는 사람이 산다."
-- 「교회 사는 딸에게 부모가 하는 잔소리」(4.5천, 간증): "새벽에 들어가도 엄마 아빠는 주무시고 계셨어요(웃음) … '네가
-  가봤자 교회고 만나봤자 교회 친구인데'."
-- 「'귀신같이 안다'의 유래」(3.5천): 에베소 마술사가 귀신에게 "너희는 누구냐" 소리 듣는 장면 → "귀신같이 안다는 말이 여기서."
-**아래(1천~2천)는 명제만 있는 클립이다:** "참된 자유는 그리스도만 주십니다", "우리가 먼저 하나님을 사랑한 게 아닙니다",
-"하나님 앞에 기도하는 자는 복이 있습니다" — 문장은 단호하고 옳지만 장면이 없다.
-→ **결론: 검색 열쇠는 '명제'가 아니라 '장면'이다.** 명제는 장면이 착지하는 마지막 한두 문장일 뿐이다. 명제부터 찾고
-그 둘레를 자르면 정확히 아래쪽 클립이 나온다(우리 실패의 구조적 원인)."""
+- 「아무것도 보이지 않을 때」(69초, 위로): "내가 지금 어려운 상황인데 내 옆에 도와줄 사람이 하나도 없고…" → 요나 이야기를
+  압축 → 끝 "지금 보이지 않는다고 해서 없다는 말이 아닙니다 … 반드시 있을 줄로 믿습니다."
+- 「교회 사는 딸에게 부모가 하는 잔소리」(4.5천, 감동 간증): "새벽에 들어가도 엄마 아빠는 주무시고 계셨어요 … '네가 가봤자
+  교회고 만나봤자 교회 친구인데'."
+- 「규칙보다 구원이 먼저입니다」(59초, 교훈): "규칙이 신앙을 지배하면 안 됩니다. 은혜가 우리를 붙잡아야 합니다." → 십계명은
+  구원 뒤에 주신 것 → 끝 "좀 부족해도 연약해도 완벽하지 않아도 … 계명을 주신 줄로 믿습니다."
+**아래(1천~2천)**: "참된 자유는 그리스도만 주십니다", "우리가 먼저 하나님을 사랑한 게 아닙니다" — 문장은 옳고 단호하지만
+구체가 없고 시청자 자신의 상황이 안 떠오르는 **선언만 있는 클립**.
+공통점: (1) 시청자는 **성경을 모르는 일반 대중까지** 포함한다 — 위 상위 클립은 전부 성경 지식 없이도 자기 얘기로
+들린다(군생활·장바구니·엄마와 아들·부모 잔소리). 성경 인물 이야기(베드로가 어디로 갔다, 요나가 도망쳤다)가 주된
+내용인 클립은 교인 밖에서는 공감을 못 얻는다. 첫 문장은 인물 소개·본문 설명·연도·지명 나열이 아니라 **상황/대사/질문/직격**이다. (2) 한 클립 = 한 감정·한 명제. (3) 끝은 가장
+힘 있는 문장에서 딱 끊는다. (4) 40~60초가 주류, 온전한 이야기면 90초까지 괜찮다. (5) 위 상위 클립은 재미만이 아니다 —
+뜨끔·교훈·위로·감동이 골고루 있고, 공통점은 **구체가 있고 시청자가 자기 얘기로 느낀다**는 것이다."""
 
 
 def build_thesis_cut_prompt(
@@ -221,91 +204,84 @@ def build_thesis_cut_prompt(
     min_clips: int,
     max_clips: int,
     extra_block: str = "",
+    hard_max_sec: float = 90.0,
+    max_span_sec: float = 180.0,
 ) -> str:
     extra = f"\n{extra_block}\n" if extra_block else ""
     return f"""너는 조회수가 잘 나오는 교회 쇼츠 채널의 수석 편집자다. 아래는 {video_duration_sec/60:.0f}분 설교를
 **문장 단위**로 정리한 전사본이다(각 줄 = 문장 하나, 앞의 S번호가 문장 번호, [분:초]는 시작 시각).
-이번 작업은 딱 하나다: **이 설교에서 쇼츠로 떴을 때 사람이 멈춰 보고 웃거나 찔리거나 뭉클할 '장면'을 찾고, 장면마다
-컷의 시작·끝 문장 번호를 정하는 것.** 채점·제목·캡션은 다른 단계가 한다. 사고는 전부 "어느 대목이 진짜 재미있고
-진짜 찌르는가"에 써라. 옳은 말인가는 기준이 아니다 — 설교는 전부 옳은 말이다.
+이번 작업은 딱 하나다: **이 설교에서 쇼츠로 떴을 때 사람이 멈춰 보게 되는 '쇼츠 요소'가 있는 대목을 전부 찾고, 대목마다
+컷(시작·끝 문장 번호, 필요하면 중간에 들어낼 문장)을 정하는 것.** 채점·제목·캡션은 다른 단계가 한다.
+사고는 전부 "어느 대목이 시청자에게 실제 반응(웃음·뭉클·찔림·위로·'아, 그래서였구나')을 일으키는가"에 써라.
 
 {BENCHMARK_BLOCK}
 
-## 1단계 — 장면 지도 (명제 지도가 아니다)
-먼저 설교 전체를 읽고 **장면**을 전부 찾아 나열하라. 장면이란 설교자가 추상 대신 **구체**로 말한 대목이다:
-- 일상 상황을 **대사까지 넣어 재연**한 곳("야 교회 한 번만 가자" — "아 진짜 그 말 좀 하지 말라고"),
-  "여러분, 아이 재롱잔치 가면 다른 집 애 보여요? 내 애만 보이잖아요"처럼 **시청자 자신이 겪어본** 구체 상황,
-- 유머·자학·흉내(청중이 웃었을 곳 — 전사에 [웃음]이 있으면 그 직전 문장들이 핵심), 설교자 자신의 경험담·고백
-  ("저도 해외 가게 되니까 자꾸 뭘 찾게 되냐면요, 짐 적게 꾸리는 새로운 물건들"),
-- 구체 숫자·고유명사가 있는 실화, 성경 인물 이야기가 **꺾이는 반전의 한마디**("주여 어디로 가시나이까?" 뒤에
-  돌아온 대답), 같은 말이 반복되며 고조되는 크레센도("뭐 하러 그렇게까지 하냐?" 5번),
-- 시청자 **자신의 삶**을 정면으로 찌르는 직격("딱 맞아떨어진다고 다 하나님의 뜻은 아닙니다").
-**장면의 주인공은 시청자 자신이어야 한다.** 남(이단·타종교·다른 목회자·특정 집단)을 두고 "저 사람들은 이렇다"고
-설명·경계·폭로하는 대목은 아무리 이야기가 구체적이고 흥미로워도 장면이 아니다 — 아래 '절대 제외'.
-장면마다 **그 장면이 착지하는 명제 문장**(설교자가 한 문장으로 못 박은 결론)을 짝지어라. 장면 없이 명제만 있는
-대목("~은 ~입니다"라는 선언만 있고 구체가 없는 곳)은 지도에 넣되 **[명제만]**이라고 표시하라 — 후보 상한은 2개다.
-25~40분 설교면 장면은 보통 6~12개다. 4개 미만이면 못 찾은 것이니 본문 해설 사이에 툭 튀어나온 일상 언어·숫자·
-대사·웃음 대목을 다시 훑어라.
+## 1단계 — 쇼츠 요소 지도
+설교 전체를 읽고 아래 다섯 요소가 있는 대목을 **빠짐없이** 나열하라. 다섯 요소는 동등하다 — 재미만 찾지 마라.
+- **재미**: 유머·자학·흉내·대사 재연(전사에 [웃음]이 있으면 그 직전 문장들이 핵심).
+- **감동**: 실화·간증·희생·눈물겨운 헌신, 구체 숫자·고유명사·대사가 있는 이야기("식권밖에 없어요", "보증금 가져왔어요").
+- **뜨끔**: 시청자 자신의 삶을 정면으로 찌르는 직격·질문("인생의 연조가 저절로 깊어지는 건 아니지 않습니까?").
+- **교훈(통찰)**: 뻔한 권면이 아니라 **관점을 뒤집는 한마디**("딱 맞아떨어진다고 다 하나님의 뜻은 아닙니다", "교회를
+  다시 지어라 → 알고 보니 지역 사람들에게 물어보라"). 판별: 듣고 나서 "아 그렇구나"가 아니라 "아, 그래서였구나 / 내가
+  거꾸로 알고 있었네"가 생기는가. 교회 안 다니는 사람이 들어도 자기 삶에 적용되는 **일반적인 교훈**이 가장 좋다.
+- **위로**: 지금 힘든 사람에게 그대로 들려주고 싶은 한 대목("지금 보이지 않는다고 없는 게 아닙니다").
+요소마다 그 대목이 **착지하는 명제 문장**(설교자가 한 문장으로 못 박은 결론, 없으면 펀치라인)을 짝지어라.
+장면(재연·실화)이 없어도 명제가 위 판별을 통과하면 후보다. 반대로 문장이 단호해도 **감정·갈등·적용이 없는 용어
+정의/분류/본문 해설**("환상과 꿈의 차이는…")은 요소가 아니다 — 시청자가 "그렇군" 하고 넘긴다.
+25~40분 설교면 보통 6~12개다. 4개 미만이면 못 찾은 것이니 본문 해설 사이에 툭 튀어나온 일상 언어·숫자·대사·질문·
+반전을 다시 훑어라. 한 대목에 요소가 둘 이상이면(감동+교훈) 더 강한 쪽을 appeal로 적어라.
 
-## 2단계 — 장면마다 컷 잡기 (문장 번호로)
-- core: 그 장면이 착지하는 명제 문장 번호(없으면 장면의 펀치라인). 반드시 start~end 안에 있어야 한다.
-- start: **장면이 시작되는 문장** — 상황 제시("이스라엘 사람들이 한국에 여행을 많이 오거든요"), 질문, 대사의 첫 줄.
-  명제 문장에서 시작하지 마라(벤치마크 하위 클립의 모양이다). "그래서/이것도 마찬가지로/둘째," 같이 앞 문맥을
-  전제하는 문장, "오늘 본문은", "○○가 ~했는데" 식 인물·배경 설명으로 시작하지 마라 — 그 뒤의 첫 구체 문장으로 옮겨라.
+## 2단계 — 대목마다 컷 잡기 (문장 번호로)
+- core: 착지하는 명제 문장 번호(없으면 펀치라인). 반드시 start~end 안에 있어야 한다.
+- start = **훅 문장**: 시청자가 첫 3초에 듣는 문장이다. 상황 제시·대사의 첫 줄·질문·직격·반전 예고 중 하나여야 한다.
+  **훅으로 금지**: 연도·날짜·지명·인명 나열("2006년 12월에 성전 부지를 매입하고…", "복음을 들고 태평양을 건너 대서양을
+  건너…"), 인물·배경 소개("○○가 ~했는데"), "오늘 본문은", 30단어 넘는 긴 문장, 앞 문맥을 전제하는 "그래서/이것도/둘째,"
+  시작. 그런 문장이 설정에 필요해 보여도 **그 뒤의 첫 구체 문장으로 옮겨라** — 예: "2006년 12월에…" 대신 바로 뒤의
+  "전도하면 될 거라고 생각했어요."가 훅이다. 설정이 조금 빠져도 훅이 사는 쪽이 낫다.
 - end: 명제가 **착지**하는 가장 힘 있는 문장 — 축복 선언·"~줄로 믿습니다"·아멘 직전 문장·명제 재선언·반전의 한마디.
-  그 문장을 읽고 "그래서?"가 떠오르면 미완이다 — 결론이 나온 문장까지 포함하라. 반대로 착지 뒤의 "자, 그러면",
-  "다음으로", 부연은 절대 넣지 마라. 예화만 있고 적용이 없는 곳에서 끝내지 마라.
-- 길이: 40~60초 목표, 온전한 이야기·크레센도는 90초까지. 설정 없이 명제 한 문장만 뗀 15~20초 조각은 미달
-  (크레센도+축복 착지가 붙은 25초부터 허용). 넘치면 끝을 당기지 말고 **앞의 도입·중복 해설을 잘라라.**
-- 한 컷 = 명제 하나. 컷끼리 같은 예화·같은 문장을 반복하지 마라(겹치면 더 강한 쪽 하나만).
-  단, 이 규칙은 "다른 주제를 섞지 마라"는 뜻이지 **이어지는 한 이야기를 두 토막으로 내라는 뜻이 아니다.**
-  설정(예: "하나님이 우리를 보실 때 이뻐 죽겠어") → 전환("그러나 이방인들도…") → 착지("하나님이 버리셨느냐?
-  그럴 수 없느니라 … 믿습니다")가 연달아 이어지면 그건 컷 하나(90초까지)다. 반으로 쪼개면 앞토막은 착지가 없고
-  뒤토막은 설정이 없어 둘 다 죽는다(실측).
-- start 문장이 "그래서/그니까/그러나/이런"으로 시작하면 그 문장은 시작이 아니다 — 바로 앞의 질문·선언 문장으로
-  올리고 대신 끝쪽 부연을 잘라 길이를 맞춰라.
-- appeal: 이 컷이 만드는 감정 — 위로 / 선언 / 뜨끔 / 감동 / 재미. 후보 절반 이상이 같은 appeal이면 나머지를
-  놓친 것이니(특히 뜨끔·감동·재미) 찌르는 대목·예화 클라이맥스·웃긴 대목을 다시 찾아라.
-- scene: 이 컷의 장면을 한 줄로(예: "이스라엘 관광객이 설렁탕을 안 먹고 셰프를 데려오는 이유"). 장면 없이 명제만이면
-  "[명제만]"으로 시작하라. **후보 중 장면 클립이 절반 미만이면 잘못 뽑은 것이다** — 명제 클립을 빼고 장면을 더 찾아라.
-
-## 명제처럼 보이지만 명제가 아닌 것 — 반드시 걸러내라 (실패 실측)
-문장이 "~은 ~이다" 형태로 단호해도 **감정·갈등·적용이 없는 용어 정의/분류**는 명제가 아니라 그냥 해설이다.
-청중이 "아, 그렇구나" 하고 끝나지 "내 얘기다/찔린다/위로된다"가 안 생기면 후보에서 빼라. 실패 실측(이 규칙이
-없어서 실제로 나온 지루한 후보들 — 절대 이런 식으로 뽑지 마라):
-- "회사 비전은 비전 아닙니다": '환상'과 '꿈'의 사전적 차이를 설명하는 대목. 갈등도 적용도 없다 → 제외.
-- "환상이라고 다 하나님 아닙니다": 같은 주제(분별)를 **두 번** 뽑음 — 겹치면 더 강한 쪽 하나만.
-- 예화가 있어도 **결말이 "~한 삶을 사는 것이다" 식 해설로 끝나면** 웃기거나 뭉클한 채로 안 끝난다 → 결말을
-  감정이 남는 문장(놀람·웃음·뭉클함·찔림)으로 다시 잡거나 후보에서 빼라.
-판별식: 이 명제를 시청자에게 그대로 들려줬을 때 "그렇군" 이상의 반응(웃음/뭉클/찔림/위로/도전)이 실제로
-있는가? 없으면 아무리 문장이 단호해도 버려라. **명제 지도에 이런 정의·분류 문장이 섞여 있으면 지도에서
-아예 빼고 그 자리를 다른 진짜 명제로 채워라** — 개수를 못 채워도 상관없다. 후보 수보다 재미가 먼저다.
+  그 문장을 읽고 "그래서?"가 떠오르면 미완이다 — 결론이 나온 문장까지 포함하라. 착지 뒤의 "자, 그러면", "다음으로",
+  부연은 절대 넣지 마라. 예화만 있고 적용이 없는 곳에서 끝내지 마라.
+- **skip(점프컷)**: 온전한 이야기가 {hard_max_sec:.0f}초를 넘기면 앞이나 뒤를 잘라 반토막 내지 말고, **중간에서 빼도 흐름이
+  안 깨지는 문장들**을 skip으로 지정해 들어내라. 빼도 되는 것: 같은 말 반복, 곁길·부연 설명, 슬라이드 넘기기("다음
+  넘겨 보시죠"), 수치·연도 나열, 추임새 문장. 빼면 안 되는 것: 뒤 문장이 가리키는 내용("그 사람이…"의 '그 사람'이
+  나온 문장), 반전의 전제, 대사의 앞뒤. **자연스러움이 최우선**: skip 앞 문장은 말이 끝난 문장이어야 하고, skip 뒤
+  문장은 "그래서/그런데/그러니까"로 시작하지 않아야 한다. 각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는
+  뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초 이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다.
+  {hard_max_sec:.0f}초 이내 컷에도 죽은 구간(슬라이드 설명·반복)이 있으면 skip으로 빼라 — 단 빼는 게 억지스러우면 안 빼는 게 낫다.
+- 길이(skip 제외 후): 40~60초 목표, 온전한 이야기·크레센도는 {hard_max_sec:.0f}초까지. 설정 없이 명제 한 문장만 뗀 15~20초 조각은
+  미달(크레센도+축복 착지가 붙은 25초부터 허용).
+- 한 컷 = 한 명제. 컷끼리 같은 예화·같은 문장을 반복하지 마라(겹치면 더 강한 쪽 하나만). 단, 이 규칙은 "다른 주제를
+  섞지 마라"는 뜻이지 **이어지는 한 이야기를 두 토막으로 내라는 뜻이 아니다.** 설정 → 전환 → 착지가 연달아 이어지면
+  그건 컷 하나다(길면 skip으로 줄여라). 반으로 쪼개면 앞토막은 착지가 없고 뒤토막은 설정이 없어 둘 다 죽는다(실측).
+- appeal: 재미 / 감동 / 뜨끔 / 교훈 / 위로 중 하나. 후보 절반 이상이 같은 appeal이면 나머지 요소를 놓친 것이니 다시 찾아라.
+- scene: 이 컷의 내용을 한 줄로(구체가 드러나게. 예: "밥 식권을 헌금함에 넣은 청년, 목사가 아직 책상에 보관 중").
 
 ## 절대 제외
 - 정치·특정 국가/민족/정당/정권/이념/전쟁을 다루거나 미화하는 구간, "역사적·국가적 사건 = 하나님의 직접 개입/섭리"
   비약(예: 소련 대사가 배탈로 회의에 빠져 대한민국이 살았다 → 섭리). 개인의 영적 진리가 아니면 제외.
 - **남을 비판·경계·폭로하는 대목**: 이단·사이비·타종교·타교단·다른 목회자/기도원/특정 집단·직군을 두고 "저들은
   가짜다/조심하라/그 유래는 이렇다"고 말하는 구간 전부(예: 이단 교주의 창시 일화, "○○ 사람들 조심하세요",
-  "그거 점쟁이지 뭐예요", "이단이 다른 사람이 아니에요"). 이야기가 아무리 구체적이고 흥미로워도 **시청자에게 남는
-  감정이 웃음·뭉클·위로·찔림이 아니라 '남 욕·경계'**라 감동도 재미도 없고 공유되지 않으며, 채널이 이단 논쟁에 끌려
-  들어간다(실측 실패: 이런 클립 두 개가 1·2위로 올라와 사용자가 "감동도 재미도 없다"고 전부 폐기). 시청자 자신의
-  삶·믿음·마음을 다루는 대목만 후보다. 경고형 명제("~조심해야 됩니다", "~은 가짜다")가 착지인 컷도 같은 이유로 제외.
-- 본문 해설·강의만 있고 명제가 없는 것.
+  "그거 점쟁이지 뭐예요"). 이야기가 아무리 구체적이고 흥미로워도 시청자에게 남는 감정이 '남 욕·경계'라 공유되지
+  않고 채널이 논쟁에 끌려 들어간다(실측 실패). 경고형 명제("~조심해야 됩니다", "~은 가짜다")가 착지인 컷도 제외.
+- **성경 인물 이야기가 주된 내용인 컷**(베드로·요나·모세·다윗·요셉·바울 등 인물의 행적을 따라가는 대목, "○○가
+  어디로 가서 무엇을 했다"): 성경을 모르는 시청자에겐 남의 옛날이야기라 공감이 안 생긴다(사용자 지시). 성경 구절·
+  인물이 **한두 문장 근거로만** 스쳐 가고 클립이 그것 없이도 서면 괜찮지만, 인물 이야기를 들어내면 클립이 무너지면
+  제외다. 대신 그 대목이 착지하는 **일반적인 삶의 교훈**만 따로 서는지 보고, 서면 그 부분만 컷으로 잡아라.
+- 본문 해설·강의만 있고 요소가 없는 것.
 {extra}
 ## 개수
-{min_clips}~{max_clips}개. 25분 설교에서 3~4개만 내는 건 대개 명제 지도를 제대로 안 만든 것이지만, 위 "명제처럼
-보이지만 아닌 것"을 걸러내고 나니 5~6개뿐이어도 그게 정직한 결과라면 그대로 내라 — **재미없는 해설로 개수를
-채우는 것보다 적은 게 낫다.** 강한 순으로 정렬하라(0번째가 가장 강력).
+{min_clips}~{max_clips}개. 위 다섯 요소를 다 훑고도 5~6개뿐이면 그게 정직한 결과다 — 해설로 개수를 채우지 마라.
+강한 순으로 정렬하라(0번째가 가장 강력).
 
 ## 문장 전사본
 {format_sentences(sentences)}
 
 ## 출력 형식
-다른 설명 없이 아래 JSON 배열만 출력하라(```json 코드블록). 번호는 위 S번호의 **정수**만.
+다른 설명 없이 아래 JSON 배열만 출력하라(```json 코드블록). 번호는 위 S번호의 **정수**만. skip은 없으면 빈 배열.
 ```json
 [
-  {{"core": 123, "start": 120, "end": 131, "appeal": "재미",
-    "scene": "장면 한 줄 (명제만이면 '[명제만] …')",
+  {{"core": 123, "start": 118, "end": 131, "skip": [[121, 122], [127, 127]], "appeal": "감동",
+    "scene": "내용 한 줄",
     "thesis": "착지 명제를 한 줄로(전사본 표현 그대로)",
     "why": "왜 이 대목에서 사람이 멈추는지 한 문장"}}
 ]
@@ -326,7 +302,7 @@ _CONNECTOR_END_WORDS = {
 }
 _CONNECTOR_START = re.compile(
     r"^(그래서|그러니까|그니까|그런데|근데|그리고|그러나|그러면|그럼|그래도|그렇기\s*때문에|왜냐하면|이것도|이런|그런|저런|"
-    r"이게|그게|이거|그거|이건|그건|여기서|거기서|또|즉|다시\s*말하면)(\s|,|$)")
+    r"이게|그게|이거|그거|이건|그건|여기서|거기서|또|즉|다시\s*말하면)(이|그|저)?(\s|,|$)")
 _INCOMPLETE_SUFFIX = re.compile(r"(는데|인데|한데|았는데|었는데|지만|라서|어서|아서|니까|으니까|려고|으려고|면서|으면서|고|며|든지|거든요|는데요|면|으면|하면|다가)$")
 _STRONG_LANDING = re.compile(r"(축복합니다|축복하십니다|축원합니다|줄로\s*믿습니다|줄\s*믿습니다|믿습니다|바랍니다|바라겠습니다|소망합니다|원합니다|되시기를|되기를|아멘)")
 _LANDING_FOLLOW_SEC = 8.0
@@ -349,6 +325,31 @@ _TRANSITION_MAX_WORDS = 8      # 이보다 긴 접속어 문장은 '전환 추�
 _MERGE_GAP_SEC = 20.0          # 이 간격 이내로 붙은 두 컷은(사이에 대지 전환·착지가 없으면) 한 흐름으로 본다
 
 
+# 훅으로 죽는 문장(2026-09-21 실측 zvsOYhjdmks): "2006년도 12월에 이곳에 성전 부지를 매입하고…"(연도 시작),
+# "복음을 들고 태평양을 건너 대서양을 건너 시베리아 횡단 철도를 타고…"(29초짜리 한 문장). 접속어 교정(7)이
+# "그리고 한 2년 동안…"을 고치려다 한 문장 앞의 연도 문장으로 옮겼다 — '접속어만 아니면 깨끗하다'고 봤기 때문.
+_WEAK_HOOK_YEAR = re.compile(r"^\D{0,4}\d{4}\s*년")
+_WEAK_HOOK_MAX_WORDS = 30
+_WEAK_HOOK_MIN_DIGIT_GROUPS = 3
+_WEAK_HOOK_LOOKAHEAD = 3  # 약한 훅을 고칠 때 앞(미래)으로 살펴볼 문장 수
+
+
+def _is_weak_hook(text: str) -> bool:
+    """첫 3초에 들리면 스크롤을 못 멈추는 문장: 연도로 시작, 숫자 나열, 너무 긴 문장."""
+    t = text.strip()
+    if not t:
+        return True
+    if len(t.split()) > _WEAK_HOOK_MAX_WORDS:
+        return True  # 29초짜리 한 문장은 끝이 물음표여도 첫 3초가 죽는다(실측 "복음을 들고 태평양을 건너…")
+    if t.endswith("?"):
+        return False  # 짧은 질문은 훅이 된다
+    if _WEAK_HOOK_YEAR.match(t):
+        return True
+    if len(re.findall(r"\d+", t)) >= _WEAK_HOOK_MIN_DIGIT_GROUPS:
+        return True
+    return False
+
+
 def _is_dirty_start(text: str) -> bool:
     """첫 문장으로 두면 '중간을 툭 자른' 훅이 되는 문장(접속어·지시어·구조 표지·추임새 시작)."""
     t = text.strip()
@@ -358,11 +359,11 @@ def _is_dirty_start(text: str) -> bool:
 
 
 def _is_clean_start(text: str) -> bool:
-    """시작을 옮길 때 '후보'로 삼아도 되는 문장인가 — 더럽지 않고, 착지도 아니고, 조각도 아님.
-    (현재 시작이 고칠 대상인지는 _is_dirty_start로 본다: "놀라운 신분이에요." 같은 짧은 선언은
+    """시작을 옮길 때 '후보'로 삼아도 되는 문장인가 — 더럽지 않고, 착지도 아니고, 조각도 아니고, 약한 훅도 아님.
+    (현재 시작이 고칠 대상인지는 _is_dirty_start/_is_weak_hook로 본다: "놀라운 신분이에요." 같은 짧은 선언은
     시작으로 이미 괜찮으므로 건드리지 않는다.)"""
     t = text.strip()
-    if _is_dirty_start(t):
+    if _is_dirty_start(t) or _is_weak_hook(t):
         return False
     if _STRONG_LANDING.search(t) or re.fullmatch(r"(>>\s*)?아멘[.!]?", t):
         return False
@@ -392,18 +393,97 @@ def _starts_with_structure_marker(text: str) -> bool:
     return bool(_STRUCT_START.match(text.strip()))
 
 
+# ---- 점프컷(skip) ----------------------------------------------------------
+# 2026-09-21 사용자: "너무 긴 부분은 과감하게 자르고 붙여도 된다, 자연스럽기만 하다면." 그전까지 컷은 연속 구간
+# 하나뿐이라 3분짜리 이야기(교회 땅 이야기)는 앞을 잘라 반전의 전제를 잃거나 통째로 탈락했다. 이제 모델이
+# "빼도 흐름이 안 깨지는 문장" 구간(skip)을 지정하고, 여기서 자연스러움을 검증한 뒤 렌더의 keep_ranges로 넘긴다.
+def _parse_skips(raw_skip, n: int) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for r in raw_skip or []:
+        try:
+            a, b = int(r[0]), int(r[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if a > b:
+            a, b = b, a
+        a = max(0, a); b = min(n - 1, b)
+        if a <= b:
+            out.append((a, b))
+    return _merge_ranges(out)
+
+
+def _merge_ranges(rs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    rs = sorted(rs)
+    out: list[tuple[int, int]] = []
+    for a, b in rs:
+        if out and a <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _clip_skips(skips: list[tuple[int, int]], start: int, end: int) -> list[tuple[int, int]]:
+    """start·end 문장은 뺄 수 없다 → skip을 (start, end) 안쪽으로 자른다."""
+    out = []
+    for a, b in skips:
+        a2, b2 = max(a, start + 1), min(b, end - 1)
+        if a2 <= b2:
+            out.append((a2, b2))
+    return out
+
+
+def _sanitize_skips(
+    skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int, core: int, log: list[str],
+) -> list[tuple[int, int]]:
+    """자연스럽지 않은 skip은 버린다: 핵심 문장을 품음 / 앞 문장이 말이 안 끝남 / 뒤 문장이 접속어로 시작."""
+    out: list[tuple[int, int]] = []
+    for a, b in _clip_skips(skips, start, end):
+        if a <= core <= b:
+            log.append(f"skip S{a}~S{b} 핵심 문장 포함 → 무시"); continue
+        before, after = sentences[a - 1], sentences[b + 1]
+        if _is_incomplete(before.text) and not before.text.strip().endswith("?"):
+            log.append(f"skip S{a}~S{b} 앞 문장 미완('{before.text[-12:]}') → 무시"); continue
+        if _CONNECTOR_START.match(after.text.strip()) or _FILLER_PREFIX.match(after.text.strip()):
+            log.append(f"skip S{a}~S{b} 뒤 문장 접속어 시작('{after.text[:12]}') → 무시"); continue
+        out.append((a, b))
+    return _merge_ranges(out)
+
+
+def kept_runs(start: int, end: int, skips: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """start~end에서 skip을 뺀 '남는 문장 구간'(inclusive) 목록."""
+    runs: list[tuple[int, int]] = []
+    cur = start
+    for a, b in _clip_skips(skips, start, end):
+        if a > cur:
+            runs.append((cur, a - 1))
+        cur = b + 1
+    if cur <= end:
+        runs.append((cur, end))
+    return runs
+
+
+def _eff_dur(sentences: list[Sentence], start: int, end: int, skips: list[tuple[int, int]]) -> float:
+    """skip을 들어낸 뒤 실제 남는 길이(초)."""
+    return sum(sentences[b].end - sentences[a].start for a, b in kept_runs(start, end, skips))
+
+
 def verify_and_fix(
     raw: dict,
     sentences: list[Sentence],
     min_sec: float,
     max_sec: float,
     hard_max_sec: float,
+    max_span_sec: float | None = None,
 ) -> tuple[dict | None, list[str]]:
     """모델의 컷(문장 번호)을 벤치마크 뼈대 기준으로 검증·보정한다.
 
-    반환: (보정된 컷 dict 또는 None(탈락), 적용한 보정 로그)."""
+    길이 규칙은 전부 skip(점프컷)을 들어낸 뒤의 '실제 남는 길이'로 재고, 원본 구간(start~end)은 max_span_sec까지 허용.
+    반환: (보정된 컷 dict 또는 None(탈락), 적용한 보정 로그). 보정된 컷의 skip은 검증을 통과한 것만 남는다."""
     n = len(sentences)
     log: list[str] = []
+    if max_span_sec is None:
+        max_span_sec = hard_max_sec * 2
     try:
         core = int(raw["core"]); start = int(raw["start"]); end = int(raw["end"])
     except (KeyError, TypeError, ValueError):
@@ -418,9 +498,16 @@ def verify_and_fix(
         log.append(f"start S{start}→S{core} (핵심 문장 포함)"); start = core
     if core > end:
         log.append(f"end S{end}→S{core} (핵심 문장 포함)"); end = core
+    # (0) 점프컷: 자연스럽지 않은 skip은 여기서 미리 버려 길이 계산에 끼지 않게 한다
+    skips = _sanitize_skips(_parse_skips(raw.get("skip"), n), sentences, start, end, core, log)
+    if skips:
+        log.append("skip " + ", ".join(f"S{a}~S{b}" for a, b in skips))
+
+    def span(a: int, b: int) -> float:
+        return sentences[b].end - sentences[a].start
 
     def dur(a: int, b: int) -> float:
-        return sentences[b].end - sentences[a].start
+        return _eff_dur(sentences, a, b, skips)
 
     # (2) 첫 문장이 구조 표지("둘째,", "자, 그러면")·추임새("예.", "응.")면 떼어낸다
     while start < core and (
@@ -433,7 +520,7 @@ def verify_and_fix(
     # (3) 끝이 미완(접속형·질문·쉼표)이면 착지까지 확장(최대 4문장, 상한 내)
     steps = 0
     while _is_incomplete(sentences[end].text) and end + 1 < n and steps < 4:
-        if dur(start, end + 1) > hard_max_sec:
+        if dur(start, end + 1) > hard_max_sec or span(start, end + 1) > max_span_sec:
             break
         log.append(f"end S{end} 미완 → S{end+1}"); end += 1; steps += 1
     # (4) 바로 다음 문장이 축복·믿습니다·아멘 착지면 벤치마크처럼 그것까지 포함
@@ -444,17 +531,22 @@ def verify_and_fix(
             and not _STRONG_LANDING.search(sentences[end].text)
             and not _starts_with_structure_marker(nxt.text)
             and nxt.start - sentences[end].end <= _LANDING_FOLLOW_SEC
-            and dur(start, end + 1) <= hard_max_sec
+            and dur(start, end + 1) <= hard_max_sec and span(start, end + 1) <= max_span_sec
         ):
             log.append(f"end S{end} → S{end+1} (축복 착지 포함)"); end += 1
     # "아멘." 한 단어 문장이 바로 뒤에 붙어 있으면 포함(청중 아멘 직후가 자연스러운 끝점)
-    if end + 1 < n and re.fullmatch(r"(>>\s*)?아멘[.!]?", sentences[end + 1].text.strip()) and dur(start, end + 1) <= hard_max_sec:
+    if (
+        end + 1 < n and re.fullmatch(r"(>>\s*)?아멘[.!]?", sentences[end + 1].text.strip())
+        and dur(start, end + 1) <= hard_max_sec and span(start, end + 1) <= max_span_sec
+    ):
         end += 1
-    # (5) 길이 상한: 앞에서 자른다(핵심 문장은 유지)
-    while dur(start, end) > hard_max_sec and start < core:
+    # (5) 길이 상한: 앞에서 자른다(핵심 문장은 유지). 남는 길이(skip 제외)와 원본 구간 둘 다 본다.
+    while (dur(start, end) > hard_max_sec or span(start, end) > max_span_sec) and start < core:
         start += 1
     if dur(start, end) > hard_max_sec:
         return None, log + [f"길이 {dur(start,end):.0f}초 > 상한 {hard_max_sec:.0f}초, 핵심 문장 유지 불가 → 탈락"]
+    if span(start, end) > max_span_sec:
+        return None, log + [f"원본 구간 {span(start,end):.0f}초 > 상한 {max_span_sec:.0f}초 → 탈락"]
     # (6) 짧은 컷은 앞쪽 설정을 보강한다. 벤치마크 최단이 42초인데 모델은 명제 문장 근처만 24~25초로
     #     뚝 떼는 경향이 있다(실측 1GM: "우리를 보실 때 이뻐 죽겠어" 24초). 바로 앞 문장이 축복 착지·
     #     구조 표지·"아멘"(=앞 생각의 끝)이 아니면 30초가 될 때까지(최대 45초) 앞으로 넓힌다.
@@ -474,7 +566,7 @@ def verify_and_fix(
         ):
             break
         probe -= 1; steps += 1
-        if not _CONNECTOR_START.match(prev.text.strip()):
+        if not _CONNECTOR_START.match(prev.text.strip()) and not _is_weak_hook(prev.text):
             committed = probe
     if committed != start:
         log.append(f"start S{start} → S{committed} (짧은 컷 앞 설정 보강)"); start = committed
@@ -496,7 +588,7 @@ def verify_and_fix(
                 or _STRONG_LANDING.search(sj.text)
                 or re.fullmatch(r"(>>\s*)?아멘[.!]?", sj.text.strip())
                 or sentences[start].start - sj.start > _CONNECTOR_LOOKBACK_SEC
-                or dur(j, end) > hard_max_sec
+                or dur(j, end) > hard_max_sec or span(j, end) > max_span_sec
             ):
                 break
             if _is_clean_start(sj.text):
@@ -518,9 +610,25 @@ def verify_and_fix(
                     break
         if moved is not None:
             log.append(f"start S{start} 접속어 시작 → S{moved} (깨끗한 첫 문장)"); start = moved
+    # (8) 첫 문장이 약한 훅(연도 시작·숫자 나열·30단어 넘는 긴 문장)이면 앞(미래)으로 최대 3문장 안에서
+    #     더 나은 훅을 찾는다: 질문 > 6단어 이상의 깨끗한 문장 > 첫 깨끗한 문장. 설정이 조금 빠져도 훅이 사는
+    #     쪽이 낫다(실측 zvs: "복음을 들고 태평양을 건너…" 29초 문장 → "와서 1년도 안 돼서 돌아가신 선교사님들…").
+    if _is_weak_hook(sentences[start].text) and start < core:
+        best = None
+        for j in range(start + 1, min(core, start + _WEAK_HOOK_LOOKAHEAD) + 1):
+            tj = sentences[j].text.strip()
+            if not _is_clean_start(tj) or dur(j, end) < min_sec * 0.8:
+                continue
+            if tj.endswith("?"):
+                best = j; break
+            if best is None or (len(sentences[best].text.split()) < 6 <= len(tj.split())):
+                best = j
+        if best is not None:
+            log.append(f"start S{start} 약한 훅(연도/나열/장문) → S{best}"); start = best
+    skips = _sanitize_skips(skips, sentences, start, end, core, log)
     if dur(start, end) < min_sec * 0.8:
         return None, log + [f"길이 {dur(start,end):.0f}초 < 하한 → 탈락"]
-    fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end})
+    fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end, "skip": [list(s) for s in skips]})
     return fixed, log
 
 
@@ -565,14 +673,18 @@ def merge_adjacent_cuts(
                 ):
                     continue
                 new_start, new_end = first["start"], max(first["end"], second["end"])
-                if sentences[new_end].end - sentences[new_start].start > hard_max_sec:
+                # 두 컷의 점프컷(skip)은 합집합으로 가져간다 — 길이는 skip을 들어낸 뒤 실제 남는 길이로 잰다.
+                merged_skips = _merge_ranges(
+                    [tuple(s) for s in (first.get("skip") or [])] + [tuple(s) for s in (second.get("skip") or [])]
+                )
+                if _eff_dur(sentences, new_start, new_end, merged_skips) > hard_max_sec:
                     # 합치면 넘칠 때: 뒤 컷의 핵심 문장 이후 가장 늦은 착지(축복·믿습니다·아멘)까지로 끝을 당겨
                     # 상한에 맞춘다(실측 1GM: 모델이 뒤 컷을 마지막 축복 기도까지 늘려 102초가 됐지만
                     # "…은혜 베푸신 줄 믿습니다. 아멘."에서 끊으면 77초로 한 흐름이 온전히 들어간다).
                     late_core = max(first["core"], second["core"])
                     trimmed = None
                     for cand in range(new_end - 1, late_core - 1, -1):
-                        if sentences[cand].end - sentences[new_start].start > hard_max_sec:
+                        if _eff_dur(sentences, new_start, cand, merged_skips) > hard_max_sec:
                             continue
                         tx = sentences[cand].text
                         if _STRONG_LANDING.search(tx) or re.fullmatch(r"(>>\s*)?아멘[.!]?", tx.strip()):
@@ -583,6 +695,7 @@ def merge_adjacent_cuts(
                     new_end = trimmed
                 merged = dict(a)  # 강한 쪽(a=i)의 core/appeal/thesis 유지
                 merged["start"], merged["end"] = new_start, new_end
+                merged["skip"] = [list(s) for s in _clip_skips(merged_skips, new_start, new_end)]
                 if b.get("why"):
                     merged["why"] = f"{a.get('why', '')} + {b['why']}".strip(" +")
                 log.append(
@@ -649,6 +762,64 @@ def drop_polemic_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[list
     return kept, log
 
 
+# 성경 인물 이야기가 주된 내용인 컷의 표지(2026-09-21 사용자: "성경 인물 이야기는 빼라. 성경 모르는 일반 대중에겐
+# 베드로가 어디로 갔다 같은 내용은 공감이 안 된다 — 과감하게 버리고 일반적인 교훈을 뽑아라"). 프롬프트의
+# '절대 제외'만으로는 모델이 이야기가 구체적이면 계속 뽑아 올리므로(이단 필터와 같은 실측) 여기서 결정론적으로
+# 거른다. '예수/하나님/그리스도'는 인물 서사가 아니라 신앙 언어라 표지에서 뺀다. "요한복음 3장"처럼 책 이름
+# 인용은 이야기가 아니므로 뒤에 복음/서/기/계시록이 붙으면 제외.
+_BIBLE_NAME_RE = re.compile(
+    r"(베드로|요나|모세|다윗|아브라함|아브람|요셉|바울|사울|엘리야|엘리사|야곱|이삭|솔로몬|노아|다니엘|에스더|룻|보아스|"
+    r"기드온|삼손|여호수아|갈렙|사무엘|느헤미야|에스라|욥(?!바)|이사야|예레미야|에스겔|호세아|마리아|마르다|나사로|삭개오|"
+    r"니고데모|유다|빌립|스데반|바나바|디모데|요한|야고보|안드레|막달라|골리앗|가룟|라합|므낫세|"
+    r"히스기야|여로보암|르호보암|아합|이세벨|나아만|게하시|발람|미리암|아론|라헬|"
+    r"이스라엘\s*백성|바리새인|사두개인|제자들)(?!복음|서|기|계시록|일서|이서|삼서|전서|후서)"
+)
+_BIBLE_STORY_MIN_SENTENCES = 3
+_BIBLE_STORY_MIN_RATIO = 0.25
+
+
+def bible_story_reason(cut: dict, sentences: list[Sentence]) -> str:
+    """컷이 '성경 인물 이야기'가 주된 내용이면 근거 문자열을, 아니면 빈 문자열을 돌려준다.
+
+    판정: (a) 핵심 문장·모델의 장면/명제 요약에 인물 이름이 있거나,
+          (b) 남는 본문(skip 제외)에서 인물 이름이 든 문장이 3개 이상이고 25% 이상."""
+    try:
+        core = sentences[int(cut["core"])].text
+        runs = kept_runs(int(cut["start"]), int(cut["end"]), [tuple(s) for s in (cut.get("skip") or [])])
+        body = [s for a, b in runs for s in sentences[a: b + 1]]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return ""
+    m = _BIBLE_NAME_RE.search(core)
+    if m:
+        return f"핵심 문장에 '{m.group(1)}'"
+    for key in ("scene", "thesis"):
+        m = _BIBLE_NAME_RE.search(str(cut.get(key) or ""))
+        if m:
+            return f"{key}에 '{m.group(1)}'"
+    hits = [s for s in body if _BIBLE_NAME_RE.search(s.text)]
+    if len(hits) >= _BIBLE_STORY_MIN_SENTENCES and len(hits) / max(1, len(body)) >= _BIBLE_STORY_MIN_RATIO:
+        names = sorted({_BIBLE_NAME_RE.search(s.text).group(1) for s in hits})
+        return f"본문 {len(hits)}/{len(body)}문장에 {'/'.join(names[:4])}"
+    return ""
+
+
+def drop_bible_story_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[list[dict], list[str]]:
+    """성경 인물 이야기 컷을 제외한다. 남는 후보가 1개 이하면(설교 전체가 인물 강해) 제외 대신 맨 뒤로 보내고
+    표시만 남긴다 — 결과 0개보다는 낫다(점수 상한 30으로 항상 맨 아래)."""
+    kept, dropped, log = [], [], []
+    for c in cuts:
+        why = bible_story_reason(c, sentences)
+        if why:
+            dropped.append({**c, "bible_story": why})
+            log.append(f"S{c['start']}~S{c['end']} 성경 인물 이야기 제외 ({why})")
+        else:
+            kept.append(c)
+    if len(kept) < 2 and dropped:
+        log.append(f"남는 후보 {len(kept)}개 → 제외 대신 뒤로 보냄")
+        kept = kept + dropped
+    return kept, log
+
+
 def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.5) -> list[dict]:
     """겹치는 컷은 앞(강한) 것만 남긴다."""
     kept: list[dict] = []
@@ -679,14 +850,19 @@ def build_score_prompt(items: list[dict]) -> str:
 클립마다 세부 축 채점과 게시 정보를 만들어라. **점수는 이 날것 대사 그대로**에 매겨라 — 네가 정리한 줄거리가 아니라
 실제로 들리는 말이 스크롤을 멈추는가로.
 
-세부 축(1~10 정수): core_score(**장면이 구체적이고 그 장면이 명제로 착지하는가** — 실측: 잘 되는 채널 상위는 전부
-일상 재연·유머·실화 장면 + 마지막 한두 문장 명제, 하위는 명제만 있는 클립. 장면 없이 "~입니다" 선언만이면 5 이하),
-hook(첫 문장만 따로 읽고 멈추게 하는가 — 구체 상황·대사·질문이면 높게, 교리 선언·배경 설명·중간을 툭 자른 느낌이면 3 이하),
-retention(전진감·죽은 구간 없음), emotion(웃음·뭉클·찔림 스파이크 — 옳은 말은 0점, 실제 감정 반응만), relatability("내 얘기"),
-payoff(끝이 힘 있게 착지), quotability(스샷 떠 공유할 한 문장). 눈금: 5=쓸 만함, 7=이 설교의 손꼽는 대목,
-8=잘 되는 채널 상위 클립 수준, 9~10=채널 1위감(드묾). 정직하게 — 약하면 낮게.
+시청자는 **성경을 모르는 일반 대중까지** 포함한다. 성경 지식 없이도 자기 얘기로 들리는가가 모든 축의 전제다.
+세부 축(1~10 정수): core_score(**쇼츠 요소의 세기** — 재미(웃음)·감동(실화·희생)·뜨끔(직격)·교훈(관점을 뒤집는
+한마디)·위로 중 하나가 구체(장면·실화·대사·숫자·질문)와 함께 있고 명제로 착지하는가. 구체 없이 "~입니다" 선언만이면
+5 이하, 뻔한 권면("기도하세요")도 5 이하, 관점을 뒤집는 일반적 교훈이면 장면이 없어도 7 이상 가능),
+hook(첫 문장만 따로 읽고 멈추게 하는가 — 구체 상황·대사·질문·직격이면 높게, 교리 선언·배경 설명·연도·나열·중간을 툭 자른
+느낌이면 3 이하), retention(전진감·죽은 구간 없음), emotion(웃음·뭉클·찔림·위로·"아, 그래서였구나"의 실제 반응 —
+옳기만 하고 반응이 없으면 낮게), relatability("내 얘기" — 교회 안 다니는 사람도 그런가), payoff(끝이 힘 있게 착지),
+quotability(스샷 떠 공유할 한 문장). 눈금: 5=쓸 만함, 7=이 설교의 손꼽는 대목, 8=잘 되는 채널 상위 클립 수준,
+9~10=채널 1위감(드묾). 정직하게 — 약하면 낮게.
 주된 내용이 남(이단·사이비·타종교·다른 목회자·특정 집단)을 비판·경계·폭로하는 것이면 emotion·relatability·core_score
 모두 3 이하 — 남 욕·경계는 흥미로워도 시청자 자신의 감정(웃음·뭉클·위로)이 아니고 공유되지 않는다.
+주된 내용이 성경 인물의 행적 이야기(베드로가 어디로 갔다, 요나가 도망쳤다)면 relatability·core_score 4 이하 —
+성경 모르는 시청자에겐 남의 옛날이야기다.
 
 title = 핵심 문장을 벤치마크 스타일로 다듬은 15~20자 구어체 한 줄(예: "기도하는 사람은 오염되지 않습니다").
 insight = 이 클립이 시청자 삶의 어떤 문제에 어떻게 닿는가 한 줄. caption = 훅 한 문장. hashtags 3개.
@@ -707,6 +883,23 @@ keywords = 이 클립에 실제 등장하는 고유명사(성경 인물·지명�
 """
 
 
+def _skips_of(cut: dict) -> list[tuple[int, int]]:
+    return [(int(a), int(b)) for a, b in (cut.get("skip") or [])]
+
+
+def cut_keep_ranges(cut: dict, sentences: list[Sentence]) -> list[list[float]]:
+    """컷의 남는 문장 구간을 절대초 [start, end] 목록으로. 자동자막 문장은 시각이 조금씩 겹치므로
+    뒤 구간의 시작이 앞 구간의 끝보다 앞서면 밀어서 겹치지 않게 한다(렌더 select 필터는 겹침을 못 다룬다)."""
+    out: list[list[float]] = []
+    for a, b in kept_runs(int(cut["start"]), int(cut["end"]), _skips_of(cut)):
+        s0, e0 = float(sentences[a].start), float(sentences[b].end)
+        if out and s0 < out[-1][1] + 0.05:
+            s0 = out[-1][1] + 0.05
+        if e0 - s0 > 0.1:
+            out.append([round(s0, 3), round(e0, 3)])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 5. 전체 흐름
 # ---------------------------------------------------------------------------
@@ -725,8 +918,10 @@ def select_highlights_v2(
     timeout_sec: int = 900,
     on_progress=None,
     debug_path=None,
+    max_span_sec: float = 180.0,
 ) -> list[Clip]:
-    """debug_path가 있으면 1차 원시 컷·검증 로그·병합 결과를 JSON으로 남긴다(선정 품질 불만이
+    """max_span_sec: 점프컷(skip)을 들어내기 전 원본 구간의 상한. 남는 길이는 hard_max_duration_sec 이내여야 한다.
+    debug_path가 있으면 1차 원시 컷·검증 로그·병합 결과를 JSON으로 남긴다(선정 품질 불만이
     왔을 때 '모델이 뭘 줬고 검증이 뭘 바꿨는지'를 사후에 볼 수 있게 — 예전엔 아무것도 안 남았다)."""
     sentences = build_sentences(transcript)
     if not sentences:
@@ -740,7 +935,10 @@ def select_highlights_v2(
         return f
 
     # --- 1차: 명제 지도 + 컷
-    prompt1 = build_thesis_cut_prompt(sentences, transcript.duration_sec, min_clips, max_clips, extra_block)
+    prompt1 = build_thesis_cut_prompt(
+        sentences, transcript.duration_sec, min_clips, max_clips, extra_block,
+        hard_max_sec=hard_max_duration_sec, max_span_sec=max_span_sec,
+    )
     raw_cuts = _invoke_claude_json(
         prompt1, model=model, thinking_tokens=thinking_tokens, timeout_sec=timeout_sec,
         on_progress=_prog(0.0, 0.7), max_clips=max_clips,
@@ -751,7 +949,9 @@ def select_highlights_v2(
     fixed: list[dict] = []
     verify_logs: list[dict] = []
     for i, rc in enumerate(raw_cuts):
-        cut, log = verify_and_fix(rc, sentences, min_duration_sec, max_duration_sec, hard_max_duration_sec)
+        cut, log = verify_and_fix(
+            rc, sentences, min_duration_sec, max_duration_sec, hard_max_duration_sec, max_span_sec=max_span_sec,
+        )
         if log:
             print(f"[v2] 검증 컷{i}: " + " / ".join(log), flush=True)
         verify_logs.append({"raw": rc, "fixed": cut, "log": log})
@@ -763,6 +963,9 @@ def select_highlights_v2(
     fixed, polemic_log = drop_polemic_cuts(fixed, sentences)
     for m in polemic_log:
         print(f"[v2] 주제 필터: {m}", flush=True)
+    fixed, bible_log = drop_bible_story_cuts(fixed, sentences)
+    for m in bible_log:
+        print(f"[v2] 인물 이야기 필터: {m}", flush=True)
     fixed = dedupe_cuts(fixed, sentences)
     if debug_path is not None:
         try:
@@ -771,7 +974,10 @@ def select_highlights_v2(
             dbg = {
                 "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
                 "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log, "polemic_log": polemic_log,
-                "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end}
+                "bible_log": bible_log,
+                "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end,
+                                "keep_ranges": cut_keep_ranges(c, sentences),
+                                "eff_sec": _eff_dur(sentences, c["start"], c["end"], _skips_of(c))}
                                for c in fixed],
             }
             Path(debug_path).write_text(json.dumps(dbg, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -783,11 +989,12 @@ def select_highlights_v2(
     # --- 2차: 실제 대사 채점
     items = []
     for i, c in enumerate(fixed):
-        s, e = sentences[c["start"]], sentences[c["end"]]
-        text = " ".join(x.text for x in sentences[c["start"]: c["end"] + 1])
+        runs = kept_runs(c["start"], c["end"], _skips_of(c))
+        # 점프컷으로 들어낸 문장은 채점 대상에서도 뺀다(실제로 들리는 대사만). 이음새는 ' … '로 표시.
+        text = " … ".join(" ".join(x.text for x in sentences[a: b + 1]) for a, b in runs)
         items.append({
-            "index": i, "duration": e.end - s.start, "appeal": c.get("appeal", ""),
-            "core_line": sentences[c["core"]].text, "text": text,
+            "index": i, "duration": _eff_dur(sentences, c["start"], c["end"], _skips_of(c)),
+            "appeal": c.get("appeal", ""), "core_line": sentences[c["core"]].text, "text": text,
         })
     if on_progress:
         on_progress(0.72, "확정된 구간을 채점하는 중...")
@@ -813,9 +1020,15 @@ def select_highlights_v2(
         clip_start, hook_text = trim_lead_words(s)  # "그래서 베드로가…" → "베드로가…"부터
         computed = compute_scores(r if r else {"core_score": 6, "hook": 6, "retention": 6, "emotion": 6,
                                                "relatability": 6, "payoff": 6, "quotability": 6})
-        if c.get("polemic"):
-            # 후보 부족으로 살려 둔 타자 비판 컷: 점수 상한을 걸어 항상 맨 아래
+        if c.get("polemic") or c.get("bible_story"):
+            # 후보 부족으로 살려 둔 타자 비판/성경 인물 이야기 컷: 점수 상한을 걸어 항상 맨 아래
             computed["score"] = min(int(computed["score"]), 30)
+        # 점프컷: 남길 구간(절대초). 첫 구간의 시작은 말버릇 트림을 반영한다. 한 구간뿐이면 빈 목록(=전체 사용).
+        keep_abs = cut_keep_ranges(c, sentences)
+        if len(keep_abs) > 1:
+            keep_abs[0] = [max(keep_abs[0][0], clip_start), keep_abs[0][1]]
+        else:
+            keep_abs = []
 
         def _f(k: str):
             try:
@@ -838,5 +1051,6 @@ def select_highlights_v2(
             anchored=True,  # 경계가 문장 시각으로 확정됨 — 렌더의 끝 스냅은 미세조정만
             title_candidates=[str(t).strip() for t in (r.get("title_candidates") or []) if str(t).strip()],
             keywords=[str(k).strip() for k in (r.get("keywords") or []) if str(k).strip()],
+            keep_ranges=keep_abs,
         ))
     return clips

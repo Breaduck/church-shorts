@@ -39,6 +39,17 @@ class QuotaExceededError(RuntimeError):
     CLI 호출을 한 번 더 태워 남은 한도만 갉아먹는다(분석 1회에 최대 4~5회 호출이 나갔다)."""
 
 
+def clip_effective_duration(clip) -> float:
+    """실제 재생 길이(초). 점프컷(keep_ranges)이 있으면 남길 구간의 합, 없으면 end-start."""
+    kr = getattr(clip, "keep_ranges", None) or []
+    if kr:
+        try:
+            return sum(max(0.0, float(e) - float(s)) for s, e in kr)
+        except (TypeError, ValueError):
+            pass
+    return float(clip.end) - float(clip.start)
+
+
 @dataclass
 class Clip:
     start: float
@@ -117,6 +128,11 @@ class Clip:
     # 비어 있으면 [start,end] 전체를 남긴다. 여러 개면 렌더가 무음 제거와 같은 방식으로 이어붙인다
     # (render._combine_keep → select/aselect 필터). start/end는 이 구간들의 바깥 경계와 일치시킨다.
     keep_ranges: list = field(default_factory=list)
+
+    @property
+    def duration_sec(self) -> float:
+        """실제 재생 길이(점프컷이면 남길 구간의 합). 템플릿의 'N초' 라벨용."""
+        return clip_effective_duration(self)
     # 클립 종류. ""(기본)=설교 하이라이트(기존 동작 전부 그대로), "praise"=찬양 곡 통편집.
     # praise 클립은 렌더 시 정밀 재전사·자막·훅 배속·문장 스냅을 모두 건너뛰고
     # 곡 구간 그대로 + 상단 제목(곡 제목)만 넣는다.

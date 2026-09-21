@@ -266,7 +266,7 @@ CANDIDATES_TEMPLATE = f"""
         <span class="score-badge {{% if c.score >= 90 %}}tier-top{{% elif c.score >= 85 %}}tier-high{{% elif c.score >= 80 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 90 %}} · 최상{{% elif c.score >= 85 %}} · 추천{{% elif c.score < 80 %}} · 참고{{% endif %}}</span>
         {{% endif %}}
         <span class="dot-sep"></span>
-        <span class="dur">{{{{ "%.0f"|format(c.end - c.start) }}}}초</span>
+        <span class="dur">{{{{ "%.0f"|format(c.duration_sec) }}}}초</span>{{% if c.keep_ranges and c.keep_ranges|length > 1 %}}<span class="dot-sep"></span><span class="dur" title="중간을 들어낸 점프컷 클립">점프컷 {{{{ c.keep_ranges|length }}}}조각</span>{{% endif %}}
       </div>
       <label class="pick">
         <input type="checkbox" name="idx" value="{{{{ loop.index0 }}}}">
