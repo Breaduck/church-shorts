@@ -2514,7 +2514,16 @@ function payload() {
     caption_outline_width: parseFloat($('pOutlineWidth').value) || 0,
     caption_glow: capGlow, caption_glow_color: capGlowColor,
   };
-  if (ens.length === caps.length && ens.length) p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
+  // 영어는 인덱스로 한국어와 짝을 짓는다. 줄 수가 어긋나면(짝을 못 맞춤) 예전엔 페이로드에서
+  // 조용히 빠져 서버의 낡은 영어 트랙이 그대로 남았다 — 사용자 눈엔 "번역이 저장 안 됨".
+  // 이제는 어긋나면 영어 트랙을 명시적으로 비우고, 다시 번역하라고 알린다.
+  if (ens.length === caps.length && ens.length) {
+    p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
+  } else if (ens.length) {
+    p.caption_overrides_en = [];
+    ens = [];
+    setStatus('한국어 자막 줄 수가 바뀌어 영어 트랙을 비웠어요 — 다시 번역해 주세요');
+  }
   p.free_texts = texts.map(t => ({ start: t.start, end: t.end, text: t.text, x: t.x, y: t.y, size: t.size, track: t.track }));
   // 영상을 실제로 잘랐으면(vsegsChanged) 구간·keep_ranges를 같이 보내고, 저장된 자막
   // 시간은 새 길이에 안 맞으므로 비워서 렌더가 다시 전사하게 한다(팝업의 분할과 동일한

@@ -97,7 +97,7 @@ def _distribute_by_chars(toks: list[str], a: float, b: float) -> list["Word"]:
 
 
 def _lines_from_overrides(
-    caption_overrides: list, clip_start: float, clip_words: list["Word"] | None = None
+    caption_overrides: list, clip_start: float
 ) -> list[CaptionLine]:
     """사용자가 편집기에서 확정한 자막 라인({start,end,text} 절대초)을 화면용 라인으로 변환한다.
 
@@ -110,7 +110,7 @@ def _lines_from_overrides(
     사고가 연쇄로 났다("수정할수록 싱크가 깨진다" 신고의 구조적 원인). 이제 편집기 초안
     자체가 정밀 인식 시각에서 나오므로(web_app._caption_lines_for_clip), 선언된 줄 시간이
     이미 정확하고, 시간을 다시 맞추고 싶으면 '싱크 맞추기' 버튼(명시적 동작)을 쓴다.
-    clip_words 인자는 하위 호환용으로만 남겨두고 사용하지 않는다."""
+이제는 편집기가 확정한 시간을 그대로 쓴다."""
     lines: list[CaptionLine] = []
     for ov in caption_overrides:
         text = _clean_word_text(str(ov.get("text", "")))
@@ -640,7 +640,7 @@ def _remap_after_silence_removal(t: float, keep_segments: list[tuple[float, floa
     return cursor_new  # 마지막 유지 구간 이후
 
 
-def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: float, safe_top_pct: float) -> int:
+def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: float) -> int:
     width, height = resolution
     if position == "center":
         return height // 2
@@ -648,7 +648,7 @@ def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: flo
     return int(height * (1 - safe_bottom_pct) - 40)
 
 
-def compute_card_margins(card_layout: dict, resolution: tuple[int, int], title_size: int) -> tuple[int, int]:
+def compute_card_margins(card_layout: dict, resolution: tuple[int, int]) -> tuple[int, int]:
     """카드 레이아웃에서 제목/캡션의 기본(오프셋 적용 전) MarginV를 계산한다.
     build_ass()와 위치 편집 웹 UI(web_app.py)가 반드시 같은 값을 써야 미리보기가
     실제 렌더링과 일치하므로, 계산 로직을 이 함수 하나로 모은다."""
@@ -781,13 +781,13 @@ def build_ass(
         # 제목을 상단 고정이 아니라 영상 박스 바로 위, 가깝게 붙여서 배치한다
         # (요청: "제목을 영상 쪽으로 훨씬 아래로 내려라").
         # 이제 한 줄로 고정되므로 줄 높이는 1줄 기준으로만 여백을 잡으면 된다.
-        title_margin_v, caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
+        title_margin_v, caption_margin_v = compute_card_margins(card_layout, resolution)
         title_margin_v = max(0, title_margin_v + title_offset_y)
         caption_margin_v = max(0, caption_margin_v + caption_offset_y)
         caption_alignment = _align_num(caption_align, 8)  # 상단 기준(7/8/9), 기본 중앙
         title_alignment = _align_num(title_align, 8)
     else:
-        y = _y_position(resolution, position, safe_area_bottom_pct, safe_area_top_pct)
+        y = _y_position(resolution, position, safe_area_bottom_pct)
         title_margin_v = max(0, int(height * safe_area_top_pct) + title_offset_y)
         # 하단 기준(Alignment 2)에서 MarginV는 '화면 아래에서 띄우는 거리'라, offset_y를
         # 더하면 자막이 **위로** 올라간다. 그런데 편집기 미리보기 세 곳(스튜디오·확인 팝업·

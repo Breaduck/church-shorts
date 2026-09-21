@@ -120,6 +120,17 @@
     font-family: inherit; border: none; border-radius: 8px; background: #3182f6; color: #fff; cursor: pointer; }
   .yt-pick-row button:disabled { opacity: .55; cursor: default; }
   .yt-pick-row.done button { background: #eee; color: #888; }
+  .perf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .perf-grid label, .perf-lbl { display: flex; flex-direction: column; gap: 4px;
+    font-size: 12px; color: var(--text-muted); font-weight: 600; margin-bottom: 8px; }
+  .perf-grid input, .perf-in, .perf-lbl input {
+    font-family: inherit; font-size: 13.5px; padding: 9px 12px; border-radius: 12px;
+    border: 1.5px solid var(--border, #f0f1f3); background: rgba(255,255,255,.9); color: inherit; }
+  .perf-grid input:focus, .perf-in:focus, .perf-lbl input:focus {
+    outline: none; border-color: var(--accent); }
+  select.perf-in { width: 100%; margin-bottom: 10px; }
+  .perf-msg { font-size: 12.5px; color: var(--text-muted); text-align: center;
+    min-height: 18px; margin: 8px 0 0; }
   .yt-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 20px 0; }
   .yt-modal-close { display: block; width: 100%; margin-top: 8px; padding: 10px; border: none;
     border-radius: 10px; background: var(--border, #f0f1f3); color: var(--text-muted); font-weight: 700;

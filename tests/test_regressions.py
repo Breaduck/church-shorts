@@ -313,8 +313,8 @@ def test_y_position_bottom_is_below_center():
     """bottom이 center보다 아래(=y가 큼)여야 한다. 부호가 뒤집혀 자막이 위로 간 사고가 있었다.
     (config가 지원하는 값은 "bottom" | "center"뿐 — "top"은 없다.)"""
     res = (1080, 1920)
-    y_center = _y_position(res, "center", 0.2, 0.1)
-    y_bottom = _y_position(res, "bottom", 0.2, 0.1)
+    y_center = _y_position(res, "center", 0.2)
+    y_bottom = _y_position(res, "bottom", 0.2)
     assert y_bottom > y_center, "자막 bottom이 center보다 위에 있다 — 부호 뒤집힘"
     assert 0 < y_center < res[1] and 0 < y_bottom < res[1]
     # 하단 안전영역(플랫폼 UI) 안으로 들어가면 안 된다

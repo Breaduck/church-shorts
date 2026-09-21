@@ -43,7 +43,7 @@ from src.highlights import (
     refine_titles,
 )
 from src.feedback import format_feedback_for_prompt, load_feedback
-from src.models import EXECUTION_MODEL
+from src.models import EXECUTION_MODEL, resolve as resolve_model
 from src.render import render_clip
 from src.transcribe import Segment, Word, transcribe_and_save, transcribe_clip_precise, Transcript
 from src.transcript_import import (
@@ -367,7 +367,7 @@ def reanalyze_clip_region(
             categories=h["categories"],
             hard_max_duration_sec=h.get("hard_max_duration_sec"),
             feedback_block=focus,
-            model=model or h.get("model", ""),
+            model=model or resolve_model(h.get("model", "")),
             thinking_tokens=thinking_tokens,
             on_progress=on_progress,
         )
@@ -482,7 +482,7 @@ def _quick_guess_praise_title(video_path: Path, duration_sec: float, cfg: dict, 
         return ""  # 노래가 아직 안 잡혔거나 너무 조용함 — 추정 불가, 폴백
     p = cfg.get("praise", {}) or {}
     title, conf = guess_praise_title_from_snippet(
-        text, model=model or p.get("model", ""),
+        text, model=model or resolve_model(p.get("model", "")),
         thinking_tokens=int(p.get("lyrics_thinking_tokens", 1024)),
     )
     return title if title and conf >= 6 else ""
@@ -1437,7 +1437,7 @@ def analyze(
                 max_duration_sec=int(p.get("max_duration_sec", 420)),
                 pad_start_sec=float(p.get("pad_start_sec", 4.0)),
                 pad_end_sec=float(p.get("pad_end_sec", 6.0)),
-                model=model or p.get("model", ""),
+                model=model or resolve_model(p.get("model", "")),
                 thinking_tokens=int(p.get("thinking_tokens", 4096)),
                 on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
             )
@@ -1548,8 +1548,8 @@ def analyze(
                     min_duration_sec=float(h["min_duration_sec"]),
                     max_duration_sec=float(h["max_duration_sec"]),
                     hard_max_duration_sec=float(h.get("hard_max_duration_sec", 90)),
-                    model=model or h.get("model", ""),
-                    score_model=str(h.get("score_model", "sonnet")),
+                    model=model or resolve_model(h.get("model", "")),
+                    score_model=resolve_model(str(h.get("score_model", "sonnet"))) or EXECUTION_MODEL,
                     thinking_tokens=int(h.get("thinking_tokens", 8192)),
                     score_thinking_tokens=int(h.get("score_thinking_tokens", 1024)),
                     extra_block=feedback_block,
@@ -1574,7 +1574,7 @@ def analyze(
                 hard_max_duration_sec=h.get("hard_max_duration_sec"),
                 feedback_block=feedback_block,
                 # UI에서 고른 모델(model)이 있으면 그것을, 없으면 config 기본(sonnet)을 쓴다.
-                model=model or h.get("model", ""),
+                model=model or resolve_model(h.get("model", "")),
                 transcript_is_cleaned=transcript_is_cleaned,  # 다듬어진 붙여넣기면 채점 함정 경고 on
                 thinking_tokens=int(h.get("thinking_tokens", 2048)),
                 on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
@@ -1609,7 +1609,7 @@ def analyze(
             try:
                 refine_titles(
                     clips, transcript,
-                    model=model or h.get("model", ""),
+                    model=model or resolve_model(h.get("model", "")),
                     thinking_tokens=int(h.get("title_thinking_tokens", 3072)),
                     on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
                 )
@@ -2356,7 +2356,7 @@ def render_selected(
             _run_with_progress_ticker(
                 lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], cfg["captions"]),
                 start_pct=base, end_pct=base + step, progress=progress,
-                message=f"[{idx+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
+                message=f"[{i+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
                 est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
             )
             out_path.with_suffix(".src").write_text(
@@ -2393,7 +2393,7 @@ def render_selected(
             _rlog(video_dir, f"clip{idx} 캐시에 자막 구멍 발견 → 캐시 무시, 재전사")
             cached_segs = None
         if cached_segs is not None:
-            progress(f"[{idx+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
+            progress(f"[{i+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
             segs = cached_segs
         else:
             # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
@@ -2420,11 +2420,11 @@ def render_selected(
                 segs = _run_with_progress_ticker(
                     lambda: _precise(vad_default),
                     start_pct=base, end_pct=base + step * 0.45, progress=progress,
-                    message=f"[{idx+1}/{total}] 자막 정밀 인식 중: {clip.title}",
+                    message=f"[{i+1}/{total}] 자막 정밀 인식 중: {clip.title}",
                     est_seconds=max(20.0, clip_len * 1.8),
                 )
             except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
-                progress(f"[{idx+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
+                progress(f"[{i+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
                 _rlog(video_dir, f"clip{idx} 정밀 재전사 예외: {type(e).__name__}: {e}")
                 segs = []
 
@@ -2438,7 +2438,7 @@ def render_selected(
                     segs_seq = _run_with_progress_ticker(
                         lambda: _precise(vad_default, batched=False),
                         start_pct=base + step * 0.4, end_pct=base + step * 0.45, progress=progress,
-                        message=f"[{idx+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
+                        message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
                         est_seconds=max(30.0, clip_len * 2.2),
                     )
                     if _precise_worst_hole(base_segments, segs_seq, clip.start, clip.end) < hole:
@@ -2462,7 +2462,7 @@ def render_selected(
                     segs2 = _run_with_progress_ticker(
                         lambda: _precise(False),
                         start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
-                        message=f"[{idx+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                        message=f"[{i+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
                         est_seconds=max(20.0, clip_len * 1.8),
                     )
                     if _count_words(segs2, clip.start, clip.end) > precise_n:
@@ -2476,7 +2476,7 @@ def render_selected(
                                 segs_seq2 = _run_with_progress_ticker(
                                     lambda: _precise(False, batched=False),
                                     start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
-                                    message=f"[{idx+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
+                                    message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
                                     est_seconds=max(30.0, clip_len * 2.2),
                                 )
                                 if _precise_worst_hole(base_segments, segs_seq2, clip.start, clip.end) < hole2:
@@ -2492,7 +2492,7 @@ def render_selected(
             final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
             if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
                 progress(
-                    f"[{idx+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
+                    f"[{i+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
                     base + step * 0.5,
                 )
                 _rlog(
@@ -2548,7 +2548,7 @@ def render_selected(
             if clip.end - clip.start > hard_len:
                 new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
                 progress(
-                    f"[{idx+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",
+                    f"[{i+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",
                     base + step * 0.5,
                 )
                 clip.start = new_start
@@ -2557,7 +2557,7 @@ def render_selected(
         _run_with_progress_ticker(
             lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], cfg["captions"]),
             start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
-            message=f"[{idx+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
+            message=f"[{i+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
             est_seconds=max(15.0, clip_len * 0.9),
         )
         out_path.with_suffix(".src").write_text(

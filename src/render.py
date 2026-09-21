@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 import traceback
 from pathlib import Path
 
@@ -841,7 +842,40 @@ def build_clip_ass(
     )
 
 
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay_sec: float = 0.4) -> None:
+    for i in range(attempts):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise RuntimeError(
+                    f"완성한 영상을 {dst.name}으로 옮기지 못했습니다. 그 파일을 열어둔 "
+                    f"미리보기·플레이어를 닫고 다시 만들어 주세요."
+                ) from None
+            time.sleep(delay_sec)
+
 def render_clip(
+    video_path: Path,
+    segments: list[Segment],
+    clip: Clip,
+    final_output_path: Path,
+    render_cfg: dict,
+    captions_cfg: dict,
+) -> None:
+    """클립 하나를 렌더한다(실패하면 임시 파일을 치우고 예외를 그대로 올린다)."""
+    tmp_mp4 = final_output_path.with_suffix(".rendering.mp4")
+    try:
+        _render_clip(video_path, segments, clip, final_output_path, render_cfg, captions_cfg)
+    except BaseException:
+        # 실패한 렌더의 .rendering.mp4/.ass를 남기면 재시도할 때마다 clips 폴더에 쌓인다.
+        tmp_mp4.unlink(missing_ok=True)
+        tmp_mp4.with_suffix(".ass").unlink(missing_ok=True)
+        raise
+
+
+def _render_clip(
     video_path: Path,
     segments: list[Segment],
     clip: Clip,
@@ -1102,6 +1136,8 @@ def render_clip(
 
     # 모든 후처리가 끝난 뒤에만 최종 경로로 옮긴다(원자적). 여기까지 못 오면 이전에 잘
     # 나왔던 final_output_path는 손대지 않은 채 그대로 남는다.
-    output_path.replace(final_output_path)
-    ass_path.replace(final_output_path.with_suffix(".ass"))
+    # Windows에서는 브라우저/플레이어가 이전 결과물을 열어두고 있으면 교체가 WinError 32로
+    # 실패한다(다시 만들기 중에 미리보기를 켜둔 상황). 잠깐 기다렸다 몇 번 더 시도한다.
+    _replace_with_retry(output_path, final_output_path)
+    _replace_with_retry(ass_path, final_output_path.with_suffix(".ass"))
 

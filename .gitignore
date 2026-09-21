@@ -40,5 +40,6 @@ Thumbs.db
 scratch_*
 server_log.txt
 server_err.txt
+_scratch/
 /*.mp4
 /*.png

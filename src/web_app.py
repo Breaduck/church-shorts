@@ -18,8 +18,17 @@ from pathlib import Path
 import yaml
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
+# .env를 읽는다(.env.example이 YOUTUBE_CLIENT_SECRETS_PATH를 안내하는데 여기서 안 읽으면
+# 파일에 적어도 조용히 무시된다). 시스템 환경변수가 이미 있으면 그쪽이 우선.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 from src.feedback import PerformanceRecord, upsert_feedback
-from src.models import EXECUTION_MODEL, sanitize as sanitize_model
+from src.models import EXECUTION_MODEL, resolve as resolve_model, sanitize as sanitize_model
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
 from src.main import analyze, reanalyze_clip_region, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
@@ -218,6 +227,7 @@ CANDIDATES_TEMPLATE = f"""
     <div class="page-head-btns">
       <button type="button" class="pill-btn" id="studioBtn">스튜디오</button>
       <button type="button" class="pill-btn" id="ytUploadTop">YouTube 업로드</button>
+      <button type="button" class="pill-btn" id="perfTop" title="손으로 올린 쇼츠의 실제 성과를 적어두면 다음 선정 때 채점 기준으로 씁니다">성과 기록</button>
     </div>
   </div>
   {{% endif %}}
@@ -352,6 +362,34 @@ CANDIDATES_TEMPLATE = f"""
       <button type="button" class="yt-modal-close" id="ytModalClose">닫기</button>
     </div>
   </div>
+  {{# 성과 기록: 앱으로 업로드한 클립은 tracking.py가 매주 자동으로 채우지만, 손으로 올린
+     클립은 채울 길이 없었다(선정 프롬프트에 되먹일 데이터가 계속 0건이던 이유). #}}
+  <div class="yt-modal-back" id="perfModalBack">
+    <div class="yt-modal">
+      <h2>성과 기록</h2>
+      <p class="sub">손으로 올린 쇼츠의 실제 성과를 적어두면, 다음 선정 때 "예측 → 실제" 사례로 되먹여 채점을 보정해요.</p>
+      <select id="perfClip" class="perf-in"></select>
+      <div class="perf-grid">
+        <label>조회수<input type="number" id="perfViews" min="0" placeholder="예: 12000"></label>
+        <label>평균 조회율 %<input type="number" id="perfRet" min="0" max="100" step="0.1" placeholder="예: 62"></label>
+        <label>저장<input type="number" id="perfSaves" min="0"></label>
+        <label>공유<input type="number" id="perfShares" min="0"></label>
+        <label>좋아요<input type="number" id="perfLikes" min="0"></label>
+        <label>댓글<input type="number" id="perfComments" min="0"></label>
+      </div>
+      <label class="perf-lbl">체감 등급
+        <select id="perfRating" class="perf-in">
+          <option value="hit">HIT — 잘 됨</option>
+          <option value="ok" selected>보통</option>
+          <option value="flop">FLOP — 망함</option>
+        </select>
+      </label>
+      <label class="perf-lbl">메모<input type="text" id="perfNotes" class="perf-in" placeholder="예: 첫 3초 훅이 약했음"></label>
+      <button type="button" class="pill-btn" id="perfSave" style="width:100%;margin-top:10px">저장</button>
+      <p class="perf-msg" id="perfMsg"></p>
+      <button type="button" class="yt-modal-close" id="perfModalClose">닫기</button>
+    </div>
+  </div>
   <div class="yt-modal-back" id="studioModalBack">
     <div class="yt-modal">
       <h2>스튜디오</h2>
@@ -463,6 +501,10 @@ CANDIDATES_TEMPLATE = f"""
   const ytModalBack = document.getElementById('ytModalBack');
   const ytPickList = document.getElementById('ytPickList');
   function renderYtPickList() {{
+    // 제목은 사용자가 고치는 문자열이라 '<'가 들어가면 아래 innerHTML 조립이 깨진다.
+    const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (ch) => (
+      {{ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }}[ch]
+    ));
     const renderedClips = CLIPS_SUMMARY.filter((c) => c.rendered);
     if (!renderedClips.length) {{
       ytPickList.innerHTML = '<p class="yt-empty">아직 만든 쇼츠가 없어요. 먼저 후보를 선택해 "만들기"를 눌러주세요.</p>';
@@ -470,10 +512,10 @@ CANDIDATES_TEMPLATE = f"""
     }}
     ytPickList.innerHTML = renderedClips.map((c) => {{
       if (c.youtube_id) {{
-        return '<div class="yt-pick-row done"><span class="name">' + c.title + '</span>' +
+        return '<div class="yt-pick-row done"><span class="name">' + esc(c.title) + '</span>' +
           '<a class="yt-link" href="https://youtu.be/' + c.youtube_id + '" target="_blank" rel="noopener">▶ 이미 업로드됨</a></div>';
       }}
-      return '<div class="yt-pick-row" data-idx="' + c.idx + '"><span class="name">' + c.title + '</span>' +
+      return '<div class="yt-pick-row" data-idx="' + c.idx + '"><span class="name">' + esc(c.title) + '</span>' +
         '<button type="button" class="yt-pick-btn">업로드</button></div>';
     }}).join('');
     ytPickList.querySelectorAll('.yt-pick-btn').forEach((btn) => {{
@@ -501,6 +543,59 @@ CANDIDATES_TEMPLATE = f"""
   }});
   document.getElementById('ytModalClose').addEventListener('click', () => ytModalBack.classList.remove('show'));
   ytModalBack.addEventListener('click', (e) => {{ if (e.target === ytModalBack) ytModalBack.classList.remove('show'); }});
+
+  // 성과 기록: 만든 클립 목록을 채우고, 입력한 수치를 /feedback에 올린다(빈 칸은 안 보냄).
+  const perfModalBack = document.getElementById('perfModalBack');
+  const perfMsg = document.getElementById('perfMsg');
+  document.getElementById('perfTop').addEventListener('click', () => {{
+    const sel = document.getElementById('perfClip');
+    const made = CLIPS_SUMMARY.filter((c) => c.rendered);
+    sel.innerHTML = '';
+    made.forEach((c) => {{
+      const o = document.createElement('option');
+      o.value = c.idx; o.textContent = (c.idx + 1) + '. ' + c.title;
+      sel.appendChild(o);
+    }});
+    if (!made.length) {{
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = '아직 만든 쇼츠가 없어요';
+      sel.appendChild(o);
+    }}
+    perfMsg.textContent = '';
+    perfModalBack.classList.add('show');
+  }});
+  document.getElementById('perfModalClose').addEventListener('click', () => perfModalBack.classList.remove('show'));
+  perfModalBack.addEventListener('click', (e) => {{ if (e.target === perfModalBack) perfModalBack.classList.remove('show'); }});
+  document.getElementById('perfSave').addEventListener('click', async () => {{
+    const idx = document.getElementById('perfClip').value;
+    if (idx === '') {{ perfMsg.textContent = '먼저 쇼츠를 만들어 주세요.'; return; }}
+    const num = (id) => {{
+      const v = document.getElementById(id).value.trim();
+      return v === '' ? null : Number(v);
+    }};
+    const btn = document.getElementById('perfSave');
+    btn.disabled = true; perfMsg.textContent = '저장 중…';
+    try {{
+      const res = await fetch('/video/{{{{ video_id }}}}/feedback', {{
+        method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          clip_index: Number(idx),
+          views: num('perfViews'), retention_pct: num('perfRet'),
+          saves: num('perfSaves'), shares: num('perfShares'),
+          likes: num('perfLikes'), comments: num('perfComments'),
+          rating: document.getElementById('perfRating').value,
+          notes: document.getElementById('perfNotes').value,
+        }}),
+      }});
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+      perfMsg.textContent = '저장했어요 ✓ 다음 선정부터 반영돼요.';
+    }} catch (e) {{
+      perfMsg.textContent = '실패: ' + e.message;
+    }} finally {{
+      btn.disabled = false;
+    }}
+  }});
 
   // 스튜디오: 로고/효과음/모션/얼굴추적 등 렌더 옵션을 여기 모아둔다(사용자 요청 2026-09-06,
   // 메인 화면을 간결하게 유지).
@@ -666,7 +761,7 @@ CANDIDATES_TEMPLATE = f"""
     function poll() {{
       fetch(statusUrl).then(function(r) {{ return r.json(); }}).then(function(j) {{
         var idle = false;   // 이번 응답 기준으로 '아무것도 안 돌고 있음'이면 아래에서 백오프
-        if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.innerHTML = '오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
+        if (j.render_error) {{ box.classList.remove('hidden'); track.hidden = true; closeBtn.hidden = false; pct.style.display='none'; msg.textContent = '오류: ' + j.render_error; eta.textContent=''; actions.hidden=true; wasRendering=false; setTimeout(poll, 1500); return; }}
         if (j.rendering) {{ wasRendering = true; showProg(j.render_pct, j.render_message || '쇼츠 렌더링 중…', j.render_eta_seconds); }}
         else if (wasRendering) {{ wasRendering = false; onRenderDone(); }}
         else if (!j.ready && j.status !== 'error') {{ showProg(j.pct, j.message || '분석 중…', j.eta_seconds); }}
@@ -1091,7 +1186,9 @@ def media(video_id: str, rank: int):
 PREVIEW_CANVAS_WIDTH = 360  # 실제 렌더 해상도(보통 1080px 폭)를 화면에 축소해서 보여줄 너비(px)
 
 # 클립별 무음 지도 캐시(ffmpeg silencedetect 2~3초 — 팝업 열 때마다 다시 돌리지 않게)
+# 서버를 며칠씩 켜두면 클립 경계를 조금씩 바꿀 때마다 키가 새로 생겨 무한정 쌓인다 → 상한.
 _silences_cache: dict = {}
+_SILENCES_CACHE_MAX = 200
 
 
 def _clip_voice_silences(video_id: str, start: float, end: float) -> list:
@@ -1107,6 +1204,8 @@ def _clip_voice_silences(video_id: str, start: float, end: float) -> list:
             sil = _detect_silences(src, start, end, -32.0, 0.3)
         except Exception:  # noqa: BLE001 - 무음 감지 실패 시 보정 없이 진행
             sil = []
+    if len(_silences_cache) >= _SILENCES_CACHE_MAX:
+        _silences_cache.pop(next(iter(_silences_cache)), None)  # 가장 오래된 것부터 버린다
     _silences_cache[key] = sil
     return sil
 
@@ -1209,7 +1308,7 @@ def _compute_layout(
         available_width_px=resolution[0] - 80, font_family=title_font_name,
         available_height_px=title_avail_h,
     )
-    base_title_margin_v, base_caption_margin_v = compute_card_margins(card_layout, resolution, title_size)
+    base_title_margin_v, base_caption_margin_v = compute_card_margins(card_layout, resolution)
 
     caption_font_name = getattr(clip, "caption_font", "") or captions_cfg.get("font_family", "")
     scale = PREVIEW_CANVAS_WIDTH / resolution[0]
@@ -2056,10 +2155,12 @@ def _run_reanalyze_job(video_id: str, idx: int) -> None:
         cfg = _load_config()
         clips = load_clips_json(clips_path)
         if idx < 0 or idx >= len(clips):
-            _reanalyze_jobs[video_id] = {"running": False, "error": "잘못된 클립 번호"}
+            with _jobs_lock:
+                _reanalyze_jobs[video_id] = {"running": False, "error": "잘못된 클립 번호"}
             return
         orig = clips[idx]
-        _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
+        with _jobs_lock:
+            _reanalyze_jobs[video_id] = {"running": True, "error": None, "new_idx": None, "pct": 0.0}
 
         def _prog(frac, msg):
             j = _reanalyze_jobs.get(video_id)
@@ -2067,7 +2168,7 @@ def _run_reanalyze_job(video_id: str, idx: int) -> None:
                 j["pct"] = min(0.99, max(0.0, float(frac)))
 
         new_clip = reanalyze_clip_region(
-            video_dir, orig, cfg, model=cfg["highlights"].get("model", ""), on_progress=_prog
+            video_dir, orig, cfg, model=resolve_model(cfg["highlights"].get("model", "")), on_progress=_prog
         )
         # 하이라이트 후보 목록 '맨 아래'에 새 후보로 추가한다(원본은 그대로 유지).
         with CLIPS_LOCK:
@@ -2075,10 +2176,12 @@ def _run_reanalyze_job(video_id: str, idx: int) -> None:
             clips.append(new_clip)
             new_idx = len(clips) - 1
             save_clips_json(clips, clips_path)
-        _reanalyze_jobs[video_id] = {"running": False, "error": None, "new_idx": new_idx, "pct": 1.0}
+        with _jobs_lock:
+            _reanalyze_jobs[video_id] = {"running": False, "error": None, "new_idx": new_idx, "pct": 1.0}
     except Exception as e:  # noqa: BLE001 - 실패해도 서버는 살아야 하고 팝업에 사유를 알린다
         traceback.print_exc()
-        _reanalyze_jobs[video_id] = {"running": False, "error": str(e)[:300], "new_idx": None}
+        with _jobs_lock:
+            _reanalyze_jobs[video_id] = {"running": False, "error": str(e)[:300], "new_idx": None}
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/reanalyze", methods=["POST"])

@@ -29,3 +29,24 @@ def sanitize(model: str) -> str:
     """UI에서 온 모델 문자열을 검증한다. 허용목록 밖이면 ""(=config 기본값)을 돌려준다."""
     m = (model or "").strip()
     return m if m in ALLOWED_MODELS else ""
+
+
+# config.yaml이 세대 ID를 직접 적으면(예: "claude-opus-5") 세대 교체 때 이 파일만 고쳐선
+# 안 되고 config도 같이 고쳐야 한다 — 이 파일이 막으려던 바로 그 상황이다. 그래서 config는
+# 별칭("opus"/"sonnet"/"fable")만 쓰고, 실제 세대 ID는 여기서 한 번에 정한다.
+_ALIASES = {
+    "opus": ANALYSIS_MODEL,
+    "sonnet": EXECUTION_MODEL,
+    "fable": PREMIUM_MODEL,
+}
+
+
+def resolve(model: str) -> str:
+    """config/CLI에서 온 모델 값을 실제 모델 ID로 바꾼다.
+
+    별칭이면 현행 세대 ID로, 이미 허용된 ID면 그대로, 그 외(빈 값·오타)면 ""(=CLI 기본값).
+    """
+    m = (model or "").strip()
+    if m in _ALIASES:
+        return _ALIASES[m]
+    return m if m in ALLOWED_MODELS else ""
