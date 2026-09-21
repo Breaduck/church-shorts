@@ -2402,23 +2402,79 @@ async function aiCall(kind, url, body, apply) {
   await save();
   return true;   // 호출부가 성공 여부로 후속 작업(싱크 → 영어 번역)을 이어갈 수 있게.
 }
+// 정밀 인식(꼼꼼 재전사)을 백그라운드로 돌리고 끝날 때까지 기다린다. 싱크 맞추기가
+// '참조 전사'(대충 시각)로 맞춰졌을 때 자동으로 한 번 돌려, 시간이 딱딱 박히게 한다.
+async function precisePass(label) {
+  const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
+  try { const r = await fetch(base + 'retranscribe', { method: 'POST' }); if (!r.ok) return false; }
+  catch (e) { return false; }
+  const t0 = Date.now();
+  for (;;) {
+    await new Promise(res => setTimeout(res, 2000));
+    if (Date.now() - t0 > 15 * 60 * 1000) return false;   // 무한 대기 방지
+    let j = null;
+    try { const r = await fetch(base + 'retranscribe_status'); j = r.ok ? await r.json() : null; } catch (e) {}
+    if (!j) continue;
+    if (!j.running) return !j.error;
+    setStatus(label + ' ' + Math.round((Date.now() - t0) / 1000) + '초');
+  }
+}
+// 싱크 결과를 자막 트랙에 반영 — 줄 수가 달라질 수 있어(빈 줄 삭제·긴 줄 분할) 레인과
+// 영어 자막은 짝이 맞을 때만 유지한다.
+function applySyncLines(j) {
+  const before = caps.length;
+  const lanes = caps.map(c => c.track || 0);
+  caps = j.lines.map((c, i) => ({ start: c.start, end: c.end, text: c.text, track: (j.lines.length === before ? (lanes[i] || 0) : 0) }));
+  if (ens.length && ens.length !== caps.length) ens = [];
+  lastSyncMode = j.mode || '';
+  const msg = ['싱크 맞춤: ' + caps.length + '줄'];
+  if (j.dropped) msg.push('빈 줄 ' + j.dropped + '개 삭제');
+  if (j.filled) msg.push('빈 칸 ' + j.filled + '개 메움');
+  setStatus(msg.join(', ') + ' · ' + (j.source || ''));
+}
+let syncPresses = 0, syncRunning = false, lastSyncMode = '';
+async function runSync() {
+  if (syncRunning) { setStatus('싱크 맞추는 중이에요…'); return; }
+  syncRunning = true;
+  const fxItem = document.querySelector('.fx-item[data-fx="sync"]');
+  try { await runSyncInner(fxItem); } finally { syncRunning = false; if (fxItem) fxItem.classList.remove('busy'); }
+}
+async function runSyncInner(fxItem) {
+  const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
+  // 두 번째 이상 누르면: 먼저 최고 정밀로 다시 인식하고 맞춘다(같은 캐시면 결과가 똑같아
+  // "눌러도 안 바뀐다"가 되기 때문). 찬양 클립은 서버가 fresh를 받아 알아서 재전사한다.
+  const fresh = syncPresses > 0;
+  syncPresses += 1;
+  // 설교 클립일 때만 정밀 재전사를 먼저 돌린다. 찬양/업로드(가창 매핑)는 참조 전사가
+  // 아예 없어 재전사 작업이 실패하므로, 서버에 fresh만 넘겨 거기서 다시 전사하게 둔다.
+  if (fresh && lastSyncMode !== 'voice') {
+    setStatus('정밀 인식 다시 돌리는 중…');
+    if (fxItem) fxItem.classList.add('busy');
+    await precisePass('정밀 인식 중…');
+    if (fxItem) fxItem.classList.remove('busy');
+  }
+  let helps = false;
+  let ok = await aiCall('sync', base + 'sync_captions', { captions: collect(), fresh: fresh }, (j) => { applySyncLines(j); helps = !!j.retranscribe_helps; });
+  if (!ok) return;
+  if (helps && !fresh) {
+    // 정밀 인식 캐시가 없어 대충 맞춘 상태 — 정밀 인식을 돌린 뒤 한 번 더 맞춘다.
+    setStatus('정밀 인식 중… (더 정확히 맞추는 중)');
+    if (fxItem) fxItem.classList.add('busy');
+    const done = await precisePass('정밀 인식 중…');
+    if (fxItem) fxItem.classList.remove('busy');
+    if (done) {
+      ok = await aiCall('sync', base + 'sync_captions', { captions: collect() }, applySyncLines);
+      if (!ok) return;
+    }
+  }
+  // 싱크가 끝나면 영어 자막도 이어서 만든다(사용자 요청 2026-09-07). 번역 입력은 방금
+  // 싱크된 줄(collect())이라 영어 트랙의 시간이 한국어와 정확히 같아진다.
+  setStatus('싱크 완료 — 영어 자막 만드는 중…');
+  await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
+}
 function applyFx(kind) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
-  if (kind === 'sync') {
-    // 싱크가 끝나면 영어 자막도 이어서 만든다(사용자 요청 2026-09-07). 번역 입력은 방금
-    // 싱크된 줄(collect())이라 영어 트랙의 시간이 한국어와 정확히 같아진다.
-    aiCall(kind, base + 'sync_captions', { captions: collect() }, (j) => {
-      const before = caps.length;
-      caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text }));
-      const removed = Math.max(0, before - caps.length);
-      setStatus('싱크 맞춤: ' + caps.length + '줄 재정렬' + (removed ? ', 빈 줄 ' + removed + '개 삭제' : '') + ' · ' + (j.source || ''));
-    })
-      .then((ok) => {
-        if (!ok) return;
-        setStatus('싱크 완료 — 영어 자막 만드는 중…');
-        return aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
-      });
-  }
+  if (kind === 'sync') runSync();
   else if (kind === 'correct') aiCall(kind, base + 'correct_captions', { captions: collect(), model: '' }, (j) => { j.lines.forEach((ln, i) => { if (caps[i]) caps[i].text = ln.text; }); setStatus('교정 ' + (j.changed || 0) + '줄'); });
   else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); });
   else if (kind === 'lyrics') {

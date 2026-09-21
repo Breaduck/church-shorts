@@ -1363,6 +1363,69 @@ def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict])
         return lines
 
 
+def _tighten_caption_lines(lines: list[dict], clip, hold_max: float = 6.0):
+    """'싱크 맞추기' 결과를 빈 칸 없이 딱딱 붙게 다듬는다.
+
+    (2026-09-21 신고: "싱크 맞추기 하면 빈 칸도 자동으로 없애버리고 시간이 딱딱 정확하게
+    박혀야 할 거 아니야" — 실제로 저장된 자막을 재보니 한 클립에 0.25초 넘는 빈 칸이 16개,
+    최대 2.8초까지 있었다. 싱크는 단어 시각에 줄을 맞출 뿐 그 사이 '말 쉬는 틈'은 그대로
+    비워 뒀다.)
+
+    - 글자가 빈 줄은 삭제(화면엔 안 보이면서 타임라인에 빈 칸만 만든다).
+    - 겹치는 줄은 앞 줄을 잘라 겹침 제거.
+    - 줄 사이 빈틈은 '앞 줄 끝'을 다음 줄 시작까지 늘려 메운다(최대 hold_max초).
+      뒤 줄을 앞당기지 않는 이유: 말하기 전에 자막이 먼저 뜨는 '선행 싱크'는 이미 고친
+      과거 신고라 절대 다시 만들지 않는다. 앞 줄을 늘리는 쪽은 싱크를 해치지 않는다.
+    - 클립 맨 앞 빈틈은 1.5초 이내일 때만 첫 줄을 당겨 메우고(긴 무음에 글자를 미리
+      띄우지 않으려고), 맨 뒤는 마지막 줄을 클립 끝까지(최대 hold_max초) 늘린다.
+
+    반환: (다듬은 줄, 삭제한 빈 줄 수, 메운 빈 칸 수)
+    """
+    cs, ce = float(clip.start), float(clip.end)
+    out: list[dict] = []
+    dropped = 0
+    for ln in lines:
+        text = str(ln.get("text", "")).strip()
+        if not text:
+            dropped += 1
+            continue
+        s = max(cs, min(ce, float(ln.get("start", cs))))
+        e = max(cs, min(ce, float(ln.get("end", s))))
+        if e <= s + 0.05:
+            e = min(ce, s + 0.3)
+        item = dict(ln)
+        item["text"], item["start"], item["end"] = text, s, e
+        out.append(item)
+    if not out:
+        return [], dropped, 0
+    out.sort(key=lambda x: (x["start"], x["end"]))
+    filled = 0
+    for k in range(len(out) - 1):
+        gap = out[k + 1]["start"] - out[k]["end"]
+        if gap < 0:
+            # 겹침 제거: 앞 줄을 다음 줄 시작에 딱 붙여 끊는다(두 줄이 같이 뜨는 것 방지).
+            nxt = out[k + 1]["start"]
+            out[k]["end"] = nxt if nxt > out[k]["start"] + 0.05 else out[k]["start"] + 0.05
+        elif gap > 0.05:
+            out[k]["end"] = min(out[k + 1]["start"], out[k]["end"] + hold_max)
+            if gap > 0.25:
+                filled += 1
+    head = out[0]["start"] - cs
+    if 0.05 < head <= 1.5:
+        out[0]["start"] = cs
+        if head > 0.25:
+            filled += 1
+    tail = ce - out[-1]["end"]
+    if tail > 0.05:
+        out[-1]["end"] = min(ce, out[-1]["end"] + hold_max)
+        if tail > 0.25:
+            filled += 1
+    for ln in out:
+        ln["start"] = round(ln["start"], 2)
+        ln["end"] = round(ln["end"], 2)
+    return out, dropped, filled
+
+
 def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path) -> list:
     """이 클립의 자막을 만들 전사 세그먼트 — 실제 렌더가 쓰는 것과 같은 소스를 고른다.
     정밀 재전사 캐시가 있고 '구멍'이 없으면 그것, 아니면 유튜브 자동자막(transcript.json).
@@ -2353,17 +2416,22 @@ def _sync_captions_by_voice(video_dir: Path, clip, in_lines: list, fresh: bool =
         model_override=model_override,
     )
     if not mapped:
-        # 가창 단어가 거의 안 잡혔다 → 매핑 불가, 원래 시각 유지.
+        # 가창 단어가 거의 안 잡혔다 → 매핑 불가, 원래 시각 유지(빈 칸만 정리).
         lines = [
             {"start": float(l.get("start", 0)), "end": float(l.get("end", 0)),
              "text": str(l.get("text", "")).strip()}
             for l in in_lines
         ]
+        lines, dropped, filled = _tighten_caption_lines(lines, clip)
         return jsonify({"lines": lines, "matched": 0, "total": len(lines),
-                        "source": "전사 단어 부족 — 원래 시각 유지"})
+                        "dropped": dropped, "filled": filled, "retranscribe_helps": False,
+                        "mode": "voice", "source": "전사 단어 부족 — 원래 시각 유지"})
     src = "최고 정밀(large-v3) 재분석" if fresh else "가창 단어 시각 기준(노래 싱크)"
     mapped = _split_long_caption_lines(video_dir.name, clip, cfg, mapped)
-    return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped), "source": src})
+    mapped, dropped, filled = _tighten_caption_lines(mapped, clip)
+    return jsonify({"lines": mapped, "matched": len(mapped), "total": len(mapped), "source": src,
+                    "dropped": dropped, "filled": filled, "retranscribe_helps": False,
+                    "mode": "voice"})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/sync_captions", methods=["POST"])
@@ -2418,9 +2486,10 @@ def sync_captions_route(video_id: str, idx: int):
     used = "정밀 캐시"
     if segs is not None and _precise_worst_hole(tdata["segments"], segs, clip.start, clip.end) >= 5.0:
         segs = None  # 구멍 난 불량 캐시는 신뢰하지 않는다
+    precise = segs is not None
     if segs is None:
         segs = tdata["segments"]
-        used = "참조 전사(캐시 없음 — '꼼꼼 재분석' 후 다시 누르면 더 정확)"
+        used = "참조 전사(캐시 없음 — 정밀 인식 후 다시 맞추면 더 정확)"
     _apply_corrections(segs, cfg.get("captions", {}).get("corrections") or {})
     words = _collect_words_in_range(segs, clip.start - 2.0, clip.end + 4.0)
     if not words:
@@ -2511,7 +2580,13 @@ def sync_captions_route(video_id: str, idx: int):
         if out[k]["end"] > out[k + 1]["start"]:
             out[k]["end"] = round(max(out[k]["start"] + 0.2, out[k + 1]["start"] - 0.02), 2)
     out = _split_long_caption_lines(video_id, clip, cfg, out)
-    return jsonify({"lines": out, "matched": matched_n, "total": len(out), "source": used})
+    # 빈 줄 삭제 + 줄 사이 빈 칸 메우기(딱딱 붙는 자막) — 신고 2026-09-21.
+    out, dropped, filled = _tighten_caption_lines(out, clip)
+    # retranscribe_helps: 정밀 인식 캐시가 없어 '참조 전사'(대충 시각)로 맞췄다는 뜻 —
+    # 편집기가 이걸 보고 정밀 재전사를 돌린 뒤 자동으로 한 번 더 맞춘다.
+    return jsonify({"lines": out, "matched": matched_n, "total": len(out), "source": used,
+                    "dropped": dropped, "filled": filled, "retranscribe_helps": not precise,
+                    "mode": "sermon"})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/correct_captions", methods=["POST"])

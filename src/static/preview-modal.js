@@ -986,13 +986,20 @@
         syncBtn.textContent = '싱크 맞추기';
         alert('싱크 맞추기 실패' + (j && j.error ? ': ' + j.error : '')); return;
       }
-      // 행 순서는 그대로 두고 시간만 갱신(텍스트·분할 불변).
+      // 서버가 빈 줄을 지우거나 긴 줄을 쪼개면 줄 수가 달라진다 — 그럴 땐 목록을 통째로
+      // 다시 그린다(예전엔 순서대로 시간만 덮어써서, 줄 수가 달라지면 아래 줄들의 시간이
+      // 한 칸씩 밀려 엉뚱한 자막에 박혔다).
       const rows = [...capRowsBox.querySelectorAll('.pv-caprow')];
-      j.lines.forEach((ln, i) => {
-        if (!rows[i]) return;
-        rows[i].querySelector('.pv-cap-start').value = (ln.start - C.start).toFixed(1);
-        rows[i].querySelector('.pv-cap-end').value = (ln.end - C.start).toFixed(1);
-      });
+      if (j.lines.length !== rows.length) {
+        capRowsBox.innerHTML = '';
+        j.lines.forEach((ln) => addCapRow(ln.start - C.start, ln.end - C.start, ln.text));
+      } else {
+        j.lines.forEach((ln, i) => {
+          rows[i].querySelector('.pv-cap-start').value = (ln.start - C.start).toFixed(1);
+          rows[i].querySelector('.pv-cap-end').value = (ln.end - C.start).toFixed(1);
+          rows[i].querySelector('.pv-cap-text').value = ln.text;
+        });
+      }
       capsDirty = true;
       // 싱크 맞추기는 '줄의 시작·끝 시간'만 다시 맞춘다 — 파란 강조(카라오케)는 켜지 않는다.
       // (사용자 요청 2026-09-05: 흰 자막이 그대로 떠 있어야 하고, 파란색은 '파란 강조' 버튼으로만.)

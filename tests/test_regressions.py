@@ -431,3 +431,59 @@ def test_model_policy_analysis_is_opus_execution_is_sonnet():
     assert "opus" in ANALYSIS_MODEL
     assert "sonnet" in EXECUTION_MODEL
     assert ANALYSIS_MODEL in ALLOWED_MODELS and EXECUTION_MODEL in ALLOWED_MODELS
+
+
+def _lines_text(words, wpl=3, max_units=13.5):
+    return [" ".join(w.text for w in ln.words)
+            for ln in chunk_words_into_lines(words, max_words_per_line=wpl, max_units=max_units)]
+
+
+def test_chunk_keeps_modifier_with_its_noun():
+    """2026-09-21 신고: "의미가 통하는 데까지 끊어야 하는데 이상하게 잘린다".
+    창이 3단어로 고정돼 '우리 / 교회를', '이런 / 식으로'처럼 꾸미는 말과 꾸밈받는
+    말이 갈라졌다 — 폭이 허락하면 몇 단어 더 봐서 의미 경계에서 끊어야 한다."""
+    words = [W(i * 0.4, i * 0.4 + 0.35, t) for i, t in enumerate(
+        ["박", "목사님이", "우리", "교회를", "부임하셨을", "때"])]
+    for line in _lines_text(words):
+        assert not line.endswith("우리"), f"관형어 뒤에서 끊겼다: {line!r}"
+
+
+def test_chunk_keeps_dependent_noun_and_obligation():
+    """'가까우신 / 거로', '해야 / 할'처럼 앞말에 붙어야 뜻이 사는 자리에서 끊지 않는다."""
+    words = [W(i * 0.4, i * 0.4 + 0.35, t) for i, t in enumerate(
+        ["우리", "교회가", "해야", "할", "일이", "있다는", "거예요"])]
+    for line in _lines_text(words):
+        assert not line.endswith("해야"), f"의무 표현이 갈라졌다: {line!r}"
+    words = [W(i * 0.4, i * 0.4 + 0.35, t) for i, t in enumerate(
+        ["굉장히", "가까우신", "거로", "미국을", "가니까"])]
+    for line in _lines_text(words):
+        assert not line.endswith("가까우신"), f"의존명사 앞에서 끊겼다: {line!r}"
+
+
+# ─────────────────── 싱크 맞추기 뒤 빈 칸 정리 ───────────────────
+
+def test_tighten_caption_lines_fills_gaps_and_drops_empty():
+    """2026-09-21 신고: "싱크 맞추기 하면 빈 칸도 자동으로 없애고 시간이 딱딱 박혀야".
+    빈 줄 삭제 + 줄 사이 빈 칸 메우기(앞 줄 끝을 늘림 — 뒤 줄을 앞당기면 '선행 싱크'가
+    되므로 절대 금지) + 겹침 제거."""
+    from types import SimpleNamespace
+
+    from src.web_app import _tighten_caption_lines
+
+    clip = SimpleNamespace(start=10.0, end=20.0)
+    lines = [
+        {"start": 10.4, "end": 11.0, "text": "첫 줄"},
+        {"start": 13.0, "end": 14.0, "text": "  "},          # 빈 줄 → 삭제
+        {"start": 14.0, "end": 15.0, "text": "둘째 줄"},
+        {"start": 14.5, "end": 16.0, "text": "셋째 줄"},      # 겹침
+    ]
+    out, dropped, filled = _tighten_caption_lines(lines, clip)
+    assert dropped == 1
+    assert [x["text"] for x in out] == ["첫 줄", "둘째 줄", "셋째 줄"]
+    assert out[0]["start"] == 10.0            # 앞 빈 칸(0.4초)은 첫 줄을 당겨 메움
+    assert out[-1]["end"] == 20.0             # 뒤는 클립 끝까지
+    starts = [x["start"] for x in out]
+    assert starts[1] == 14.0 and starts[2] == 14.5   # 시작은 절대 앞당기지 않는다
+    for a, b in zip(out, out[1:]):
+        assert abs(a["end"] - b["start"]) < 0.06, f"빈 칸/겹침이 남았다: {a} {b}"
+    assert filled >= 1
