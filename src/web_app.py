@@ -127,10 +127,13 @@ CANDIDATES_TEMPLATE = f"""
     font-size: 12px; font-weight: 700; letter-spacing: -0.01em;
     padding: 3px 9px; border-radius: 999px; white-space: nowrap; line-height: 1.35;
   }}
-  .score-badge.tier-top {{ background: #fff4e5; color: #c2620c; }}       /* 90점 이상: 최상 */
-  .score-badge.tier-high {{ background: #e7f7ec; color: #1a7f37; }}      /* 85점 이상: 추천 */
-  .score-badge.tier-ok {{ background: #eaf1ff; color: #2563eb; }}        /* 80점 이상: 후보 */
-  .score-badge.tier-low {{ background: #f1f3f5; color: #868e96; }}       /* 80점 미만: 참고용 */
+  /* 등급 기준 재보정(2026-09-22): 채점 프롬프트가 "8=잘 되는 채널 상위 클립 수준, 9~10=채널 1위감(드묾)"이라
+     현실적인 상단이 70~80점인데, 기준이 90/85/80이라 실측 61개 중 54개(89%)가 '참고'로 표시됐다 —
+     좋은 클립도 전부 나쁘게 읽혔다. 두 축이 8이면 80, 7이면 70이 되는 공식(scoring.py)에 맞춰 다시 잡는다. */
+  .score-badge.tier-top {{ background: #fff4e5; color: #c2620c; }}       /* 78점 이상: 최상(두 축 ~8) */
+  .score-badge.tier-high {{ background: #e7f7ec; color: #1a7f37; }}      /* 68점 이상: 추천(두 축 ~7) */
+  .score-badge.tier-ok {{ background: #eaf1ff; color: #2563eb; }}        /* 58점 이상: 후보(두 축 ~6) */
+  .score-badge.tier-low {{ background: #f1f3f5; color: #868e96; }}       /* 58점 미만: 참고용 */
   .dur {{ font-size: 12.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }}
   .pick {{
     display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; flex-shrink: 0;
@@ -263,7 +266,7 @@ CANDIDATES_TEMPLATE = f"""
         <span class="rank">{{% if loop.index == 1 %}}TOP{{% else %}}{{{{ loop.index }}}}위{{% endif %}}</span>
         {{% if c.score is not none %}}
         <span class="dot-sep"></span>
-        <span class="score-badge {{% if c.score >= 90 %}}tier-top{{% elif c.score >= 85 %}}tier-high{{% elif c.score >= 80 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 90 %}} · 최상{{% elif c.score >= 85 %}} · 추천{{% elif c.score < 80 %}} · 참고{{% endif %}}</span>
+        <span class="score-badge {{% if c.score >= 78 %}}tier-top{{% elif c.score >= 68 %}}tier-high{{% elif c.score >= 58 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 78 %}} · 최상{{% elif c.score >= 68 %}} · 추천{{% elif c.score < 58 %}} · 참고{{% endif %}}</span>
         {{% endif %}}
         <span class="dot-sep"></span>
         <span class="dur">{{{{ "%.0f"|format(c.duration_sec) }}}}초</span>{{% if c.keep_ranges and c.keep_ranges|length > 1 %}}<span class="dot-sep"></span><span class="dur" title="중간을 들어낸 점프컷 클립">점프컷 {{{{ c.keep_ranges|length }}}}조각</span>{{% endif %}}
