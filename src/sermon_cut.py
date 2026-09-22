@@ -834,17 +834,25 @@ _BIBLE_NAME_RE = re.compile(
     r"기드온|삼손|여호수아|갈렙|사무엘|느헤미야|에스라|욥(?!바)|이사야|예레미야|에스겔|호세아|마리아|마르다|나사로|삭개오|"
     r"니고데모|유다|빌립|스데반|바나바|디모데|요한|야고보|안드레|막달라|골리앗|가룟|라합|므낫세|"
     r"히스기야|여로보암|르호보암|아합|이세벨|나아만|게하시|발람|미리암|아론|라헬|"
-    r"이스라엘\s*백성|바리새인|사두개인|제자들)(?!복음|서|기|계시록|일서|이서|삼서|전서|후서)"
+    # '제자들'은 뺐다: 특정 인물 서사가 아니라 일반 명사로 더 많이 쓰이고("우리도 제자들처럼"),
+    # 4,338회로 검증된 쇼츠가 이것 때문에 제외됐다(2026-09-22).
+    r"이스라엘\s*백성|바리새인|사두개인)(?!복음|서|기|계시록|일서|이서|삼서|전서|후서)"
 )
 _BIBLE_STORY_MIN_SENTENCES = 3
-_BIBLE_STORY_MIN_RATIO = 0.25
+_BIBLE_STORY_MIN_RATIO = 0.30
+_BIBLE_HOOK_SENTENCES = 2   # 클립의 첫 이 문장이 '훅'이다 — 여기서 인물이 나오면 시청자에겐 옛날이야기로 들린다
 
 
 def bible_story_reason(cut: dict, sentences: list[Sentence]) -> str:
     """컷이 '성경 인물 이야기'가 주된 내용이면 근거 문자열을, 아니면 빈 문자열을 돌려준다.
 
-    판정: (a) 핵심 문장·모델의 장면/명제 요약에 인물 이름이 있거나,
-          (b) 남는 본문(skip 제외)에서 인물 이름이 든 문장이 3개 이상이고 25% 이상."""
+    판정(2026-09-22 실측으로 재설계): **클립이 인물로 시작하는가**가 핵심이다.
+      (a) 핵심 문장(착지 명제)에 인물 이름 → 인물 서사
+      (b) 훅(남는 본문의 첫 2문장)에 인물 이름 → 시청자가 첫 3초에 옛날이야기로 인식
+      (c) 남는 본문의 30% 이상, 3문장 이상에 인물 이름 → 내내 인물 이야기
+    **모델이 쓴 요약문(scene/thesis)은 더 이상 보지 않는다.** 5,200회로 검증된 "아무것도 보이지 않을 때"가
+    요약에 '요나'가 들어갔다는 이유로 제외됐다 — 실제 클립은 "도와줄 사람이 하나도 없는 상황"으로 시작하고
+    요나는 근거로 잠깐 나올 뿐이었다(본문 비중 14%). 요약은 모델의 말일 뿐 시청자가 듣는 내용이 아니다."""
     try:
         core = sentences[int(cut["core"])].text
         runs = kept_runs(int(cut["start"]), int(cut["end"]), [tuple(s) for s in (cut.get("skip") or [])])
@@ -854,10 +862,10 @@ def bible_story_reason(cut: dict, sentences: list[Sentence]) -> str:
     m = _BIBLE_NAME_RE.search(core)
     if m:
         return f"핵심 문장에 '{m.group(1)}'"
-    for key in ("scene", "thesis"):
-        m = _BIBLE_NAME_RE.search(str(cut.get(key) or ""))
+    for s in body[:_BIBLE_HOOK_SENTENCES]:
+        m = _BIBLE_NAME_RE.search(s.text)
         if m:
-            return f"{key}에 '{m.group(1)}'"
+            return f"훅에 '{m.group(1)}'"
     hits = [s for s in body if _BIBLE_NAME_RE.search(s.text)]
     if len(hits) >= _BIBLE_STORY_MIN_SENTENCES and len(hits) / max(1, len(body)) >= _BIBLE_STORY_MIN_RATIO:
         names = sorted({_BIBLE_NAME_RE.search(s.text).group(1) for s in hits})

@@ -1099,9 +1099,15 @@ def feedback_route(video_id: str):
         except (TypeError, ValueError):
             return None
 
+    # 어떤 훅이 실제로 먹혔는지가 캘리브레이션의 핵심 신호인데, 예전엔 사용자가 자막을 손으로
+    # 고친 클립(caption_overrides)에서만 채워져 대부분 빈 값으로 기록됐다(2026-09-22). 선정이 확정한
+    # 첫 문장(hook_line)을 기본값으로 쓴다.
     hook_text = ""
-    if clip is not None and clip.caption_overrides:
-        hook_text = (clip.caption_overrides[0] or {}).get("text", "")
+    if clip is not None:
+        if clip.caption_overrides:
+            hook_text = (clip.caption_overrides[0] or {}).get("text", "") or ""
+        if not hook_text:
+            hook_text = (getattr(clip, "hook_line", "") or "").strip()
 
     record = PerformanceRecord(
         video_id=video_id,

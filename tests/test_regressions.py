@@ -701,3 +701,33 @@ def test_verify_drops_clips_below_config_minimum() -> None:
     assert cut is None and any("하한" in m for m in log)
     cut2, _ = verify_and_fix({"core": 1, "start": 0, "end": 3}, sents, 30, 60, 90)
     assert cut2 is not None
+
+
+def test_bible_filter_uses_hook_not_model_summary() -> None:
+    """성경 인물 필터는 '클립이 인물로 시작하는가'로 판정한다 — 모델이 쓴 요약문(scene)은 보지 않는다.
+
+    2026-09-22 실측: 5,200회로 검증된 "아무것도 보이지 않을 때"가 요약에 '요나'가 들어갔다는 이유로
+    제외됐다. 실제 클립은 "도와줄 사람이 하나도 없는 상황"으로 시작하고 요나는 근거로 잠깐 나올 뿐이다.
+    반대로 "베드로가 로마를 떠나…"처럼 인물로 시작하는 클립은 계속 걸러야 한다."""
+    from src.sermon_cut import bible_story_reason
+
+    # (a) 인물로 시작 → 제외
+    story = [
+        _sent(0, 0.0, 9.5, "베드로가 박해를 피해 로마를 떠나고 있었습니다."),
+        _sent(1, 10.0, 19.5, "그때 예수님이 마주 걸어오셨어요."),
+        _sent(2, 20.0, 29.5, "주여 어디로 가시나이까 하고 물었습니다."),
+        _sent(3, 30.0, 39.5, "우리도 그 길을 걸어야 합니다."),
+    ]
+    assert "훅에" in bible_story_reason({"core": 3, "start": 0, "end": 3, "scene": "무관한 요약"}, story)
+
+    # (b) 상황으로 시작하고 인물은 근거로만 → 통과 (요약문에 인물 이름이 있어도)
+    support = [
+        _sent(0, 0.0, 9.5, "지금 어려운데 옆에 도와줄 사람이 하나도 없습니까?"),
+        _sent(1, 10.0, 19.5, "아무리 둘러봐도 방법이 안 보일 때가 있습니다."),
+        _sent(2, 20.0, 29.5, "요나가 바다에 뛰어들 때도 큰 물고기가 보이지 않았어요."),
+        _sent(3, 30.0, 39.5, "보이지 않는다고 없는 게 아닙니다."),
+        _sent(4, 40.0, 49.5, "반드시 예비하신 길이 있을 줄로 믿습니다."),
+    ]
+    assert bible_story_reason(
+        {"core": 4, "start": 0, "end": 4, "scene": "요나 이야기", "thesis": "요나처럼"}, support
+    ) == ""
