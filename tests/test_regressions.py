@@ -646,3 +646,31 @@ def test_clip_duration_sec_uses_keep_ranges() -> None:
     assert clip.duration_sec == 100.0
     clip.keep_ranges = [[100.0, 130.0], [160.0, 200.0]]
     assert clip.duration_sec == 70.0
+
+
+def test_filler_prefixed_sentence_can_be_a_hook() -> None:
+    """말버릇 한 단어("아") 때문에 설정 문장을 통째로 버리면 안 된다.
+
+    2026-09-22 실측(mjg0tcadzjY): "아 하나님께서 원하시면 나도 원하죠."가 버려져, 그걸 반박하는
+    크레센도("여러분, 그렇지 않습니다 → 예배를 원하시는데 우리는 별로…")만 남아 반박 대상이 사라졌다.
+    렌더 직전 trim_lead_words가 그 단어만 잘라내므로 선정에서 버릴 이유가 없다."""
+    from src.sermon_cut import _is_dirty_start, trim_lead_words
+
+    assert not _is_dirty_start("아 하나님께서 원하시면 나도 원하죠.")
+    assert _is_dirty_start("아멘.")                      # 문장 전체가 추임새면 여전히 버린다
+    assert _is_dirty_start("그래서 우리가 그렇게 해야 합니다.")   # 접속어 시작은 여전히 더럽다
+
+    sent = Sentence(0, 10.0, 14.0, "아 하나님께서 원하시면 나도 원하죠.",
+                    words=[(10.0, 10.3, "아"), (10.3, 11.0, "하나님께서"), (11.0, 12.0, "원하시면"),
+                           (12.0, 13.0, "나도"), (13.0, 14.0, "원하죠.")])
+    start, text = trim_lead_words(sent)
+    assert start == 10.3 and text.startswith("하나님께서")
+
+
+def test_verify_drops_clips_below_config_minimum() -> None:
+    """하한은 config min_duration_sec 그대로 적용한다(예전 0.8배 여유가 30초대 반쪽 후보를 통과시켰다)."""
+    sents = [Sentence(i, i * 10.0, i * 10.0 + 9.5, f"문장 {i}번입니다 여러분.") for i in range(4)]
+    cut, log = verify_and_fix({"core": 1, "start": 0, "end": 2}, sents, 30, 60, 90)
+    assert cut is None and any("하한" in m for m in log)
+    cut2, _ = verify_and_fix({"core": 1, "start": 0, "end": 3}, sents, 30, 60, 90)
+    assert cut2 is not None

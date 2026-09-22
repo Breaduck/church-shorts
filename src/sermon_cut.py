@@ -310,8 +310,10 @@ _LANDING_FOLLOW_SEC = 8.0
 # 정답지로 재 보니 평균 소재 커버가 67%→61%로 떨어지고, 늘어난 길이 때문에 (5)가 시작을 핵심 문장 너머로
 # 밀어 클립 하나가 통째로 탈락했다(HQMyIBO42-s 26%→0%). 모델이 중간 명제에서 끊는 문제는 실재하지만
 # 결정론적 확장으로는 못 고친다 — 프롬프트 쪽에서 풀 것. 같은 아이디어를 다시 넣지 말 것.
-_SHORT_TARGET_SEC = 30.0       # 이보다 짧은 컷은 앞 설정을 보강
-_SHORT_EXTEND_CAP_SEC = 45.0   # 보강해도 이 길이는 넘기지 않음
+# 2026-09-22 정답지 A/B로 30→45, 45→60 상향: 적중 6/7·커버 69%는 그대로인데 40초 미만 후보가 4개→2개로 줄었다.
+# 벤치마크 상위 쇼츠 실측 길이가 59~111초라 30초대 후보는 '설정 없이 명제만' 쪽에 가깝다.
+_SHORT_TARGET_SEC = 45.0       # 이보다 짧은 컷은 앞 설정을 보강
+_SHORT_EXTEND_CAP_SEC = 60.0   # 보강해도 이 길이는 넘기지 않음
 # 추임새만 있는 문장("예.", "응.", "어.", "아멘.", "할렐루야.") — 컷의 첫 문장으로는 죽은 1~2초.
 _FILLER_ONLY = re.compile(r"^(>>\s*)?(예|네|응|어|음|에|아|자|그|아멘|할렐루야|그렇죠|그죠)[.!?,]*$")
 # "에 에 환상과…", "어 그런데…". 단 '예/네'는 관형사·일상어로도 쓰여("네 이웃을 사랑하라")
@@ -355,9 +357,15 @@ def _is_weak_hook(text: str) -> bool:
 
 
 def _is_dirty_start(text: str) -> bool:
-    """첫 문장으로 두면 '중간을 툭 자른' 훅이 되는 문장(접속어·지시어·구조 표지·추임새 시작)."""
+    """첫 문장으로 두면 '중간을 툭 자른' 훅이 되는 문장(접속어·지시어·구조 표지로 시작).
+
+    말버릇 추임새("아 하나님께서 원하시면 나도 원하죠.")는 여기서 버리지 않는다 — 렌더 직전
+    `trim_lead_words`가 그 단어(0.2~0.5초)만 잘라내고 나머지를 훅으로 쓴다. 예전엔 추임새 접두도
+    '더러움'으로 보고 문장을 통째로 건너뛰어, 크레센도의 설정 문장이 날아갔다(2026-09-22 실측
+    mjg0tcadzjY: "아 하나님께서 원하시면 나도 원하죠." → 이어지는 "여러분, 그렇지 않습니다."부터
+    시작돼 반박의 대상이 사라짐). 문장 전체가 추임새인 것("예.", "아멘.")은 여전히 버린다."""
     t = text.strip()
-    if not t or _FILLER_ONLY.match(t) or _FILLER_PREFIX.match(t):
+    if not t or _FILLER_ONLY.match(t):
         return True
     return bool(_CONNECTOR_START.match(t) or _starts_with_structure_marker(t))
 
@@ -630,8 +638,10 @@ def verify_and_fix(
         if best is not None:
             log.append(f"start S{start} 약한 훅(연도/나열/장문) → S{best}"); start = best
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
-    if dur(start, end) < min_sec * 0.8:
-        return None, log + [f"길이 {dur(start,end):.0f}초 < 하한 → 탈락"]
+    # 하한은 config min_duration_sec 그대로 적용한다(예전 0.8배 여유는 30초대 반쪽 후보를 통과시켰다 —
+    # 2026-09-22 정답지 A/B: 하한을 엄격히 해도 적중 6/7·커버 70% 유지, 40초 미만 후보만 2개→1개로 줄었다).
+    if dur(start, end) < min_sec:
+        return None, log + [f"길이 {dur(start,end):.0f}초 < 하한 {min_sec:.0f}초 → 탈락"]
     fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end, "skip": [list(s) for s in skips]})
     return fixed, log
 
@@ -826,8 +836,11 @@ def drop_bible_story_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[
     return kept, log
 
 
-def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.5) -> list[dict]:
-    """겹치는 컷은 앞(강한) 것만 남긴다."""
+def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.3) -> list[dict]:
+    """겹치는 컷은 앞(강한) 것만 남긴다.
+
+    기준 0.5→0.3 (2026-09-22 정답지 A/B): 0.5에서는 16초를 공유하는 두 후보(35초·82초)가 둘 다 살아남아
+    검토 화면에 사실상 같은 소재가 두 장 떴다. 0.3으로 내려도 적중·커버는 그대로였다."""
     kept: list[dict] = []
     for c in cuts:
         a0, a1 = sentences[c["start"]].start, sentences[c["end"]].end
