@@ -579,7 +579,7 @@ def _story_sentences() -> list[Sentence]:
         "제가 그때 참 힘들었습니다.",               # 1
         "이거는 사실 부연 설명입니다.",             # 2 (skip 대상)
         "덧붙이자면 그렇다는 겁니다.",              # 3 (skip 대상)
-        "그 사람이 저한테 이렇게 말하더라고요.",       # 4 펀치 (접속어로 시작하지 않는다)
+        "제 친구가 저한테 이렇게 말하더라고요.",       # 4 펀치
         "우리는 다 갖고 있어도 더 원합니다.",        # 5 core
         "그런 은혜가 있기를 축복합니다.",           # 6 착지
     ]
@@ -599,19 +599,46 @@ def test_jump_cut_removes_middle_and_keeps_length() -> None:
     assert len(ranges) == 2 and ranges[0][1] < ranges[1][0]
 
 
-def test_jump_cut_rejects_unnatural_seams() -> None:
-    """이음새가 어색한 skip은 버린다 — 사용자 조건이 '자연스럽기만 하다면'이다."""
+def test_jump_cut_blocks_dangling_reference() -> None:
+    """'어색한 짜깁기'의 진짜 신호: 이어붙인 뒤 문장이 **잘려나간 것**을 가리킬 때.
+
+    2026-09-22, 실제로 터진 쇼츠의 이음새 39곳을 대조한 결과 37곳(95%)이 이 조건을 지켰다."""
     sents = _story_sentences()
-    # 뒤 문장이 접속어로 시작하면 앞을 전제하므로 들어내면 어색하다 → skip 무시
-    sents[4] = _sent(4, 40.0, 49.5, "그런데 그 사람이 이렇게 말하더라고요.")
+    sents[4] = _sent(4, 40.0, 49.5, "그 사장님이 저한테 이렇게 말하더라고요.")
+    sents[2] = _sent(2, 20.0, 29.5, "그때 어떤 사장님을 만났습니다.")
+    # '사장님'이 잘려나가는 구간 안에만 있으면 → skip 무시
     cut, log = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
     assert cut is not None and cut["skip"] == [], log
-    # 앞 문장이 말이 안 끝났으면(쉼표로 끝남) 그 뒤를 들어내면 어색하다 → skip 무시
+    # '사장님'이 남는 구간(S1)에 이미 나왔으면 → 이어붙여도 가리킬 대상이 있으므로 허용
+    sents[1] = _sent(1, 10.0, 19.5, "제가 그때 어떤 사장님을 만났습니다.")
+    cut2, log2 = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
+    assert cut2 is not None and cut2["skip"] == [[2, 3]], log2
+
+
+def test_jump_cut_allows_connective_after_seam() -> None:
+    """뒤 문장이 "그런데/근데/그래서"로 시작해도 막지 않는다.
+
+    예전엔 무조건 막았는데, 실제로 터진 쇼츠의 이음새 8곳(21%)이 바로 이 모양이고 전부 자연스러웠다
+    (접속어가 가리키는 건 잘려나간 부분이 아니라 '남아 있는 앞 문장'이기 때문). 이 규칙을 되살리지 말 것."""
+    sents = _story_sentences()
+    sents[4] = _sent(4, 40.0, 49.5, "그런데 살아남는 사람이 있습니다.")
+    cut, log = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
+    assert cut is not None and cut["skip"] == [[2, 3]], log
+
+
+def test_jump_cut_rejects_unnatural_seams() -> None:
+    """나머지 이음새 금지 조건 — 전부 실제 이음새 39곳에서 위반 0건이었던 것들."""
+    # (1) 앞 문장이 말이 안 끝났는데 뒤를 들어냄
     sents = _story_sentences()
     sents[1] = _sent(1, 10.0, 19.5, "제가 그때 참 힘들었는데,")
+    cut, log = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
+    assert cut is not None and cut["skip"] == [], log
+    # (2) 뒤 문장이 순서 표지 — 앞 항목이 잘리면 말이 안 된다
+    sents = _story_sentences()
+    sents[4] = _sent(4, 40.0, 49.5, "둘째, 우리가 기억할 것이 있습니다.")
     cut2, log2 = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[2, 3]]}, sents, 20, 60, 90)
     assert cut2 is not None and cut2["skip"] == [], log2
-    # 핵심 문장은 절대 못 뺀다
+    # (3) 핵심 문장은 절대 못 뺀다
     sents = _story_sentences()
     cut3, _ = verify_and_fix({"core": 5, "start": 0, "end": 6, "skip": [[5, 5]]}, sents, 20, 60, 90)
     assert cut3 is not None and cut3["skip"] == []

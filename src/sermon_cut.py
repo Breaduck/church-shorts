@@ -244,13 +244,21 @@ def build_thesis_cut_prompt(
 - end: 명제가 **착지**하는 가장 힘 있는 문장 — 축복 선언·"~줄로 믿습니다"·아멘 직전 문장·명제 재선언·반전의 한마디.
   그 문장을 읽고 "그래서?"가 떠오르면 미완이다 — 결론이 나온 문장까지 포함하라. 착지 뒤의 "자, 그러면", "다음으로",
   부연은 절대 넣지 마라. 예화만 있고 적용이 없는 곳에서 끝내지 마라.
-- **skip(점프컷)**: 온전한 이야기가 {hard_max_sec:.0f}초를 넘기면 앞이나 뒤를 잘라 반토막 내지 말고, **중간에서 빼도 흐름이
-  안 깨지는 문장들**을 skip으로 지정해 들어내라. 빼도 되는 것: 같은 말 반복, 곁길·부연 설명, 슬라이드 넘기기("다음
-  넘겨 보시죠"), 수치·연도 나열, 추임새 문장. 빼면 안 되는 것: 뒤 문장이 가리키는 내용("그 사람이…"의 '그 사람'이
-  나온 문장), 반전의 전제, 대사의 앞뒤. **자연스러움이 최우선**: skip 앞 문장은 말이 끝난 문장이어야 하고, skip 뒤
-  문장은 "그래서/그런데/그러니까"로 시작하지 않아야 한다. 각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는
-  뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초 이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다.
-  {hard_max_sec:.0f}초 이내 컷에도 죽은 구간(슬라이드 설명·반복)이 있으면 skip으로 빼라 — 단 빼는 게 억지스러우면 안 빼는 게 낫다.
+- **skip(점프컷) — 재미없는 부분을 도려내는 핵심 기능**: 잘 되는 채널의 상위 쇼츠를 원본 설교와 대조해 보면
+  18/26개가 이렇게 만들어졌다. 원본 80~520초에서 **중간을 여러 군데 들어내** 60초 안팎으로 압축한다(남기는 비율
+  중앙값 66%, 이음새는 한 클립에 1~7곳). 그러니 길어서 어쩔 수 없을 때만 쓰지 말고, **처음부터 밀도를 올리는
+  도구로 써라.** 빼야 할 것: 같은 말 반복, 곁길·부연("이거는 사실 ~만이 목적이 아니라"), 슬라이드 넘기기,
+  수치·연도 나열, 늘어지는 설명. 남길 것: 상황 제시 → 대사·장면 → 반전 → 착지 명제.
+  **절대 조건은 '누가 봐도 짜깁기한 티가 나지 않고, 의미·맥락이 자연스럽게 이어질 것'이다.** 실측으로 확인된 기준:
+   (1) skip 바로 **앞 문장은 말이 끝난 문장**이어야 한다(쉼표·"~하는데"로 끝나면 안 됨). 실제 이음새 39곳 전부가 지켰다.
+   (2) 이어붙인 **뒤 문장이 가리키는 대상이 남은 내용 안에 있어야** 한다. "그 사장님이…"라고 이어지는데 사장님이
+       소개된 문장을 빼 버리면 안 된다. 이게 '어색한 짜깁기'의 진짜 원인이다.
+   (3) 뒤 문장이 "그런데/근데/그래서"로 시작하는 건 **괜찮다** — 실제 이음새의 21%가 그 모양이고 자연스럽다.
+       다만 "둘째,/세 번째로"처럼 앞 항목을 전제하는 순서 표지로 이어지면 안 된다.
+   (4) 대사·반전은 앞뒤를 붙여서 통으로 남겨라. 빼면 웃음이나 반전이 죽는다.
+  각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는 뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초
+  이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다. {hard_max_sec:.0f}초 이내 컷에도 늘어지는 구간이 있으면 빼서
+  밀도를 올려라 — 단 위 4개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
 - 길이(skip 제외 후): 40~60초 목표, 온전한 이야기·크레센도는 {hard_max_sec:.0f}초까지. 설정 없이 명제 한 문장만 뗀 15~20초 조각은
   미달(크레센도+축복 착지가 붙은 25초부터 허용).
 - 한 컷 = 한 명제. 컷끼리 같은 예화·같은 문장을 반복하지 마라(겹치면 더 강한 쪽 하나만). 단, 이 규칙은 "다른 주제를
@@ -448,19 +456,54 @@ def _clip_skips(skips: list[tuple[int, int]], start: int, end: int) -> list[tupl
     return out
 
 
+# 이음새 판정 규칙은 **실제로 터진 쇼츠의 이음새 39곳**(정답지 26개 중 점프컷 18개)을 대조해 정한 것이다
+# (2026-09-22). 사용자 요구: "누가 봐도 짜깁기해서 어색하게 잘리면 안 되고, 의미·맥락상 자연스럽게 이어져야 한다."
+#   · 앞 문장 완결: 실제 이음새 39곳 전부가 지킴(위반 0) → 엄격히 유지.
+#   · 지시어가 가리키는 대상이 남은 내용 안에 있을 것: 37/39가 지킴 → 이게 '어색한 짜깁기'의 진짜 신호다.
+#   · 뒤 문장이 접속어면 무조건 금지: **틀린 규칙이었다.** 실제 이음새 8곳(21%)이 "그런데/근데/그래서/자,"로
+#     시작하는데 전부 자연스럽다 — 접속어가 가리키는 건 잘려나간 부분이 아니라 '남아 있는 앞 문장'이기 때문.
+#     그래서 접속어 금지는 없애고, 대상이 사라지는 경우만 막는다.
+#   · 순서 표지(둘째/셋째)는 앞 항목이 잘리면 말이 안 되므로 계속 금지("자,"·"그러면"은 담화 표지라 허용).
+_ORDINAL_START = re.compile(r"^(둘째|셋째|넷째|다섯째|두\s*번째|세\s*번째|네\s*번째|다음으로|마지막으로)[,\s]")
+# "그 놀라운 능력이" — 지시어 + 명사. "그거/이게" 같은 대명사는 명사가 없어 대상 대조를 못 하므로 제외한다.
+_DEMONSTRATIVE_REF = re.compile(r"^(?:>>\s*)?(이|그|저)\s+(\S{2,})")
+_PARTICLE_TAIL = re.compile(r"(은|는|이|가|을|를|에|에서|의|도|만|과|와|로|으로|께서|한테|에게|이나|나)$")
+# "그 아십니까" 처럼 지시어가 대상을 가리키지 않는 관용 표현(실제 이음새에서 오탐이던 것).
+_DEMONSTRATIVE_IDIOM = re.compile(r"^(?:>>\s*)?(이|그|저)\s+(아십니까|아세요|뭐냐|뭡니까|누구|왜|어떻게)")
+
+
+def _seam_problem(before: Sentence, after: Sentence, kept_before: str) -> str:
+    """이음새(앞 문장 → 잘라낸 뒤 이어지는 문장)가 어색하면 이유를, 자연스러우면 빈 문자열을 돌려준다."""
+    bt, at = before.text.strip(), after.text.strip()
+    if _is_incomplete(bt) and not bt.endswith("?"):
+        return f"앞 문장이 안 끝남('…{bt[-12:]}')"
+    if _FILLER_ONLY.match(at):
+        return f"뒤 문장이 추임새뿐('{at[:10]}')"
+    if _ORDINAL_START.match(at):
+        return f"뒤 문장이 순서 표지('{at[:10]}') — 앞 항목이 잘리면 말이 안 된다"
+    m = _DEMONSTRATIVE_REF.match(at)
+    if m and not _DEMONSTRATIVE_IDIOM.match(at):
+        noun = _PARTICLE_TAIL.sub("", m.group(2))
+        if len(noun) >= 2 and noun not in kept_before:
+            return f"뒤 문장이 잘려나간 대상을 가리킴('{m.group(0)}')"
+    return ""
+
+
 def _sanitize_skips(
     skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int, core: int, log: list[str],
 ) -> list[tuple[int, int]]:
-    """자연스럽지 않은 skip은 버린다: 핵심 문장을 품음 / 앞 문장이 말이 안 끝남 / 뒤 문장이 접속어로 시작."""
+    """자연스럽지 않은 skip은 버린다(위 규칙). 앞쪽 skip부터 차례로 확정하며, '남은 내용'은 그때까지
+    확정된 skip을 뺀 텍스트로 계산한다 — 그래야 지시어의 대상이 실제로 남아 있는지 정확히 본다."""
     out: list[tuple[int, int]] = []
     for a, b in _clip_skips(skips, start, end):
         if a <= core <= b:
             log.append(f"skip S{a}~S{b} 핵심 문장 포함 → 무시"); continue
-        before, after = sentences[a - 1], sentences[b + 1]
-        if _is_incomplete(before.text) and not before.text.strip().endswith("?"):
-            log.append(f"skip S{a}~S{b} 앞 문장 미완('{before.text[-12:]}') → 무시"); continue
-        if _CONNECTOR_START.match(after.text.strip()) or _FILLER_PREFIX.match(after.text.strip()):
-            log.append(f"skip S{a}~S{b} 뒤 문장 접속어 시작('{after.text[:12]}') → 무시"); continue
+        kept_before = " ".join(
+            s.text for i0, i1 in kept_runs(start, a - 1, out) for s in sentences[i0: i1 + 1]
+        )
+        why = _seam_problem(sentences[a - 1], sentences[b + 1], kept_before)
+        if why:
+            log.append(f"skip S{a}~S{b} {why} → 무시"); continue
         out.append((a, b))
     return _merge_ranges(out)
 

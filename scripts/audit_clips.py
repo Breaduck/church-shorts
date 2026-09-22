@@ -22,6 +22,7 @@ from src.main import load_config  # noqa: E402
 from src.sermon_cut import (  # noqa: E402
     _BIBLE_NAME_RE,
     _CONNECTOR_START,
+    _seam_problem,
     _FILLER_ONLY,
     _eff_dur,
     _is_incomplete,
@@ -102,11 +103,13 @@ def audit() -> int:
                 for prev, nxt in zip(runs, runs[1:]):
                     seams += 1
                     before, after = sents[prev[1]], sents[nxt[0]]
-                    # 물음표로 끝나고 점프하는 건 '질문 → 답'이라 오히려 자연스럽다(_sanitize_skips와 같은 예외).
-                    if _is_incomplete(before.text) and not before.text.strip().endswith("?"):
-                        flag("이음새: 앞 문장이 안 끝남", f"{tag}: …{before.text[-28:]} || {after.text[:28]}…")
-                    if _CONNECTOR_START.match(after.text.strip()):
-                        flag("이음새: 뒤 문장이 접속어", f"{tag}: …{before.text[-28:]} || {after.text[:28]}…")
+                    # 선정과 똑같은 판정을 쓴다(_seam_problem) — 실제로 터진 쇼츠의 이음새 39곳으로 검증한 규칙.
+                    kept_before = " ".join(
+                        x.text for i0, i1 in runs if i1 <= prev[1] for x in sents[i0: i1 + 1]
+                    )
+                    why = _seam_problem(before, after, kept_before)
+                    if why:
+                        flag("이음새 부자연", f"{tag}: …{before.text[-26:]} || {after.text[:26]}… ({why})")
                 # 4) 끝
                 if _is_incomplete(sents[c["end"]].text):
                     flag("끝 문장이 미완", f"{tag}: …{sents[c['end']].text[-40:]}")
