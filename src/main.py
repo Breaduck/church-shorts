@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import re
 import json
 import shutil
 import sys
@@ -1448,6 +1449,8 @@ def analyze(
                     "찬양 곡을 찾지 못했습니다. 영상에 찬양이 없거나 전사본에 가사가 거의 "
                     "안 잡혔을 수 있어요(자동자막 없는 실황은 직접 전사라 시간이 걸립니다)."
                 )
+            # 성가대 곡을 후보 목록 맨 위로(사용자 요청 2026-09-23). 나머지는 시간순 유지(안정 정렬).
+            clips.sort(key=lambda c: 0 if c.appeal == "성가대" else 1)
             # 업로드 영상(화면에 가사 슬라이드 없음)은 가사 자막을 넣는다. whisper의 노래
             # 오인식("만유의"→"마녀의" 실측)을 그대로 구울 수 없으므로, 모델이 아는 정식
             # 가사로 교정해 caption_overrides(WYSIWYG 자막)로 확정한다.
@@ -1456,16 +1459,28 @@ def analyze(
             # 깨져 교정이 사실상 안 먹혔다("자막 정확도 너무 안좋음" 실신고). 이제 whisper
             # 줄 구조와 무관하게 교정 텍스트를 문자 수 비례로 시간 배분한다.
             # 교정 실패(호출 자체 오류)는 치명적이지 않다 — 원문(whisper) 폴백으로 자막은 나온다.
-            if dl_local:
+            # 2026-09-23 버그 수정: 예전엔 dl_local(업로드)일 때만 가사 자막을 넣어, 유튜브
+            # 실황의 성가대 곡은 자막이 0줄이었다("성가대 거는 자동 자막 왜 안 되니" 실신고,
+            # 실측 9bFqbWVk9-A·UaYFEVqGVFo 둘 다 성가대 곡 caption_overrides 0개). 회중 찬양은
+            # 교회 화면에 가사 슬라이드가 있지만 성가대·특송은 대개 없으므로 이 둘은 유튜브
+            # 링크여도 자막을 넣는다. 유튜브 자동자막의 [음악]·[노래]·'>>' 표기는 걷어낸다.
+            needs_caption = [
+                dl_local or c.appeal in ("성가대", "특송") for c in clips
+            ]
+            if any(needs_caption):
                 sp.message("가사 자막을 정식 가사로 교정하는 중...")
                 try:
+                    def _clean_lyric(t: str) -> str:
+                        t = re.sub(r"\[[^\]]*\]|>>", " ", t or "")
+                        return re.sub(r"\s+", " ", t).strip()
+
                     seg_lines: list[list[dict]] = []
-                    for c in clips:
+                    for ci, c in enumerate(clips):
                         seg_lines.append([
-                            {"start": s.start, "end": min(s.end, c.end), "text": (s.text or "").strip()}
+                            {"start": s.start, "end": min(s.end, c.end), "text": _clean_lyric(s.text)}
                             for s in transcript.segments
-                            if s.start >= c.start - 0.5 and s.start < c.end and (s.text or "").strip()
-                        ])
+                            if s.start >= c.start - 0.5 and s.start < c.end and _clean_lyric(s.text)
+                        ] if needs_caption[ci] else [])
                     req = [
                         {"index": ci, "title": c.title, "raw_text": " ".join(l["text"] for l in seg_lines[ci])}
                         for ci, c in enumerate(clips) if seg_lines[ci]
@@ -1499,6 +1514,12 @@ def analyze(
             # 업로드 찬양: 싱크 맞추기가 즉시 되도록 타이밍 전사를 백그라운드로 예열.
             if dl_local:
                 _prewarm_praise_sync_cache(dl.video_path, video_dir, clips, cfg)
+            else:
+                # 유튜브 링크의 성가대·특송: 자동자막 시각은 대략적이라 영상 다운로드가 끝나면
+                # 노래 속도 정밀 싱크를 백그라운드로 돌린다(실패하면 글자 수 비례 자막 유지).
+                sync_targets = [c for c in clips if c.caption_overrides]
+                if sync_targets:
+                    _sync_praise_clips_bg(dl.video_path, video_dir, sync_targets, cfg, video_id=dl.video_id)
             sp.finish(f"완료: 찬양 {len(clips)}곡 감지")
             return video_dir, clips
 

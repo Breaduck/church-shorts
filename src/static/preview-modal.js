@@ -1209,7 +1209,7 @@
       C.start = outS; C.end = outE;
       capsDirty = false;
       const card = document.getElementById('cand-' + idx);
-      if (card) { const h = card.querySelector('h3.title'); if (h) h.textContent = chosenTitle; }
+      if (card) { const h = card.querySelector('h3.title'); if (h) h.textContent = (h.dataset.prefix || '') + chosenTitle; }
       return true;
     }
     const saveBtn = $('.pv-savebtn');

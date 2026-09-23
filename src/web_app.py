@@ -279,7 +279,8 @@ CANDIDATES_TEMPLATE = f"""
         <span class="pick-label">만들기</span>
       </label>
     </div>
-    <h3 class="title">{{{{ c.title }}}}</h3>
+    {{% set choir = (c.clip_type == 'praise' and c.appeal == '성가대') %}}
+    <h3 class="title"{{% if choir %}} data-prefix="[성가대] "{{% endif %}}>{{% if choir %}}[성가대] {{% endif %}}{{{{ c.title }}}}</h3>
     {{# 캡션·해시태그·추천 이유는 기본으로 접어 화면을 조용하게 유지한다(제목이 주인공). #}}
     <div class="cand-foot">
       <button type="button" class="reason-toggle" aria-expanded="false">상세 보기 <span class="chev">▾</span></button>
@@ -966,7 +967,7 @@ def video_detail(video_id: str):
     clips_summary = [
         {
             "idx": i,
-            "title": c.title,
+            "title": ("[성가대] " if (c.clip_type == "praise" and c.appeal == "성가대") else "") + c.title,
             "rendered": bool(c.rendered),
             "youtube_id": c.youtube_id or "",
         }
