@@ -11,7 +11,9 @@
   - 통합 score = core와 viral의 **가중 기하평균** → 한 축이라도 낮으면 확 떨어진다(곱셈적).
     지수 합이 1이라 "둘 다 8이면 80, 둘 다 9면 90"처럼 직관과도 맞는다.
   - viral은 세부 축의 가중합이되, **hook이 낮으면 관문(gate)으로 통째로 깎는다**
-    (첫 2초가 죽은 클립은 나머지가 아무리 좋아도 쇼츠에선 사망하기 때문).
+    (첫 2초가 죽은 클립은 나머지가 아무리 좋아도 쇼츠에선 사망하기 때문). 단 이 관문은 hook 4 미만에만,
+    그것도 관문 지점에서 0부터 시작하는 **연속** 감점으로 건다 — 상시 감점이 되면 hook 1점 차이가
+    총점을 좌우해 나머지 축이 무의미해진다.
 """
 from __future__ import annotations
 
@@ -32,8 +34,16 @@ VIRAL_WEIGHTS: dict[str, float] = {
 CORE_EXPONENT = 0.45
 VIRAL_EXPONENT = 0.55
 
-# hook 관문: 이 값 미만이면 viral 본문을 (hook/기준) 비율로 통째 깎는다.
-HOOK_GATE_THRESHOLD = 6.0
+# hook 관문: 이 값 "미만"일 때만 viral 본문을 추가로 깎는다(=진짜 죽은 훅).
+# 6.0 → 4.0 (2026-09-23 실측 재보정): 모델이 매기는 hook의 중앙값이 6이라 6 기준에서는
+# 실측 54클립 중 41%(최근 설교는 65%)가 관문에 걸렸다. "예외적 사망 판정"이 상시 감점이 돼
+# hook 5→6 한 칸이 총점 9점, 6→8 두 칸이 3점인 계단 절벽을 만들었다.
+HOOK_GATE_THRESHOLD = 4.0
+
+# 관문에 걸렸을 때 hook=1에서 깎는 최대 비율. 관문 지점(=THRESHOLD)에서는 0이라 **연속**이다
+# (예전엔 hook/6 곱이라 5.99→6.0 사이에 점프가 있었다). hook은 이미 가중치 0.30으로
+# 본문에 들어가 있으므로 여기서는 '치명타' 몫만 추가한다.
+HOOK_GATE_MAX_PENALTY = 0.35
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -51,8 +61,8 @@ def compute_viral_score(subscores: dict) -> float:
 
     hook = _clamp(float(subscores.get("hook", 5) or 5), 1.0, 10.0)
     if hook < HOOK_GATE_THRESHOLD:
-        # 죽은 훅 관문: hook=3이면 절반으로, hook=1이면 1/6로 깎인다.
-        body *= hook / HOOK_GATE_THRESHOLD
+        # 죽은 훅 관문(연속): hook=4에서 1.0, hook=1에서 0.65로 선형으로 내려간다.
+        body *= 1.0 - HOOK_GATE_MAX_PENALTY * (HOOK_GATE_THRESHOLD - hook) / (HOOK_GATE_THRESHOLD - 1.0)
 
     return round(_clamp(body, 1.0, 10.0), 2)
 

@@ -19,12 +19,31 @@ class CaptionLine:
     words: list[Word]  # 원본(절대 시간) 단어 타임스탬프 그대로 보관
 
 
+# 비언어 표기 토큰: [한숨] [콧방귀] [웃음] [박수] [음악] (웃음) ♪ 등.
+# 전사기(유튜브 자동자막·whisper)가 소리 묘사를 이렇게 끼워 넣는데, 이건 '들리는 말'이 아니라
+# 자막에 그대로 구워지면 안 된다(2026-09-23 신고). 대괄호는 한국어 설교 대사에 쓸 일이 없어
+# 내용을 가리지 않고 통째로 걷어낸다. 소괄호는 뜻 있는 말에도 쓰이므로 '알려진 소리 묘사'만 뺀다.
+_MULTISPACE = re.compile(r"\s{2,}")
+_NONSPEECH_BRACKET = re.compile(r"\[[^\]]*\]")
+_NONSPEECH_PAREN = re.compile(
+    r"\((?:한숨|콧방귀|웃음|웃음소리|박수|박수 ?소리|음악|노래|기침|헛기침|침묵|환호|울음|흐느낌)\)"
+)
+
+
 def _clean_word_text(text: str) -> str:
-    """유튜브 자동자막의 화자 표시(>>)나 잡토큰을 자막에서 걷어낸다.
-    (정밀 재전사 실패로 원본 자동자막으로 폴백할 때 '>> 우리의…'처럼 노출되던 문제 방지.)"""
+    """유튜브 자동자막의 화자 표시(>>)·비언어 표기([한숨]·[웃음]…)를 자막에서 걷어낸다.
+    (정밀 재전사 실패로 원본 자동자막으로 폴백할 때 '>> 우리의…'처럼 노출되던 문제 방지.)
+    토큰 전체가 비언어 표기면 빈 문자열이 되어 호출부에서 그 단어 자체가 버려진다."""
     t = text.strip()
     while t.startswith(">"):
         t = t[1:].strip()
+    t = t.replace("♪", " ").replace("♫", " ")  # ♪ ♫
+    t = _NONSPEECH_BRACKET.sub(" ", t)
+    t = _NONSPEECH_PAREN.sub(" ", t)
+    t = _MULTISPACE.sub(" ", t).strip()
+    # 표기만 빼고 남은 문장부호 쪼가리("," ".")는 자막에서 의미가 없다.
+    if t and not any(ch.isalnum() for ch in t):
+        return ""
     return t
 
 

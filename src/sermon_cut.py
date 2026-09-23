@@ -1091,8 +1091,15 @@ def select_highlights_v2(
         r = scored.get(i, {})
         core_line = sentences[c["core"]].text
         clip_start, hook_text = trim_lead_words(s)  # "그래서 베드로가…" → "베드로가…"부터
-        computed = compute_scores(r if r else {"core_score": 6, "hook": 6, "retention": 6, "emotion": 6,
-                                               "relatability": 6, "payoff": 6, "quotability": 6})
+        # 2차 채점이 실패/누락된 클립: 예전엔 전 축 6점(=60점)으로 채웠는데, 정직하게 채점된
+        # 클립 상당수가 60점 미만이라 **채점 못 한 클립이 2~3위로 올라가는 순위 역전**이 났다
+        # (main.py가 score 내림차순으로 정렬). 이제 명시적으로 바닥 점수를 주고 맨 뒤로 보낸다.
+        if r:
+            computed = compute_scores(r)
+        else:
+            computed = compute_scores({"core_score": 1, "hook": 1, "retention": 1, "emotion": 1,
+                                       "relatability": 1, "payoff": 1, "quotability": 1})
+            print(f"[v2] 클립 {i} 채점 결과 없음 — 최하위로 보냄", flush=True)
         if c.get("polemic") or c.get("bible_story"):
             # 후보 부족으로 살려 둔 타자 비판/성경 인물 이야기 컷: 점수 상한을 걸어 항상 맨 아래
             computed["score"] = min(int(computed["score"]), 30)

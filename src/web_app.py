@@ -130,10 +130,13 @@ CANDIDATES_TEMPLATE = f"""
   /* 등급 기준 재보정(2026-09-22): 채점 프롬프트가 "8=잘 되는 채널 상위 클립 수준, 9~10=채널 1위감(드묾)"이라
      현실적인 상단이 70~80점인데, 기준이 90/85/80이라 실측 61개 중 54개(89%)가 '참고'로 표시됐다 —
      좋은 클립도 전부 나쁘게 읽혔다. 두 축이 8이면 80, 7이면 70이 되는 공식(scoring.py)에 맞춰 다시 잡는다. */
-  .score-badge.tier-top {{ background: #fff4e5; color: #c2620c; }}       /* 78점 이상: 최상(두 축 ~8) */
-  .score-badge.tier-high {{ background: #e7f7ec; color: #1a7f37; }}      /* 68점 이상: 추천(두 축 ~7) */
-  .score-badge.tier-ok {{ background: #eaf1ff; color: #2563eb; }}        /* 58점 이상: 후보(두 축 ~6) */
-  .score-badge.tier-low {{ background: #f1f3f5; color: #868e96; }}       /* 58점 미만: 참고용 */
+  /* 경계는 실측 분포의 분위수로 잡는다(2026-09-23 재보정, 54클립 기준 대략 상위 15/45/75%).
+     예전 78/68/58은 "전 축 평균 7.8/6.8/5.8"을 요구했는데 프롬프트는 8점을 "드물게" 쓰라고
+     지시해서, 최근 설교 17클립 중 최상(78+)이 0개·절반이 참고로 몰렸다. */
+  .score-badge.tier-top {{ background: #fff4e5; color: #c2620c; }}       /* 73점 이상: 최상(상위 15%) */
+  .score-badge.tier-high {{ background: #e7f7ec; color: #1a7f37; }}      /* 63점 이상: 추천(상위 45%) */
+  .score-badge.tier-ok {{ background: #eaf1ff; color: #2563eb; }}        /* 53점 이상: 후보 */
+  .score-badge.tier-low {{ background: #f1f3f5; color: #868e96; }}       /* 53점 미만: 참고용 */
   .dur {{ font-size: 12.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }}
   .pick {{
     display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; flex-shrink: 0;
@@ -266,7 +269,7 @@ CANDIDATES_TEMPLATE = f"""
         <span class="rank">{{% if loop.index == 1 %}}TOP{{% else %}}{{{{ loop.index }}}}위{{% endif %}}</span>
         {{% if c.score is not none %}}
         <span class="dot-sep"></span>
-        <span class="score-badge {{% if c.score >= 78 %}}tier-top{{% elif c.score >= 68 %}}tier-high{{% elif c.score >= 58 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 78 %}} · 최상{{% elif c.score >= 68 %}} · 추천{{% elif c.score < 58 %}} · 참고{{% endif %}}</span>
+        <span class="score-badge {{% if c.score >= 73 %}}tier-top{{% elif c.score >= 63 %}}tier-high{{% elif c.score >= 53 %}}tier-ok{{% else %}}tier-low{{% endif %}}">{{{{ "%.0f"|format(c.score) }}}}점{{% if c.score >= 73 %}} · 최상{{% elif c.score >= 63 %}} · 추천{{% elif c.score < 53 %}} · 참고{{% endif %}}</span>
         {{% endif %}}
         <span class="dot-sep"></span>
         <span class="dur">{{{{ "%.0f"|format(c.duration_sec) }}}}초</span>{{% if c.keep_ranges and c.keep_ranges|length > 1 %}}<span class="dot-sep"></span><span class="dur" title="중간을 들어낸 점프컷 클립">점프컷 {{{{ c.keep_ranges|length }}}}조각</span>{{% endif %}}
@@ -1475,7 +1478,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
-    from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
+    from src.captions import (
+        _clean_word_text, _collect_words_in_range, _display_text, chunk_words_into_lines,
+    )
 
     # 유튜브 실황의 찬양 클립은 가사 자막을 넣지 않는다(화면에 교회 가사 슬라이드가 이미
     # 있음) — 편집기에도 초안을 채우지 않는다. 단, 직접 찍어 업로드한 영상(upload_*)은
@@ -1486,7 +1491,10 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     def _strip_trailing_dots(text: str) -> str:
         # 실제 렌더(_karaoke_text)는 단어별로 끝 마침표를 뗀다. 편집기 미리보기도 같은
         # 규칙을 적용해야 "화면엔 있는데 실제 영상엔 없는" 불일치가 안 생긴다.
-        return " ".join(_display_text(w) for w in text.split())
+        # 비언어 표기([한숨]·[웃음]…)도 렌더가 걷어내므로 여기서도 같이 걷어낸다 —
+        # 이미 저장된 caption_overrides에 박혀 있는 경우까지 덮는다(2026-09-23).
+        cleaned = _clean_word_text(text)
+        return " ".join(_display_text(w) for w in cleaned.split())
 
     if getattr(clip, "caption_overrides", None):
         # 시간순 정렬해서 보여준다 — 저장 순서가 어긋나 있으면(과거 자동자막 초안 오염 등)
@@ -1498,6 +1506,8 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
             }
             for o in clip.caption_overrides
         ]
+        # 통째로 비언어 표기였던 줄은 빈 줄이 되므로 목록에서 뺀다(빈 자막 칸이 남지 않게).
+        rows = [r for r in rows if r["text"].strip()]
         return _split_long_caption_lines(
             video_id, clip, cfg, sorted(rows, key=lambda r: r["start"]),
         )
