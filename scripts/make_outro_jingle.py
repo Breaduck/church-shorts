@@ -283,10 +283,157 @@ def hook_brass() -> Path: return hook_as("brass")
 def hook_uke() -> Path: return hook_as("uke", 0.1)
 
 
+# ── 4차(2026-09-27): "피아노가 전자피아노 같다 — 그랜드 피아노로, 현악기·하프·오르간도, 교회에 어울리게" ──
+# 전자피아노처럼 들린 이유: 배음이 8개뿐이고 줄 1가닥·단일 감쇠라 소리가 얇고 '뿅' 했다. 그랜드는
+# 한 음에 줄 3가닥(미세하게 어긋나 맥놀이), 배음 수십 개(현의 강성으로 조금씩 높아짐), 타현 위치에 따른
+# 배음 빗살, '빠른 감쇠 + 긴 잔향음' 2단 감쇠, 해머 타격음, 페달을 밟아 울림이 이어지는 게 핵심이다.
+from scipy.signal import lfilter  # noqa: E402
+
+
+def hall(x: np.ndarray, seconds: float, wet: float, dark: float = 0.6, seed: int = 11) -> tuple[np.ndarray, np.ndarray]:
+    """교회당처럼 길고 어두운 잔향(고음이 먼저 사라지게 저역 통과한 노이즈 임펄스, 좌우 따로)."""
+    rng = np.random.default_rng(seed)
+    n = int(SR * seconds)
+    t = np.arange(n) / SR
+    chans = []
+    for _ in range(2):
+        ir = rng.standard_normal(n) * np.exp(-t * (6.9 / seconds))
+        ir = lfilter([1 - dark], [1, -dark], ir)
+        ir[: int(SR * 0.012)] = 0  # 첫 반사 전 짧은 틈 → 공간감
+        ir /= np.sqrt(np.sum(ir ** 2))
+        chans.append((1 - wet) * x + wet * fftconvolve(x, ir)[: len(x)])
+    return chans[0], chans[1]
+
+
+def grand(freq: float, start: float, vel: float = 0.8) -> np.ndarray:
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = len(out) - n0
+    t = np.arange(n) / SR
+    B = 0.00025 * (freq / 261.6) ** 0.5          # 현의 강성(배음이 조금씩 높아짐)
+    kmax = int(min(48, (SR * 0.45) / freq))
+    k = np.arange(1, kmax + 1)
+    comb = np.abs(np.sin(np.pi * k / 7.3))      # 해머가 현 길이 1/7 지점을 침 → 7번째 배음 부근이 약해짐
+    tilt = (1 / k ** 0.85) * np.exp(-k * (0.09 / vel))
+    amps = comb * tilt
+    sig = np.zeros(n)
+    for det in (-0.7, 0.0, 0.8):                # 줄 3가닥, 센트 단위로 어긋남 → 맥놀이
+        fk = freq * k * np.sqrt(1 + B * k * k) * 2 ** (det / 1200)
+        for kk in range(kmax):
+            if fk[kk] > SR * 0.47:
+                break
+            fast = np.exp(-t * (2.2 + 0.55 * kk))
+            slow = np.exp(-t * (0.35 + 0.09 * kk))
+            sig += amps[kk] * np.sin(2 * np.pi * fk[kk] * t + det) * (0.6 * fast + 0.4 * slow)
+    rng = np.random.default_rng(int(freq * 10))
+    knock = lfilter([0.15], [1, -0.85], rng.standard_normal(n)) * np.exp(-t * 60) * 0.35
+    sig = (sig / 3 + knock) * np.minimum(1, t / 0.0015) * vel
+    out[n0:] = sig
+    return out
+
+
+def hook_grand() -> Path:
+    """그랜드 피아노(페달 밟은 채로) + 착지에 왼손 화음."""
+    # 착지에서 페달을 갈아 밟는다: 앞 세 음은 착지 직후 댐퍼로 잦아들게(라와 솔이 겹쳐 탁해지지 않게)
+    repedal = np.ones(int(SR * DUR))
+    r0 = int(SR * 0.47)
+    repedal[r0:] = np.exp(-np.arange(len(repedal) - r0) / SR / 0.07)
+    x = sum(grand(hz(n), s, 0.75) for n, s, _l in HOOK_NOTES[:3]) * repedal + grand(hz("G5"), 0.44, 0.9)
+    x = x + grand(hz("C3"), 0.44, 0.55) + grand(hz("G3"), 0.44, 0.45) + grand(hz("E4"), 0.44, 0.4)
+    return finish(*hall(x, 1.8, 0.22, dark=0.5), "hook_grand")
+
+
+def bowed(freq: float, start: float, length: float, voices: int = 6, attack: float = 0.06) -> np.ndarray:
+    """현악 합주: 톱니파 여러 대를 미세하게 어긋나게(합주의 두께) + 비브라토 + 부드러운 어택."""
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = min(int(SR * length), len(out) - n0)
+    t = np.arange(n) / SR
+    rng = np.random.default_rng(int(freq))
+    sig = np.zeros(n)
+    for v in range(voices):
+        det = rng.uniform(-9, 9)
+        vib = 1 + 0.004 * np.sin(2 * np.pi * rng.uniform(4.8, 6.0) * t + rng.uniform(0, 6)) * np.minimum(1, t / 0.25)
+        ph = 2 * np.pi * np.cumsum(freq * 2 ** (det / 1200) * vib) / SR
+        for k in range(1, 16):
+            sig += np.sin(k * ph) / k * np.exp(-k * 0.12)
+    sig *= _env(n, attack, 0.25) / voices
+    out[n0:n0 + n] = sig
+    return out
+
+
+def pizz(freq: float, start: float) -> np.ndarray:
+    """피치카토(현을 손가락으로 튕김): 둥근 플럭."""
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = min(int(SR * 0.6), len(out) - n0)
+    t = np.arange(n) / SR
+    sig = sum(np.sin(2 * np.pi * freq * k * t) / k ** 1.4 * np.exp(-t * (7 + 3 * k)) for k in range(1, 8))
+    out[n0:n0 + n] = sig * np.minimum(1, t / 0.003)
+    return out
+
+
+def hook_strings() -> Path:
+    """앞 세 음은 피치카토로 톡톡, 마지막 솔은 현악 합주가 화음으로 길게 받친다."""
+    x = sum(pizz(hz(n), s) * 0.8 for n, s, _l in HOOK_NOTES[:3])
+    for nn, amp in (("G5", 0.9), ("E5", 0.5), ("C5", 0.5), ("C4", 0.55), ("G3", 0.35)):
+        x = x + bowed(hz(nn), 0.40, 1.5, attack=0.07) * amp
+    return finish(*hall(x, 1.8, 0.28), "hook_strings")
+
+
+def harp_note(freq: float, start: float, amp: float = 1.0) -> np.ndarray:
+    """하프: 부드럽게 튕긴(저역 통과한) 들뜸 + 손실 적은 카플러스-스트롱 → 길고 둥근 울림."""
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = len(out) - n0
+    period = max(2, int(round(SR / freq)))
+    rng = np.random.default_rng(int(freq))
+    buf = lfilter([0.5], [1, -0.5], rng.uniform(-1, 1, period))
+    sig = np.empty(n)
+    for i in range(n):
+        j = i % period
+        sig[i] = buf[j]
+        buf[j] = 0.5 * (buf[j] + buf[(j + 1) % period]) * 0.9985
+    out[n0:] = sig * amp
+    return out
+
+
+def hook_harp() -> Path:
+    """하프로 4음 + 착지에서 아래로부터 화음을 굴려(아르페지오) 펼친다."""
+    x = sum(harp_note(hz(n), s, 0.8 if i < 3 else 1.0) for i, (n, s, _l) in enumerate(HOOK_NOTES))
+    for j, nn in enumerate(["C3", "G3", "C4", "E4"]):
+        x = x + harp_note(hz(nn), 0.44 + j * 0.035, 0.45)
+    return finish(*hall(x, 1.6, 0.25), "hook_harp")
+
+
+def pipe(freq: float, start: float, length: float) -> np.ndarray:
+    """파이프오르간: 8'·4'·2⅔'·2' 스톱 + 공기 '칙'(chiff) 어택, 음이 줄지 않음."""
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = min(int(SR * length), len(out) - n0)
+    t = np.arange(n) / SR
+    sig = np.zeros(n)
+    for mult, amp in ((1, 1.0), (2, 0.55), (3, 0.28), (4, 0.3), (6, 0.1), (8, 0.08)):
+        sig += amp * np.sin(2 * np.pi * freq * mult * t * (1 + 0.0003 * mult))
+    chiff = lfilter([0.3], [1, -0.6], np.random.default_rng(int(freq)).standard_normal(n)) * np.exp(-t * 45) * 0.25
+    sig = (sig + chiff) * _env(n, 0.03, 0.09)
+    out[n0:n0 + n] = sig
+    return out
+
+
+def hook_organ() -> Path:
+    """교회 파이프오르간 — 넓은 예배당 잔향 속에서 4음, 착지 화음은 페달 저음까지."""
+    x = sum(pipe(hz(n), s, (l + 0.02) if i < 3 else 1.4) * 0.5 for i, (n, s, l) in enumerate(HOOK_NOTES))
+    for nn, amp in (("C5", 0.3), ("E4", 0.28), ("C4", 0.3), ("C3", 0.35), ("C2", 0.3)):
+        x = x + pipe(hz(nn), 0.44, 1.4) * amp
+    return finish(*hall(x, 2.6, 0.38, dark=0.7), "hook_organ")
+
+
 if __name__ == "__main__":
     import sys
 
     fns = {f.__name__: f for f in (chime, warm, amen, pop, bounce, spark, hook,
-                                   hook_piano, hook_glock, hook_synth, hook_flute, hook_brass, hook_uke)}
+                                   hook_piano, hook_glock, hook_synth, hook_flute, hook_brass, hook_uke,
+                                   hook_grand, hook_strings, hook_harp, hook_organ)}
     for name in (sys.argv[1:] or fns):
         print(fns[name]())
