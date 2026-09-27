@@ -731,3 +731,16 @@ def test_bible_filter_uses_hook_not_model_summary() -> None:
     assert bible_story_reason(
         {"core": 4, "start": 0, "end": 4, "scene": "요나 이야기", "thesis": "요나처럼"}, support
     ) == ""
+
+
+def test_enumeration_detection_mid_sentence_and_noun_modifiers():
+    """나열형 교훈(2026-09-27): 1번은 문장 중간에서 나오는 게 보통, '둘째 아들'·'세 번째 주일'은 나열이 아니다."""
+    from src.sermon_cut import Sentence, _enum_number, find_enumerations
+
+    assert _enum_number("성령이 오시면 첫째 권능을 받아요.") == 1
+    assert _enum_number("자, 둘째로 우리는") == 2
+    assert _enum_number("둘째 아들이 돌아왔습니다") == 0
+    assert _enum_number("오늘 9월 세 번째 주일이며") == 0
+    texts = ["오늘 세 가지로 말씀합니다 첫째는 겸손입니다.", "예화", "두 번째는 온유입니다.", "예화", "세 번째는 사랑입니다."]
+    ss = [Sentence(idx=i, start=i * 60.0, end=i * 60.0 + 5, text=t, words=[]) for i, t in enumerate(texts)]
+    assert find_enumerations(ss) == [([0, 2, 4], True)]

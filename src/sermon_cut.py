@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from src.highlights import Clip, _invoke_claude_json
+from src.highlights import Clip, QuotaExceededError, _invoke_claude_json
 from src.scoring import compute_scores
 from src.transcribe import Transcript
 
@@ -974,6 +974,266 @@ def cut_keep_ranges(cut: dict, sentences: list[Sentence]) -> list[list[float]]:
 
 
 # ---------------------------------------------------------------------------
+# 4-1. 나열형 교훈(첫째·둘째·셋째) 전용 컷
+# ---------------------------------------------------------------------------
+# 사용자 요구(2026-09-27, "매우 중요"): 설교에서 "첫째, 둘째, 셋째"로 교훈이 나오면 그건 무조건 쇼츠에
+# 넣는다. 단 재미없는 부분은 날려 알찬 60초 이내로. 일반 컷 규칙(한 컷=한 명제, 구조 표지로 시작 금지,
+# 순서 표지 앞 skip 금지, 길면 앞부터 깎기)은 전부 이 구조를 쪼개거나 버리는 쪽으로 작동하므로,
+# 나열은 결정론적으로 찾아내 별도 패스로 만들고 일반 검증·필터·중복제거를 거치지 않는다.
+_ENUM_ORD = [
+    (1, r"첫\s*째|첫\s*번\s*째"), (2, r"둘\s*째|두\s*번\s*째"), (3, r"셋\s*째|세\s*번\s*째"),
+    (4, r"넷\s*째|네\s*번\s*째"), (5, r"다섯\s*째|다섯\s*번\s*째"),
+]
+# 순서 표지는 문장 어디에 있어도 센다 — 실측(2026-09-27, 설교 17편): "성령이 오시면 첫째 권능을 받아요",
+# "전도의 원리 첫 번째는", "오늘 세 가지로 … 첫째는 뭐죠?"처럼 1번 항목은 문장 중간에서 나오는 게 보통이라
+# 문장 첫머리만 보면 대부분 놓쳤다. 오탐은 '1→2→3 순서로 이어질 것'과 아래 명사 수식 제외로 거른다.
+_ENUM_BOUND = r"(?:^|(?<=[\s,.?!>]))"
+# "둘째 아들"·"첫째 날"·"세 번째 주일" 같은 명사 수식은 나열이 아니다.
+_ENUM_NOT = re.compile(
+    r"^\s*(아들|딸|날|형|언니|오빠|누나|동생|아이|자녀|손자|손녀|며느리|사위|부인|아내|주일|주|시간|해|달|줄|칸|장|절|편지|권)"
+    r"(?:[이가은는을를의에도과와]|\s|[.,?!]|$)"
+)
+_ENUM_LAST = re.compile(
+    r"^(?:>>\s*)?(?:(?:자|그리고|또|이제)[,.]?\s+)?(마지막으로|마지막\s*(?:세|네|다섯)?\s*번째로?|끝으로)"
+)
+_ENUM_FIRST_FALLBACK = re.compile(r"^(?:>>\s*)?(?:자[,.]?\s+)?(먼저|우선)[,\s]")
+ENUM_BUDGET_SEC = 58.0          # 60초 이내(렌더 무음 제거로 더 줄지만 여유를 둔다)
+_ENUM_MAX_GAP_SEC = 900.0       # 항목 사이 최대 간격(대지 설교는 항목 하나가 10분을 넘기도 한다)
+
+
+def _enum_number(text: str) -> int:
+    """문장에 나오는 첫 순서 표지의 번호(1~5), 문장 첫머리 '마지막으로'면 -1, 없으면 0."""
+    t = text.strip()
+    best: tuple[int, int] | None = None  # (위치, 번호)
+    for n, pat in _ENUM_ORD:
+        for m in re.finditer(_ENUM_BOUND + r"(?:" + pat + r")", t):
+            rest = t[m.end():]
+            if not rest.startswith("로") and _ENUM_NOT.match(rest):
+                continue
+            if best is None or m.start() < best[0]:
+                best = (m.start(), n)
+            break
+    if best:
+        return best[1]
+    if _ENUM_LAST.match(t):
+        return -1
+    return 0
+
+
+def find_enumerations(sentences: list[Sentence]) -> list[tuple[list[int], bool]]:
+    """'첫째 → 둘째 → (셋째…)'로 이어지는 항목 표지 문장 id 묶음들 (묶음, 1번 항목 표지를 찾았는가).
+    1번은 전사에서 자주 뭉개지므로 '둘째 → 셋째'로 시작하는 묶음도 받고, 1번은 바로 앞의 '먼저'로
+    보충하거나(찾으면) 못 찾으면 모델에게 찾게 한다."""
+    groups: list[tuple[list[int], bool]] = []
+    cur: list[int] = []
+    last_n = 0
+
+    def _close():
+        if len(cur) < 2:
+            return
+        marks = list(cur)
+        has_first = _enum_number(sentences[marks[0]].text) == 1
+        if not has_first:
+            # 2번 앞에서 "먼저 …"로 시작하는 문장을 1번으로 보충(2→3 간격 이내, 최소 5분)
+            span = max(300.0, sentences[marks[1]].start - sentences[marks[0]].start)
+            i = marks[0] - 1
+            while i >= 0 and sentences[marks[0]].start - sentences[i].start <= span:
+                if _ENUM_FIRST_FALLBACK.match(sentences[i].text.strip()):
+                    marks.insert(0, i); has_first = True
+                    break
+                i -= 1
+        groups.append((marks, has_first))
+
+    for s in sentences:
+        n = _enum_number(s.text)
+        if n == 0:
+            continue
+        gap_ok = bool(cur) and s.start - sentences[cur[-1]].start <= _ENUM_MAX_GAP_SEC
+        if cur and gap_ok and n == last_n + 1:
+            cur.append(s.idx); last_n = n
+        elif cur and gap_ok and n == last_n and s.start - sentences[cur[-1]].start < 90:
+            continue  # "첫째, 기도입니다. 첫째로 기도는…" 같은 되풀이
+        elif cur and gap_ok and n == -1 and last_n >= 2 and len(cur) >= 2 and s.start - sentences[cur[-1]].start <= max(
+            180.0, 1.5 * (sentences[cur[-1]].start - sentences[cur[0]].start) / (len(cur) - 1)
+        ):  # 설교 맺음말의 "마지막으로 기도하겠습니다"를 항목으로 잘못 붙이지 않게 간격을 본다
+            cur.append(s.idx); last_n += 1
+            _close(); cur = []; last_n = 0
+        elif n in (1, 2):
+            _close(); cur = [s.idx]; last_n = n
+        else:
+            _close(); cur = []; last_n = 0
+    _close()
+    return groups
+
+
+def _build_enum_prompt(
+    sentences: list[Sentence], lo: int, hi: int, marks: list[int], budget: float, has_first: bool = True,
+) -> str:
+    base = 1 if has_first else 2
+    mark_no = {m: k + base for k, m in enumerate(marks)}
+    n_items = len(marks) + (0 if has_first else 1)
+    first_note = "" if has_first else (
+        "\n※ 1번 항목의 표지(첫째/첫 번째)는 전사에서 잡히지 않았다. ★항목2 앞에서 1번 항목이 시작되는 문장을\n"
+        "  직접 찾아 그 문장과 설명 1~2문장을 반드시 keep에 넣어라(\"first\"에 그 문장 id).\n"
+    )
+    body = "\n".join(
+        f"S{s.idx} [{_fmt_ts(s.start)}] ({s.end - s.start:.0f}초)"
+        + (f" ★항목{mark_no[s.idx]}" if s.idx in mark_no else "") + f" {s.text}"
+        for s in sentences[lo: hi + 1]
+    )
+    return f"""아래는 한국 교회 설교 전사본 일부다. 설교자가 교훈을 {n_items}가지로 나열한다(★항목 표시 문장이
+각 항목의 시작).{first_note} 이 나열 전체를 쇼츠 하나로 만든다 — 모든 항목이 반드시 들어가야 하고, 남는 길이 합계는
+{budget:.0f}초 이내여야 한다(각 문장 앞 괄호가 그 문장 길이). 시청자는 교회를 안 다니는 사람도 포함한 일반 대중.
+
+## 구성
+- 도입(선택, 1~2문장): 이 나열이 무엇에 대한 답인지 여는 질문·문제 제기("어떻게 하면 ~할까요?", "~하는 세 가지").
+  없으면 생략하고 ★항목1부터 시작.
+- 각 항목: ★표지 문장 + 그 항목을 가장 선명하게 전달하는 1~2문장(핵심 정의·한 줄 예화·찌르는 문장).
+  항목마다 비슷한 분량으로. 표지 문장에 항목 이름이 없으면(예: "둘째로요.") 바로 뒤 이름 문장을 꼭 넣어라.
+- 마무리(선택, 1문장): 전체를 묶는 착지 문장이 있으면.
+- 날릴 것(재미없는 부분): 성경 본문 장황한 낭독·배경 설명·같은 말 반복·추임새·광고·인사·"여러분 그렇죠?" 류.
+- 이음새: 이어 붙였을 때 앞 문장이 끝난 상태여야 하고, 잘려나간 대상을 가리키는 "그 ○○"로 시작하는 문장은 피하라.
+
+입력:
+{body}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열(원소 하나)만:
+[{{"keep": [[첫 문장 id, 끝 문장 id], ...], "first": 1번 항목 시작 문장 id, "core": 가장 핵심 문장 id, "thesis": "나열 전체의 주제 한 줄",
+  "appeal": "교훈", "why": "왜 이 문장들을 골랐는지 한 줄"}}]
+keep은 남길 문장 구간(양끝 포함) 목록, 시간순. 출력은 짧게.
+※ ★표시가 설교자의 교훈·요점 나열이 아니라 단순 서수(사진 번호, 사건 순서, 인용문 속 "둘째도 겸손")라면
+  컷을 만들지 말고 [{{"not_enum": true}}] 만 출력하라."""
+
+
+def _fit_enum_keep(
+    keep_ids: set[int], marks: list[int], sentences: list[Sentence], budget: float, log: list[str],
+) -> set[int]:
+    """모든 항목 표지 포함을 강제하고, 합계가 budget을 넘으면 가장 긴 항목의 꼬리부터 덜어낸다."""
+    protected: set[int] = set()
+    for m in marks:
+        protected.add(m)
+        # "둘째로요." 처럼 표지만 있고 항목 이름이 없으면 다음 문장까지 보호한다.
+        if len(re.sub(r"\s", "", sentences[m].text)) < 10 and m + 1 < len(sentences):
+            protected.add(m + 1)
+    missing = protected - keep_ids
+    if missing:
+        log.append("누락 항목 표지 강제 포함: " + ",".join(f"S{i}" for i in sorted(missing)))
+    keep = set(keep_ids) | protected
+    keep = {i for i in keep if i in protected or not _FILLER_ONLY.match(sentences[i].text.strip())}
+
+    def _block(i: int) -> int:  # 문장이 속한 항목(도입=0, k번째 항목=k)
+        return sum(1 for m in marks if m <= i)
+
+    def _total() -> float:  # 실제 keep_ranges와 같은 셈: 연속 문장 묶음마다 첫 시작~끝 끝
+        ids = sorted(keep)
+        tot, a = 0.0, None
+        for k, i in enumerate(ids):
+            a = i if a is None else a
+            if k + 1 == len(ids) or ids[k + 1] != i + 1:
+                tot += sentences[i].end - sentences[a].start
+                a = None
+        return tot
+
+    while _total() > budget:
+        by_block: dict[int, float] = {}
+        for i in keep:
+            by_block[_block(i)] = by_block.get(_block(i), 0.0) + sentences[i].end - sentences[i].start
+        victim = None
+        for b in sorted(by_block, key=lambda b: -by_block[b]):
+            cands = [i for i in keep if _block(i) == b and i not in protected]
+            if cands:
+                # 항목은 꼬리(부연)부터, 도입(b=0)은 머리부터 — 도입은 1번 항목에 붙은 문장이 이어짐을 살린다
+                victim = min(cands) if b == 0 else max(cands)
+                break
+        if victim is None:
+            log.append(f"표지 문장만으로 {_total():.0f}초 — 더 줄일 수 없음")
+            break
+        keep.discard(victim)
+        log.append(f"S{victim} 덜어냄(길이 초과)")
+    return keep
+
+
+def build_enumeration_cuts(
+    sentences: list[Sentence], model: str = "", thinking_tokens: int = 4096,
+    timeout_sec: int = 600, budget: float = ENUM_BUDGET_SEC, max_groups: int = 2,
+) -> tuple[list[dict], list[dict]]:
+    """나열 묶음마다 컷 dict(일반 컷과 같은 모양: core/start/end/skip + enum=True)를 만든다. (컷들, 디버그 로그)"""
+    cuts: list[dict] = []
+    logs: list[dict] = []
+    for marks, has_first in find_enumerations(sentences)[:max_groups]:
+        marks = list(marks)
+        log: list[str] = [("" if has_first else "(1번 표지 없음) ") + "항목 표지: "
+                          + " / ".join(f"S{m} {sentences[m].text[:20]}" for m in marks)]
+        lo = max(0, marks[0] - 12)
+        if not has_first:  # 1번 항목을 모델이 찾을 수 있게 2→3 간격만큼 앞을 더 보여 준다
+            back = max(240.0, sentences[marks[1]].start - sentences[marks[0]].start)
+            while lo > 0 and sentences[marks[0]].start - sentences[lo - 1].start <= back:
+                lo -= 1
+        hi = marks[-1]
+        while hi + 1 < len(sentences) and hi - marks[-1] < 40 and sentences[hi + 1].start - sentences[marks[-1]].start < 240:
+            hi += 1
+        keep_ids: set[int] = set()
+        meta: dict = {}
+        try:
+            raw = _invoke_claude_json(
+                _build_enum_prompt(sentences, lo, hi, marks, budget, has_first), model=model,
+                thinking_tokens=thinking_tokens, timeout_sec=timeout_sec, max_clips=1,
+            )
+            meta = raw[0] if raw and isinstance(raw[0], dict) else {}
+            if meta.get("not_enum"):
+                log.append("모델 판정: 교훈 나열 아님 → 컷 안 만듦")
+                print("[v2] 나열 컷: " + " / ".join(log), flush=True)
+                logs.append({"marks": marks, "raw": meta, "log": log, "cut": None})
+                continue
+            if not has_first:
+                try:
+                    f0 = int(meta.get("first"))
+                    if lo <= f0 < marks[0]:
+                        marks.insert(0, f0)
+                        log.append(f"모델이 찾은 1번 항목: S{f0} {sentences[f0].text[:20]}")
+                except (TypeError, ValueError):
+                    log.append("1번 항목을 찾지 못함")
+            for rng in meta.get("keep") or []:
+                try:
+                    a, b = int(rng[0]), int(rng[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                keep_ids.update(i for i in range(max(lo, min(a, b)), min(hi, max(a, b)) + 1))
+        except QuotaExceededError:
+            raise  # 한도 소진은 최소 구성으로 덮지 않는다 — 사용자에게 진짜 원인을 보여야 한다
+        except Exception as exc:  # noqa: BLE001 - 모델이 실패해도 표지 문장+직후 문장으로 최소 구성
+            log.append(f"모델 실패 → 표지+직후 문장으로 구성: {exc}")
+            for m in marks:
+                keep_ids.update({m, min(m + 1, len(sentences) - 1)})
+        keep = _fit_enum_keep(keep_ids, marks, sentences, budget, log)
+        ids = sorted(keep)
+        start, end = ids[0], ids[-1]
+        skips: list[tuple[int, int]] = []
+        for a, b in zip(ids, ids[1:]):
+            if b > a + 1:
+                skips.append((a + 1, b - 1))
+        core = meta.get("core")
+        try:
+            core = int(core)
+        except (TypeError, ValueError):
+            core = marks[0]
+        if core not in keep:
+            core = marks[0]
+        cut = {
+            "core": core, "start": start, "end": end, "skip": [list(x) for x in skips],
+            "appeal": str(meta.get("appeal") or "교훈"),
+            "thesis": str(meta.get("thesis") or sentences[marks[0]].text[:40]),
+            "why": f"나열형 교훈 {len(marks)}가지 전부 포함 — " + str(meta.get("why") or ""),
+            "enum": True,
+        }
+        log.append(f"완성: S{start}~S{end}, {len(ids)}문장, {_eff_dur(sentences, start, end, skips):.0f}초")
+        print("[v2] 나열 컷: " + " / ".join(log), flush=True)
+        cuts.append(cut)
+        logs.append({"marks": marks, "raw": meta, "log": log, "cut": cut})
+    return cuts, logs
+
+
+# ---------------------------------------------------------------------------
 # 5. 전체 흐름
 # ---------------------------------------------------------------------------
 def select_highlights_v2(
@@ -1040,6 +1300,19 @@ def select_highlights_v2(
     for m in bible_log:
         print(f"[v2] 인물 이야기 필터: {m}", flush=True)
     fixed = dedupe_cuts(fixed, sentences)
+    # 나열형 교훈(첫째·둘째·셋째)은 무조건 한 컷(위 4-1). 일반 검증·필터·중복제거를 거치지 않고 맨 앞에 둔다.
+    enum_logs: list[dict] = []
+    try:
+        if on_progress:
+            on_progress(0.70, "첫째·둘째·셋째 나열 교훈을 모으는 중...")
+        enum_cuts, enum_logs = build_enumeration_cuts(
+            sentences, model=model, budget=min(ENUM_BUDGET_SEC, float(max_duration_sec) - 2.0),
+        )
+        fixed = enum_cuts + fixed
+    except QuotaExceededError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 나열 컷 실패로 일반 선정을 잃지 않는다
+        print(f"[v2] 나열 컷 실패: {exc}", flush=True)
     if debug_path is not None:
         try:
             import json
@@ -1047,7 +1320,7 @@ def select_highlights_v2(
             dbg = {
                 "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
                 "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log, "polemic_log": polemic_log,
-                "bible_log": bible_log,
+                "bible_log": bible_log, "enum_log": enum_logs,
                 "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end,
                                 "keep_ranges": cut_keep_ranges(c, sentences),
                                 "eff_sec": _eff_dur(sentences, c["start"], c["end"], _skips_of(c))}
