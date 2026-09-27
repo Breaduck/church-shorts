@@ -259,9 +259,10 @@ def _probe_audio_params(video_path: Path) -> tuple[int, int]:
 
 def _get_or_create_outro_segment(
     image_path: Path, duration_sec: float, resolution: tuple[int, int], fps: float, encoder: str,
-    sample_rate: int, channels: int,
+    sample_rate: int, channels: int, sound_path: Path | None = None, sound_volume: float = 1.0,
 ) -> Path:
-    """정지 이미지 + 무음으로 된 아웃트로 영상을 캐시해서 재사용한다.
+    """정지 이미지 + 무음(또는 로고 징글)으로 된 아웃트로 영상을 캐시해서 재사용한다.
+    sound_path: 로고와 함께 나올 짧은 사운드 로고(scripts/make_outro_jingle.py, 2026-09-27 사용자 요청).
 
     본 클립과 concat demuxer(-c copy, 재인코딩 없음)로 이어 붙이려면 코덱/해상도/fps/오디오
     샘플레이트·채널까지 정확히 같아야 한다. fps·샘플레이트는 소스 영상마다 달라서 전역
@@ -271,9 +272,11 @@ def _get_or_create_outro_segment(
     codec = "libx264" if encoder != "h264_qsv" else "h264_qsv"
     fps_key = f"{fps:.3f}".replace(".", "_")
     seg_path = _MASK_CACHE_DIR / (
-        f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{sample_rate}hz{channels}ch_{codec}.mp4"
+        f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{sample_rate}hz{channels}ch_{codec}"
+        + (f"_{sound_path.stem}_v{int(round(sound_volume * 100))}" if sound_path else "") + ".mp4"
     )
-    if seg_path.exists() and seg_path.stat().st_mtime >= image_path.stat().st_mtime:
+    newest_src = max(image_path.stat().st_mtime, sound_path.stat().st_mtime if sound_path else 0)
+    if seg_path.exists() and seg_path.stat().st_mtime >= newest_src:
         return seg_path
 
     video_args = (
@@ -282,10 +285,19 @@ def _get_or_create_outro_segment(
         else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     )
     ch_layout = "mono" if channels == 1 else "stereo"
+    # 징글이 있으면 그 소리를 본편과 같은 샘플레이트·채널로 맞추고 끝을 무음으로 채운다(concat -c copy 조건).
+    audio_in = (
+        ["-i", str(sound_path)] if sound_path
+        else ["-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl={ch_layout}"]
+    )
+    audio_filter = (
+        ["-af", f"aresample={sample_rate},aformat=channel_layouts={ch_layout},volume={sound_volume},apad"]
+        if sound_path else []
+    )
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-loop", "1", "-i", str(image_path),
-        "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl={ch_layout}",
+        *audio_in,
         "-t", str(duration_sec),
         # 이미지 비율을 유지한 채 해상도에 맞추고 남는 부분은 흰 패딩(레터박스).
         # 예전 scale={w}:{h} 강제 스케일은 세로 로고(1080x1920)를 16:9 업로드 찬양에
@@ -297,6 +309,7 @@ def _get_or_create_outro_segment(
         ),
         "-pix_fmt", "yuv420p",
         *video_args,
+        *audio_filter,
         "-c:a", "aac", "-b:a", "192k", "-ar", str(sample_rate), "-ac", str(channels),
         "-shortest",
         str(seg_path),
@@ -1126,9 +1139,12 @@ def _render_clip(
             try:
                 # 방금 렌더된 결과물의 실제 오디오 파라미터에 정확히 맞춘다(-c copy concat 필수 조건).
                 sample_rate, channels = _probe_audio_params(output_path)
+                _snd = Path(outro_cfg.get("sound_path") or "")
                 outro_seg = _get_or_create_outro_segment(
                     image_path, outro_dur, resolution, source_fps, used_encoder,
                     sample_rate, channels,
+                    sound_path=_snd if outro_cfg.get("sound_path") and _snd.exists() else None,
+                    sound_volume=float(outro_cfg.get("sound_volume", 0.8) or 0.8),
                 )
                 _append_outro(output_path, outro_seg)
             except Exception:  # noqa: BLE001
