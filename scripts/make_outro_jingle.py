@@ -436,4 +436,142 @@ if __name__ == "__main__":
                                    hook_piano, hook_glock, hook_synth, hook_flute, hook_brass, hook_uke,
                                    hook_grand, hook_strings, hook_harp, hook_organ)}
     for name in (sys.argv[1:] or fns):
-        print(fns[name]())
+        if name in fns:
+            print(fns[name]())
+
+
+# ── 5차(2026-09-27): "오르간 어색, 현대처럼 가볍게" → 합성 대신 **실제 악기 녹음(VSCO-2 CE, CC0)** ──
+# 합성 악기는 아무리 다듬어도 '가짜' 티가 나서 어색했다. VSCO-2 Community Edition(퍼블릭 도메인 CC0)의
+# 실제 녹음을 음마다 가까운 샘플에서 조금만 음높이를 옮겨 쓴다. 가볍게: 저음 '툭' 없음, 착지엔 반짝임만.
+# 샘플 받기: assets/cache/vsco/ (gitignore) — 없으면 fetch_vsco()가 GitHub에서 받는다.
+from fractions import Fraction  # noqa: E402
+from scipy.signal import resample_poly  # noqa: E402
+
+VSCO_DIR = OUT_DIR.parent / "cache" / "vsco"
+VSCO_BASE = "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/master/"
+VSCO_FILES = {
+    "glock": ["Percussion/Glock/glock_medium_C6.wav", "Percussion/Glock/glock_medium_G5.wav",
+              "Percussion/Glock/glock_medium_G6.wav", "Percussion/Glock/glock_medium_C7.wav"],
+    "marimba": ["Percussion/Marimba/Marimba_hit_Outrigger_C4_loud_01.wav", "Percussion/Marimba/Marimba_hit_Outrigger_G4_loud_01.wav",
+                "Percussion/Marimba/Marimba_hit_Outrigger_B4_loud_01.wav", "Percussion/Marimba/Marimba_hit_Outrigger_F5_loud_01.wav",
+                "Percussion/Marimba/Marimba_hit_Outrigger_C6_loud_01.wav"],
+    "xylo": ["Percussion/Xylo/Xylo_Medium_C5_ff_01_far.wav", "Percussion/Xylo/Xylo_Medium_G5_ff_01_far.wav",
+             "Percussion/Xylo/Xylo_Medium_C6_ff_01_far.wav"],
+    "harp": ["Strings/Harp/KSHarp_C5_mf.wav", "Strings/Harp/KSHarp_E5_mf.wav", "Strings/Harp/KSHarp_G5_mf.wav",
+             "Strings/Harp/KSHarp_A4_mf.wav", "Strings/Harp/KSHarp_C3_mf.wav", "Strings/Harp/KSHarp_E3_mf.wav",
+             "Strings/Harp/KSHarp_G3_mf.wav"],
+    "pizz": ["Strings/Violin Section/Pizz/VlnEns_Pizz_C4_v2_rr1.wav", "Strings/Violin Section/Pizz/VlnEns_Pizz_E4_v2_rr1.wav",
+             "Strings/Violin Section/Pizz/VlnEns_Pizz_B4_v2_rr1.wav", "Strings/Violin Section/Pizz/VlnEns_Pizz_D5_v2_rr1.wav"],
+    "triangle": ["VSCO 1 Percussion/varMetal/triangle/1/triangle1_hit_pp.wav"],
+}
+_NOTE_RE = __import__("re").compile(r"_([A-G]#?\d)[_.]")
+
+
+def fetch_vsco() -> None:
+    import urllib.parse
+    import urllib.request
+
+    VSCO_DIR.mkdir(parents=True, exist_ok=True)
+    for paths in VSCO_FILES.values():
+        for p in paths:
+            dst = VSCO_DIR / p.split("/")[-1]
+            if not dst.exists():
+                urllib.request.urlretrieve(VSCO_BASE + urllib.parse.quote(p), dst)
+
+
+_SAMPLE_CACHE: dict[str, np.ndarray] = {}
+
+
+def load_sample(name: str) -> np.ndarray:
+    """ffmpeg로 48kHz 모노 float로 읽고, 앞의 무음을 떼어 타격 순간이 0초가 되게 한다."""
+    if name in _SAMPLE_CACHE:
+        return _SAMPLE_CACHE[name]
+    import subprocess
+
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(VSCO_DIR / name), "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    x = np.frombuffer(raw, dtype="<f4").astype(float)
+    x /= max(1e-9, np.abs(x).max())
+    onset = int(np.argmax(np.abs(x) > 0.03))
+    x = x[max(0, onset - int(SR * 0.002)):]
+    _SAMPLE_CACHE[name] = x
+    return x
+
+
+def _midi(note: str) -> float:
+    return 69 + 12 * np.log2(hz(note) / 440.0)
+
+
+def play(inst: str, note: str, start: float, amp: float = 1.0, length: float | None = None) -> np.ndarray:
+    """악기 샘플 중 목표 음에 가장 가까운 것을 골라 음높이를 옮겨(재샘플) start에 놓는다."""
+    out = np.zeros(int(SR * DUR))
+    names = [p.split("/")[-1] for p in VSCO_FILES[inst]]
+    if inst == "triangle":
+        src, ratio = names[0], 1.0
+    else:
+        src = min(names, key=lambda nm: abs(_midi(_NOTE_RE.search(nm).group(1)) - _midi(note)))
+        ratio = hz(note) / hz(_NOTE_RE.search(src).group(1))
+    x = load_sample(src)
+    if abs(ratio - 1) > 1e-4:
+        fr = Fraction(1 / ratio).limit_denominator(400)  # 음을 올리려면 길이를 줄인다
+        x = resample_poly(x, fr.numerator, fr.denominator)
+    n0 = int(SR * start)
+    n = min(len(x), len(out) - n0, int(SR * length) if length else len(x))
+    seg = x[:n].copy()
+    if length:  # 손으로 음을 막듯 짧게 끊기(끝 40ms 페이드)
+        r = min(n, int(SR * 0.04))
+        seg[-r:] *= np.linspace(1, 0, r)
+    out[n0:n0 + n] = seg * amp
+    return out
+
+
+def _motif(inst: str, amps=(0.7, 0.7, 0.75, 1.0), octave: int = 0) -> np.ndarray:
+    def sh(nn: str) -> str:
+        return nn[:-1] + str(int(nn[-1]) + octave)
+    return sum(play(inst, sh(nn), s, a) for (nn, s, _l), a in zip(HOOK_NOTES, amps))
+
+
+def real_glock_marimba() -> Path:
+    """실제 마림바가 선율, 글로켄슈필이 한 옥타브 위에서 살짝 겹쳐 반짝 — 가볍고 산뜻."""
+    x = _motif("marimba") + _motif("glock", (0.25, 0.25, 0.3, 0.45), octave=1)
+    x = x + play("triangle", "C6", 0.44, 0.18)
+    return finish(*hall(x, 1.2, 0.16, dark=0.4), "real_glock_marimba")
+
+
+def real_harp() -> Path:
+    """실제 하프 선율 + 착지에서 아래부터 굴리는 화음, 글로켄 한 점."""
+    x = _motif("harp", (0.75, 0.75, 0.8, 1.0))
+    for j, nn in enumerate(["C3", "G3", "E4"]):
+        x = x + play("harp", nn, 0.44 + j * 0.04, 0.35)
+    x = x + play("glock", "G6", 0.46, 0.2)
+    return finish(*hall(x, 1.4, 0.2, dark=0.45), "real_harp")
+
+
+def real_xylo() -> Path:
+    """실제 실로폰 — 가장 가볍고 톡톡 튀는 소리, 착지에 트라이앵글 '팅'."""
+    x = _motif("xylo", (0.65, 0.65, 0.7, 1.0)) + play("triangle", "C6", 0.44, 0.22)
+    return finish(*hall(x, 1.0, 0.14, dark=0.4), "real_xylo")
+
+
+def real_pizz_glock() -> Path:
+    """실제 바이올린 합주 피치카토(한 옥타브 아래)로 톡톡, 착지에 글로켄 반짝."""
+    x = _motif("pizz", (0.8, 0.8, 0.85, 1.0), octave=-1)
+    x = x + play("glock", "G6", 0.44, 0.35) + play("glock", "C7", 0.5, 0.15)
+    return finish(*hall(x, 1.3, 0.2, dark=0.45), "real_pizz_glock")
+
+
+def real_glock() -> Path:
+    """실제 글로켄슈필만 — 오르골처럼 맑고 가벼운 '띠리링'."""
+    x = _motif("glock", (0.55, 0.55, 0.6, 0.85), octave=1) + play("triangle", "C6", 0.44, 0.12)
+    return finish(*hall(x, 1.3, 0.2, dark=0.4), "real_glock")
+
+
+REAL = (real_glock_marimba, real_harp, real_xylo, real_pizz_glock, real_glock)
+
+if __name__ == "__main__" and (set(__import__("sys").argv[1:]) & {f.__name__ for f in REAL}):
+    fetch_vsco()
+    for f in REAL:
+        if f.__name__ in __import__("sys").argv[1:]:
+            print(f())
