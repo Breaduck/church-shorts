@@ -725,6 +725,9 @@ def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: flo
     return int(height * (1 - safe_bottom_pct) - 40)
 
 
+TITLE_CENTER_RATIO = 0.56
+
+
 def compute_card_margins(card_layout: dict, resolution: tuple[int, int]) -> tuple[int, int]:
     """카드 레이아웃에서 제목/캡션의 기본(오프셋 적용 전) MarginV를 계산한다.
     build_ass()와 위치 편집 웹 UI(web_app.py)가 반드시 같은 값을 써야 미리보기가
@@ -734,7 +737,13 @@ def compute_card_margins(card_layout: dict, resolution: tuple[int, int]) -> tupl
     # "너무 위쪽"(2026-09-02) 피드백. 24px는 폰 상단 상태바·쇼츠 UI가 덮는 위험 지역이었다
     # (과교정). 이제 상단 안전영역(높이의 6% ≈ 115px)에 붙인다 — 위쪽이되 UI에 안 가리고,
     # 제목 블록(최대 2줄)이 영상 박스 위 여백 안에 들어온다. 세부 취향은 편집기 드래그로.
-    title_margin_v = max(24, int(resolution[1] * 0.06))
+    # 2026-09-27 "기본 제목 위치가 왜 이렇게 올라가 있냐": 상단 6%(115px) 고정이라 영상 박스(y≈660)와
+    # 470px 넘게 떨어져 둥 떠 있었다. 사용자가 직접 내린 제목들을 재 보니 제목 '중심'이 안전영역
+    # 윗선~영상 박스 윗선 사이 56% 지점(≈420px)에 있었다(1줄·2줄 모두) → 그 지점을 제목 중심으로 둔다.
+    # 반환값은 이제 제목 블록의 **세로 중심 y**다(렌더는 n5+\pos, 미리보기는 translate(-50%,-50%)).
+    # 중심 기준이라 제목 크기·줄 수가 바뀌어도 미리보기와 렌더가 어긋나지 않는다.
+    safe_top = max(24, int(resolution[1] * 0.06))
+    title_margin_v = int(safe_top + TITLE_CENTER_RATIO * max(0, video_box_y - safe_top))
     video_box_bottom = video_box_y + card_layout["video_box_height"]
     caption_margin_v = video_box_bottom + 60
     return title_margin_v, caption_margin_v
@@ -992,6 +1001,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 "\\t(0,220,\\fscx106\\fscy106)\\t(220,320,\\fscx100\\fscy100)}"
                 + title_disp
             )
+        if card_layout:
+            # 카드형: 제목 블록의 중심을 compute_card_margins의 중심 y(+offset)에 둔다(n4/5/6 = 세로 가운데).
+            _an = {7: 4, 8: 5, 9: 6}.get(title_alignment, 5)
+            _px = {4: title_margin_l, 5: (title_margin_l + width - title_margin_r) // 2, 6: width - title_margin_r}[_an]
+            title_disp = f"{{\\an{_an}\\pos({_px},{title_margin_v})}}" + title_disp
         events.append(
             f"Dialogue: 0,{_ass_time(0)},{_ass_time(hook_end)},Hook,,0,0,0,,{title_disp}"
         )

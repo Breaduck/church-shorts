@@ -74,7 +74,7 @@
   /* 실제 렌더는 제목을 항상 한 줄로 맞춘다(_fit_title_font_size). 팝업이 normal로 줄바꿈하면
      (1) 2줄로 보여 실제와 배열이 다르고 (2) 줄바꿈 때문에 scrollWidth가 한계를 안 넘어
      fitToWidth 축소가 아예 작동하지 않아 크기까지 다르게 보였다 — 반드시 nowrap. */
-  .pv-title { white-space: nowrap; }
+  .pv-title { white-space: nowrap; transform: translate(-50%, -50%); }  /* top = 제목 중심(렌더 \an5) */
   /* 제목 텍스트: 여러 줄(사용자 줄바꿈)에서도 폭 측정(scrollWidth)이 정확하려면 inline-block. */
   .pv-txt { display: inline-block; text-align: center; outline: none; }
   .pv-title.editing { border-color: #3182f6; background: rgba(49,130,246,.10); cursor: text; }

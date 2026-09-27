@@ -160,7 +160,7 @@ __BASE_STYLE__
         border-radius: {{ (layout.video_box.r * layout.scale)|round|int }}px;">
         <img src="/media/{{ video_id }}/preview/{{ idx }}.jpg" alt="미리보기 프레임">
       </div>
-      <div class="drag-box title" id="titleBox" style="font-size: {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }}px; white-space: nowrap;">
+      <div class="drag-box title" id="titleBox" style="transform: translate(-50%, -50%); font-size: {{ (layout.title_size * layout.title_ass_coeff * layout.scale)|round|int }}px; white-space: nowrap;">
         {{ clip.title }}
       </div>
       <div class="drag-box caption" id="captionBox" style="font-size: {{ (layout.caption_font_size * layout.caption_ass_coeff * layout.scale)|round|int }}px;">
