@@ -1778,7 +1778,10 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
     if "caption_overrides_en" in body:
         clip.caption_overrides_en = sorted(
             (
-                {"start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip()}
+                {
+                    "start": float(c["start"]), "end": float(c["end"]), "text": str(c.get("text", "")).strip(),
+                    **({"ko": str(c["ko"]).strip()} if c.get("ko") is not None else {}),
+                }
                 for c in (body.get("caption_overrides_en") or [])
                 if str(c.get("text", "")).strip()
             ),
@@ -2744,6 +2747,8 @@ def translate_captions_route(video_id: str, idx: int):
             "start": float(ln.get("start", 0)),
             "end": float(ln.get("end", 0)),
             "text": en[i] if i < len(en) else str(ln.get("text", "")),
+            # 번역 당시 한국어 원문 — 렌더가 이걸로 '한국어를 고친 뒤 남은 옛 번역'을 걸러낸다.
+            "ko": str(ln.get("text", "")).strip(),
         })
     return jsonify({"lines": out, "total": len(out)})
 

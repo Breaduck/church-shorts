@@ -206,6 +206,24 @@ class StageProgress:
             _safe_progress(self._cb, message, 100.0, 0.0)
 
 
+def _en_track_matches(ko: list, en: list) -> bool:
+    """영어 트랙(caption_overrides_en)이 현재 한국어 자막(caption_overrides)의 번역인가.
+
+    줄 수·각 줄 시작 시각(0.25초 이내)이 같아야 하고, 번역 당시 원문(ko)을 기록해 둔
+    줄은 그 원문이 지금 한국어와 같아야 한다(한국어만 고치고 영어는 옛 뜻 그대로인 경우)."""
+    if not ko or len(ko) != len(en):
+        return False
+    ko_s = sorted(ko, key=lambda o: float(o.get("start", 0)))
+    en_s = sorted(en, key=lambda o: float(o.get("start", 0)))
+    for k, e in zip(ko_s, en_s):
+        if abs(float(k.get("start", 0)) - float(e.get("start", 0))) > 0.25:
+            return False
+        src = e.get("ko")
+        if src is not None and str(src).strip() != str(k.get("text", "")).strip():
+            return False
+    return True
+
+
 def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, message: str, est_seconds: float):
     """분 단위로 걸릴 수 있는데 중간 진행률을 알 수 없는 단계(예: claude -p 서브프로세스 호출)를
     위한 흉내 진행률바. est_seconds에 걸쳐 start_pct -> end_pct*0.95 정도까지 서서히 채우고,
@@ -2213,6 +2231,15 @@ def render_selected(
         # 영어 자막 옵션: 렌더 시점에만 한국어(caption_overrides) 대신 영어 트랙으로 바꿔
         # 굽는다(디스크의 한국어는 그대로 — 병합 저장은 start/end만 반영). 영어 번역이 없는
         # 클립은 그대로 한국어로 나간다.
+        # 저장된 영어 트랙이 '지금의 한국어 자막'에서 나온 번역인지 먼저 확인한다(실신고
+        # 2026-09-27 "영어 자막 부정확"). 번역은 한 번 찍어둔 스냅숏이라, 그 뒤 한국어를
+        # 고치거나·구간을 바꾸거나·복제하면 옛 번역이 옛 시간축으로 그대로 굽혔다. 안 맞으면
+        # 버리고 → render.py가 지금 확정된 한국어를 그 자리에서 다시 번역한다.
+        if caption_lang in ("en", "bilingual") and getattr(clip, "caption_overrides_en", None):
+            if not _en_track_matches(clip.caption_overrides or [], clip.caption_overrides_en):
+                print(f"[render] 클립 {idx}: 영어 트랙이 현재 한국어 자막과 안 맞음 — 다시 번역")
+                clip = copy.copy(clip)
+                clip.caption_overrides_en = []
         if caption_lang == "en" and getattr(clip, "caption_overrides_en", None):
             clip.caption_overrides = clip.caption_overrides_en
 

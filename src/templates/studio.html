@@ -879,7 +879,7 @@ fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/preview_info').then(r => r.json(
   C = info.clip; L = info.layout;
   dur = info.source_duration || (C.end + 10);
   caps = (info.caption_lines || []).map(c => ({ start: c.start, end: c.end, text: c.text, track: 0 }));
-  ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text }));
+  ens = (C.caption_overrides_en || []).map(c => ({ start: c.start, end: c.end, text: c.text, ko: c.ko }));
   nKoTracks = 1;
   initTexts();
   initVSegs();
@@ -2461,7 +2461,7 @@ async function runSyncInner(fxItem) {
   if (!doKo && !doEn) { setStatus('한글 자막 · 영어 자막 중 적어도 하나는 켜 주세요'); return; }
   if (!doKo) {  // 영어만: 지금 자막 시간 그대로 번역만 만든다
     setStatus('영어 자막 만드는 중…');
-    await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 자막 ' + j.lines.length + '줄'); });
+    await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text, ko: c.ko })); setStatus('영어 자막 ' + j.lines.length + '줄'); });
     return;
   }
   // 두 번째 이상 누르면: 먼저 최고 정밀로 다시 인식하고 맞춘다(같은 캐시면 결과가 똑같아
@@ -2494,7 +2494,7 @@ async function runSyncInner(fxItem) {
   // 영어도 켰으면 이어서 만든다. 번역 입력은 방금 싱크된 줄(collect())이라 영어 트랙의
   // 시간이 한국어와 정확히 같아진다.
   setStatus('싱크 완료 — 영어 자막 만드는 중…');
-  await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
+  await aiCall('translate', base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text, ko: c.ko })); setStatus('싱크 + 영어 ' + j.lines.length + '줄'); });
 }
 // 대상 토글(한글/영어) — 선택은 브라우저에 기억시켜 다음 클립에서도 유지한다.
 ['syncKo', 'syncEn'].forEach((id) => {
@@ -2512,7 +2512,7 @@ function applyFx(kind) {
   const base = '/video/' + VIDEO_ID + '/clip/' + IDX + '/';
   if (kind === 'sync') runSync();
   else if (kind === 'correct') aiCall(kind, base + 'correct_captions', { captions: collect(), model: '' }, (j) => { j.lines.forEach((ln, i) => { if (caps[i]) caps[i].text = ln.text; }); setStatus('교정 ' + (j.changed || 0) + '줄'); });
-  else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); setStatus('영어 ' + j.lines.length + '줄'); });
+  else if (kind === 'translate') aiCall(kind, base + 'translate_captions', { captions: collect(), model: '' }, (j) => { ens = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text, ko: c.ko })); setStatus('영어 ' + j.lines.length + '줄'); });
   else if (kind === 'lyrics') {
     const t = prompt('곡 제목 또는 벅스 트랙 URL (music.bugs.co.kr에서 가사를 가져옵니다)', (C && C.title) || ''); if (t == null || !t.trim()) return;
     aiCall(kind, base + 'fetch_lyrics', { title: t.trim() }, (j) => { caps = j.lines.map(c => ({ start: c.start, end: c.end, text: c.text })); ens = []; setStatus('가사 ' + j.lines.length + '줄'); });
@@ -2610,7 +2610,7 @@ function payload() {
   // 조용히 빠져 서버의 낡은 영어 트랙이 그대로 남았다 — 사용자 눈엔 "번역이 저장 안 됨".
   // 이제는 어긋나면 영어 트랙을 명시적으로 비우고, 다시 번역하라고 알린다.
   if (ens.length === caps.length && ens.length) {
-    p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text }));
+    p.caption_overrides_en = ens.map((c, i) => ({ start: caps[i].start, end: caps[i].end, text: c.text, ko: c.ko }));
   } else if (ens.length) {
     p.caption_overrides_en = [];
     ens = [];
