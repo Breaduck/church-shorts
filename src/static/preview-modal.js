@@ -1187,7 +1187,11 @@
       payload.caption_overrides_en = capOverridesEn;
       payload.playback_speed = parseFloat(speedSel.value) || 1;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
-      const changed = segs.length > 1 || Math.abs(outS - C.start) > 0.05 || Math.abs(outE - C.end) > 0.05;
+      // 저장된 조각(keep_ranges)과 비교한다 — 예전엔 조각이 2개 이상이면 무조건 '바뀜'이라 선정이 만든
+      // 점프컷 클립은 저장/만들기 때마다 고친 자막이 비워졌다(실신고 2026-09-27 "자막 고쳤는데 안 들어감").
+      const orig = (C.keep_ranges && C.keep_ranges.length) ? C.keep_ranges : [[C.start, C.end]];
+      const changed = orig.length !== segs.length
+        || segs.some((sg, i) => Math.abs(sg.s - orig[i][0]) > 0.05 || Math.abs(sg.e - orig[i][1]) > 0.05);
       if (changed) {
         payload.clip_start = outS; payload.clip_end = outE;
         payload.keep_ranges = segs.map((sg) => [sg.s, sg.e]);
@@ -1207,6 +1211,7 @@
       if (!r.ok) return false;
       // 저장 성공 → 현재 상태를 새 기준으로: 다음 저장에서 '구간 바뀜' 오판 방지, dirty 해제.
       C.start = outS; C.end = outE;
+      C.keep_ranges = segs.length > 1 ? segs.map((sg) => [sg.s, sg.e]) : [];
       capsDirty = false;
       const card = document.getElementById('cand-' + idx);
       if (card) { const h = card.querySelector('h3.title'); if (h) h.textContent = (h.dataset.prefix || '') + chosenTitle; }

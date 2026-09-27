@@ -1817,9 +1817,13 @@ function initVSegs() {
     : [{ s: C.start, e: C.end }];
   selVSeg = -1;
 }
+// '잘랐는가'는 저장된 조각(keep_ranges)과 비교한다. 예전엔 조각이 2개 이상이면 무조건 '바뀜'이라,
+// 선정이 이미 점프컷으로 만든 클립은 저장·내보내기 때마다 고친 자막이 통째로 지워졌다(실신고 2026-09-27).
 function vsegsChanged() {
   if (!vsegs.length) return false;
-  return vsegs.length > 1 || Math.abs(vsegs[0].s - C.start) > 0.05 || Math.abs(vsegs[vsegs.length - 1].e - C.end) > 0.05;
+  const orig = (C.keep_ranges && C.keep_ranges.length) ? C.keep_ranges : [[C.start, C.end]];
+  if (orig.length !== vsegs.length) return true;
+  return vsegs.some((sg, i) => Math.abs(sg.s - orig[i][0]) > 0.05 || Math.abs(sg.e - orig[i][1]) > 0.05);
 }
 function splitVSegAt(t) {
   for (let i = 0; i < vsegs.length; i++) {
