@@ -1697,6 +1697,9 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
 
     body = request.get_json() or {}
     clip = clips[idx]
+    # 저장 전 구간 — 아래에서 '실제로 영상을 잘랐는지' 판정해, 안 잘랐는데 빈 자막이 오면 무시한다.
+    _before_range = (round(clip.start, 2), round(clip.end, 2),
+                     [[round(float(a), 2), round(float(b), 2)] for a, b in (getattr(clip, "keep_ranges", None) or [])])
     if "title" in body and str(body["title"]).strip():
         clip.title = str(body["title"]).strip()
     # 영상 구간(길이 자르기). 사용자가 명시하면 그대로 존중한다(렌더 시 자동 확장/스냅 안 함).
@@ -1751,8 +1754,19 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         # '구간 변경 시 자막 비우기'가 찬양에도 적용돼 저장 자막이 증발). 찬양에서 비어있는
         # captions는 무시하고 기존 자막을 지킨다(정말 지우려면 편집기에서 줄을 지우는 게
         # 아니라 텍스트를 남겨야 하는 구조라, 전량 삭제 의도는 사실상 없다).
+        _after_range = (round(clip.start, 2), round(clip.end, 2),
+                        [[round(float(a), 2), round(float(b), 2)] for a, b in (clip.keep_ranges or [])])
+        _range_same = (
+            abs(_before_range[0] - _after_range[0]) < 0.06 and abs(_before_range[1] - _after_range[1]) < 0.06
+            and len(_before_range[2]) == len(_after_range[2])
+            and all(abs(x[0] - y[0]) < 0.06 and abs(x[1] - y[1]) < 0.06 for x, y in zip(_before_range[2], _after_range[2]))
+        )
         if not _new_caps and getattr(clip, "clip_type", "") == "praise" and clip.caption_overrides:
             print(f"[save] praise 클립 {idx}: 빈 captions 저장 무시(기존 {len(clip.caption_overrides)}줄 유지)")
+        elif not _new_caps and clip.caption_overrides and _range_same:
+            # 구간을 실제로 안 바꿨는데 빈 자막이 왔다 = 새로고침 안 한 옛 편집 화면이 점프컷 클립을 '잘렸다'고
+            # 오판해 비운 것(2026-09-27 실신고 "고친 자막이 안 들어감"). 서버에서 한 번 더 막는다.
+            print(f"[save] 클립 {idx}: 구간 변화 없는데 빈 captions — 기존 {len(clip.caption_overrides)}줄 유지")
         else:
             clip.caption_overrides = _new_caps
     # 재생 배속(1.0~2.0, 팝업에서 선택). 렌더가 완성본에 후처리로 적용한다.
