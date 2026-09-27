@@ -2269,6 +2269,9 @@ def _run_reanalyze_job(video_id: str, idx: int) -> None:
         new_clip = reanalyze_clip_region(
             video_dir, orig, cfg, model=resolve_model(cfg["highlights"].get("model", "")), on_progress=_prog
         )
+        from src.main import apply_default_sermon_speed
+
+        apply_default_sermon_speed([new_clip], cfg)
         # 하이라이트 후보 목록 '맨 아래'에 새 후보로 추가한다(원본은 그대로 유지).
         with CLIPS_LOCK:
             clips = load_clips_json(clips_path)  # 그 사이 바뀌었을 수 있어 다시 읽는다

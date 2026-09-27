@@ -224,6 +224,15 @@ def _en_track_matches(ko: list, en: list) -> bool:
     return True
 
 
+def apply_default_sermon_speed(clips: list, cfg: dict) -> None:
+    """새 설교 후보의 기본 재생 배속(render.sermon_playback_speed, 2026-09-27 사용자 요청 1.1배).
+    찬양은 곡 템포가 바뀌면 안 되므로 제외. 팝업의 배속 선택으로 언제든 바꿀 수 있다."""
+    spd = float(cfg.get("render", {}).get("sermon_playback_speed", 1.0) or 1.0)
+    for c in clips:
+        if getattr(c, "clip_type", "") != "praise":
+            c.playback_speed = min(2.0, max(1.0, spd))
+
+
 def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, message: str, est_seconds: float):
     """분 단위로 걸릴 수 있는데 중간 진행률을 알 수 없는 단계(예: claude -p 서브프로세스 호출)를
     위한 흉내 진행률바. est_seconds에 걸쳐 start_pct -> end_pct*0.95 정도까지 서서히 채우고,
@@ -1678,6 +1687,7 @@ def analyze(
         # 보이므로(실측: 74,59,64,58), 저장 전에 score 내림차순으로 확정한다.
         # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
         clips.sort(key=lambda c: c.score or 0, reverse=True)
+        apply_default_sermon_speed(clips, cfg)
         with CLIPS_LOCK:
             save_clips_json(clips, clips_path)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
