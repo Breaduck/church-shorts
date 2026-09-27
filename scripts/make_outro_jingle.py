@@ -120,6 +120,88 @@ def amen() -> Path:
     return finish(*reverb(x, seconds=1.6, wet=0.38), "amen")
 
 
+# ── 2차(2026-09-27): "다 별로, 현대처럼 경쾌하고 간편하게" → 짧게 끊어 치는 리듬 + 밝은 착지 ──
+# 마림바(기음+4배·10배 배음, 빠른 감쇠)와 플럭(Karplus-Strong)으로 스타카토를 만들고, 마지막 음에만
+# 작은 저음 '툭'과 반짝이는 윗배음을 얹어 로고가 '딱' 찍히는 느낌을 준다. 잔향은 얕게(깔끔하게).
+MARIMBA = [(1, 1.0, 1.0), (3.9, 0.35, 3.0), (9.8, 0.12, 6.0)]
+
+
+def pluck(freq: float, start: float, length: float, bright: float = 0.5, seed: int = 1) -> np.ndarray:
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = min(int(SR * length), len(out) - n0)
+    period = max(2, int(SR / freq))
+    buf = np.random.default_rng(seed).uniform(-1, 1, period)
+    sig = np.empty(n)
+    for i in range(n):
+        sig[i] = buf[i % period]
+        buf[i % period] = 0.5 * (buf[i % period] + buf[(i + 1) % period]) * (0.994 + 0.005 * bright)
+    out[n0:n0 + n] = sig
+    return out
+
+
+def thump(start: float, amp: float = 0.5) -> np.ndarray:
+    """착지 순간의 작은 저음 '툭'(킥처럼 피치가 떨어지는 사인)."""
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = int(SR * 0.25)
+    t = np.arange(n) / SR
+    f = 55 + 70 * np.exp(-t * 30)
+    out[n0:n0 + n] = amp * np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 18)
+    return out
+
+
+def _mar(note: str, start: float, length: float = 0.5, decay: float = 9.0, amp: float = 0.8) -> np.ndarray:
+    return tone(hz(note), start, length, MARIMBA, decay, attack=0.002) * amp
+
+
+def pop() -> Path:
+    """마림바 4연음 상승(도–미–솔–도) 후 높은 도 착지 + 툭. 통통 튀는 '따라라–띵'."""
+    step = 0.085
+    x = sum(_mar(n, i * step, 0.35, 12.0, 0.7) for i, n in enumerate(["C5", "E5", "G5"]))
+    x = x + _mar("C6", 3 * step, 1.2, 3.5, 0.9) + _mar("G5", 3 * step, 1.0, 4.0, 0.35) + _mar("E6", 3 * step, 1.0, 5.0, 0.25)
+    x = x + thump(3 * step, 0.45)
+    return finish(*reverb(x, seconds=0.6, wet=0.12), "pop")
+
+
+def bounce() -> Path:
+    """플럭 '따–따–딴!'(솔 솔 도) — 짧고 리드미컬한 사운드 로고."""
+    x = (
+        pluck(hz("G5"), 0.00, 0.20, seed=1) * 0.6
+        + pluck(hz("G5"), 0.14, 0.20, seed=2) * 0.6
+        + pluck(hz("C6"), 0.30, 1.3, bright=1.0, seed=3) * 0.8
+        + pluck(hz("E5"), 0.30, 1.3, seed=4) * 0.45
+        + _mar("C7", 0.30, 0.8, 5.0, 0.18)
+        + thump(0.30, 0.5)
+    )
+    return finish(*reverb(x, seconds=0.5, wet=0.10), "bounce")
+
+
+def spark() -> Path:
+    """빠른 5음계 상승 런(0.3초) 뒤 밝은 화음 '반짝' — 경쾌한 시작 느낌."""
+    run = ["C5", "D5", "E5", "G5", "A5", "C6"]
+    x = sum(_mar(n, i * 0.055, 0.3, 14.0, 0.55) for i, n in enumerate(run))
+    land = len(run) * 0.055
+    x = x + _mar("E6", land, 1.2, 3.0, 0.7) + _mar("C6", land, 1.2, 3.2, 0.45) + _mar("G6", land, 1.0, 4.0, 0.3)
+    x = x + tone(hz("C8"), land + 0.02, 0.6, [(1, 1.0, 1.0)], 7.0) * 0.08 + thump(land, 0.4)
+    return finish(*reverb(x, seconds=0.7, wet=0.14), "spark")
+
+
+def hook() -> Path:
+    """기억에 남는 4음 모티프(도–미–라–솔): 올라갔다 한 음 내려와 안정적으로 끝나는 '징글' 형태."""
+    notes = [("C5", 0.00, 0.18), ("E5", 0.13, 0.18), ("A5", 0.26, 0.22), ("G5", 0.44, 1.2)]
+    x = sum(
+        pluck(hz(n), s, l, bright=0.8, seed=i + 5) * (0.8 if i == 3 else 0.6)
+        + _mar(n, s, l, 6.0 if i == 3 else 12.0, 0.35)
+        for i, (n, s, l) in enumerate(notes)
+    )
+    x = x + _mar("C5", 0.44, 1.2, 3.0, 0.3) + thump(0.44, 0.45)
+    return finish(*reverb(x, seconds=0.6, wet=0.12), "hook")
+
+
 if __name__ == "__main__":
-    for fn in (chime, warm, amen):
-        print(fn())
+    import sys
+
+    fns = {f.__name__: f for f in (chime, warm, amen, pop, bounce, spark, hook)}
+    for name in (sys.argv[1:] or fns):
+        print(fns[name]())
