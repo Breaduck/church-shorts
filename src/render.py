@@ -272,7 +272,10 @@ def _get_or_create_outro_segment(
     codec = "libx264" if encoder != "h264_qsv" else "h264_qsv"
     fps_key = f"{fps:.3f}".replace(".", "_")
     seg_path = _MASK_CACHE_DIR / (
+        # 길이(duration_sec)도 키에 넣는다 — 예전엔 빠져 있어서 로고를 3초→2초로 줄여도(09-03) 옛 3초
+        # 캐시가 계속 재사용돼 쇼츠 끝 로고가 3초로 나갔다(2026-09-27 발견).
         f"outro_{image_path.stem}_{w}x{h}_{fps_key}fps_{sample_rate}hz{channels}ch_{codec}"
+        f"_{int(round(duration_sec * 1000))}ms"
         + (f"_{sound_path.stem}_v{int(round(sound_volume * 100))}" if sound_path else "") + ".mp4"
     )
     newest_src = max(image_path.stat().st_mtime, sound_path.stat().st_mtime if sound_path else 0)
