@@ -241,7 +241,7 @@ render:
     # 로고와 함께 나오는 2초 사운드 로고(2026-09-27 사용자 요청 "현대 로고처럼"). scripts/make_outro_jingle.py로
     # 직접 합성한 원곡이라 저작권 문제 없음. 고르기(2차, 경쾌): jingle_pop / jingle_bounce / jingle_spark / jingle_hook. 1차: jingle_chime / jingle_warm
     # / jingle_amen(오르간 '아-멘' 종지). 빈 값("")이면 예전처럼 무음.
-    sound_path: "assets/outro/jingle_hook_organ.wav"
+    sound_path: "assets/outro/jingle_real_glock_marimba.wav"
     sound_volume: 0.8
   # 효과음(선택): ffmpeg로 whoosh를 직접 합성해 도입부·컷 전환에 목소리 아래로 믹싱한다.
   # 외부 파일 불필요. 기본 꺼짐(현재 플로우 유지) — 편집기 '이 설정으로 만들기' 옵션으로 켠다.
