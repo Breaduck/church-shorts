@@ -199,9 +199,94 @@ def hook() -> Path:
     return finish(*reverb(x, seconds=0.6, wet=0.12), "hook")
 
 
+# ── 3차(2026-09-27): "기억되는 4음 괜찮은데 다른 악기 없나?" → 같은 선율·리듬을 악기만 바꿔 여러 벌 ──
+HOOK_NOTES = [("C5", 0.00, 0.18), ("E5", 0.13, 0.18), ("A5", 0.26, 0.22), ("G5", 0.44, 1.2)]
+
+
+def _env(n: int, attack: float, release: float) -> np.ndarray:
+    t = np.arange(n) / SR
+    env = np.minimum(1.0, t / max(attack, 1e-4))
+    r = min(n, int(SR * release))
+    if r > 0:
+        env[-r:] *= np.linspace(1, 0, r)
+    return env
+
+
+def inst_note(kind: str, freq: float, start: float, length: float, last: bool) -> np.ndarray:
+    out = np.zeros(int(SR * DUR))
+    n0 = int(SR * start)
+    n = min(int(SR * length), len(out) - n0)
+    t = np.arange(n) / SR
+    sig = np.zeros(n)
+    if kind == "piano":
+        # 살짝 늘어난 배음(현의 강성) + 높은 배음일수록 빨리 사라짐 + 해머 잡음
+        for k in range(1, 9):
+            fk = freq * k * np.sqrt(1 + 0.0004 * k * k)
+            sig += (1 / k ** 1.3) * np.sin(2 * np.pi * fk * t) * np.exp(-t * (2.5 + 1.2 * k))
+        sig += np.random.default_rng(int(freq)).standard_normal(n) * np.exp(-t * 90) * 0.05
+        sig *= _env(n, 0.002, 0.05)
+    elif kind == "glock":
+        # 글로켄슈필(뮤직박스 느낌): 한 옥타브 위, 비정수 배음, 길게 울림
+        f = freq * 2
+        for mult, amp, d in ((1, 1.0, 2.2), (2.76, 0.35, 5.0), (5.4, 0.15, 9.0), (8.93, 0.06, 14.0)):
+            sig += amp * np.sin(2 * np.pi * f * mult * t) * np.exp(-t * d)
+        sig *= _env(n, 0.001, 0.03)
+    elif kind == "synth":
+        # 모던 플럭 신스: 살짝 어긋난 톱니파 2개, 필터가 닫히듯 높은 배음부터 빠르게 사라짐
+        for det in (-0.004, 0.004):
+            for k in range(1, 24):
+                sig += (1 / k) * np.sin(2 * np.pi * freq * (1 + det) * k * t) * np.exp(-t * (1.5 + 0.9 * k))
+        sig *= _env(n, 0.003, 0.06) * 0.5
+    elif kind == "flute":
+        # 플루트/휘파람: 부드러운 어택, 비브라토, 숨소리
+        vib = 1 + 0.006 * np.sin(2 * np.pi * 5.2 * t) * np.minimum(1, t / 0.3)
+        ph = 2 * np.pi * np.cumsum(freq * vib) / SR
+        sig = np.sin(ph) + 0.18 * np.sin(2 * ph) + 0.05 * np.sin(3 * ph)
+        sig += np.random.default_rng(int(freq)).standard_normal(n) * 0.025
+        sig *= _env(n, 0.035, 0.08) * (np.exp(-t * 1.2) if last else 1.0)
+    elif kind == "brass":
+        # 브라스: 어택 때 음이 살짝 아래서 올라오고, 세게 불수록 밝아지는 배음
+        bend = 1 - 0.02 * np.exp(-t * 40)
+        ph = 2 * np.pi * np.cumsum(freq * bend) / SR
+        bright = 1 - np.exp(-t * 25)
+        for k in range(1, 14):
+            sig += (1 / k) * np.sin(k * ph) * (bright ** (k * 0.35)) * np.exp(-t * (0.8 if last else 0.3) * k * 0.15)
+        sig *= _env(n, 0.02, 0.07) * 0.6
+    elif kind == "uke":
+        # 우쿨렐레: 밝은 플럭 + 작은 몸통 울림
+        period = max(2, int(SR / freq))
+        buf = np.random.default_rng(int(freq)).uniform(-1, 1, period)
+        for i in range(n):
+            sig[i] = buf[i % period]
+            buf[i % period] = 0.5 * (buf[i % period] + buf[(i + 1) % period]) * 0.996
+        body = np.sin(2 * np.pi * 220 * t[: int(SR * 0.03)]) * np.exp(-t[: int(SR * 0.03)] * 120)
+        sig = np.convolve(sig, np.r_[1.0, 0.25 * body])[:n]
+        sig *= _env(n, 0.001, 0.04)
+    out[n0:n0 + n] = sig
+    return out
+
+
+def hook_as(kind: str, wet: float = 0.14) -> Path:
+    x = sum(inst_note(kind, hz(nn), s, l, i == 3) * (1.0 if i == 3 else 0.8) for i, (nn, s, l) in enumerate(HOOK_NOTES))
+    if kind in ("piano", "synth", "brass", "uke"):
+        # 착지 음에 받쳐 주는 화음(도·미)을 작게 — 끝이 '완성된' 느낌
+        x = x + inst_note(kind, hz("C4"), 0.44, 1.2, True) * 0.35 + inst_note(kind, hz("E4"), 0.44, 1.2, True) * 0.25
+    x = x + thump(0.44, 0.3 if kind in ("glock", "flute") else 0.4)
+    return finish(*reverb(x, seconds=0.8, wet=wet), f"hook_{kind}")
+
+
+def hook_piano() -> Path: return hook_as("piano")
+def hook_glock() -> Path: return hook_as("glock", 0.18)
+def hook_synth() -> Path: return hook_as("synth")
+def hook_flute() -> Path: return hook_as("flute", 0.2)
+def hook_brass() -> Path: return hook_as("brass")
+def hook_uke() -> Path: return hook_as("uke", 0.1)
+
+
 if __name__ == "__main__":
     import sys
 
-    fns = {f.__name__: f for f in (chime, warm, amen, pop, bounce, spark, hook)}
+    fns = {f.__name__: f for f in (chime, warm, amen, pop, bounce, spark, hook,
+                                   hook_piano, hook_glock, hook_synth, hook_flute, hook_brass, hook_uke)}
     for name in (sys.argv[1:] or fns):
         print(fns[name]())
