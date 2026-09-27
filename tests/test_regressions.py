@@ -744,3 +744,30 @@ def test_enumeration_detection_mid_sentence_and_noun_modifiers():
     texts = ["오늘 세 가지로 말씀합니다 첫째는 겸손입니다.", "예화", "두 번째는 온유입니다.", "예화", "세 번째는 사랑입니다."]
     ss = [Sentence(idx=i, start=i * 60.0, end=i * 60.0 + 5, text=t, words=[]) for i, t in enumerate(texts)]
     assert find_enumerations(ss) == [([0, 2, 4], True)]
+
+
+def test_jumpcut_gap_captions_are_dropped_and_remapped():
+    """점프컷으로 들어낸 구간의 자막은 버리고, 남은 줄은 잘린 타임라인 시각으로(2026-09-27 실신고)."""
+    from src.captions import CaptionLine, Word, _apply_keep_to_lines, _in_keep
+
+    keep = [(0.0, 10.0), (20.0, 30.0)]
+    assert _in_keep(12.0, 14.0, keep) is None
+    lines = [
+        CaptionLine(start=1.0, end=3.0, words=[Word(1.0, 3.0, "앞")]),
+        CaptionLine(start=12.0, end=15.0, words=[Word(12.0, 15.0, "잘린")]),
+        CaptionLine(start=21.0, end=23.0, words=[Word(21.0, 23.0, "뒤")]),
+    ]
+    out = _apply_keep_to_lines(lines, keep)
+    assert [w.text for ln in out for w in ln.words] == ["앞", "뒤"]
+    assert abs(out[1].start - 11.0) < 1e-6
+
+
+def test_skip_restored_when_clip_fits_without_it():
+    """안 잘라도 60초 안이면 내용 문장 skip은 되살린다(땅끝 마을 사례: 59초인데 착지 근거 문장을 뺐다)."""
+    from src.sermon_cut import Sentence, _restore_costly_skips
+
+    ss = [Sentence(idx=i, start=i * 10.0, end=i * 10.0 + 9.5, text=f"문장 내용 {i}입니다.", words=[]) for i in range(6)]
+    log: list = []
+    assert _restore_costly_skips({}, [(3, 3)], ss, 0, 5, 60.0, 90.0, log) == []
+    ss[3] = Sentence(idx=3, start=30.0, end=39.5, text="응.", words=[])
+    assert _restore_costly_skips({}, [(3, 3)], ss, 0, 5, 60.0, 90.0, []) == [(3, 3)]

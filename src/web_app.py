@@ -1475,6 +1475,16 @@ def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path) ->
     return segs
 
 
+def _in_clip_keep(clip, start: float, end: float) -> bool:
+    """점프컷(keep_ranges, 절대초) 클립에서 [start,end]가 남기는 구간에 있는가. 점프컷이 아니면 항상 True."""
+    kr = getattr(clip, "keep_ranges", None) or []
+    if len(kr) < 2:
+        return True
+    from src.captions import _in_keep
+
+    return _in_keep(float(start), float(end), [(float(a), float(b)) for a, b in kr]) is not None
+
+
 def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
@@ -1508,7 +1518,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
             for o in clip.caption_overrides
         ]
         # 통째로 비언어 표기였던 줄은 빈 줄이 되므로 목록에서 뺀다(빈 자막 칸이 남지 않게).
-        rows = [r for r in rows if r["text"].strip()]
+        rows = [r for r in rows if r["text"].strip() and _in_clip_keep(clip, r["start"], r["end"])]
         return _split_long_caption_lines(
             video_id, clip, cfg, sorted(rows, key=lambda r: r["start"]),
         )
@@ -1538,6 +1548,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     # 이 두 보정이 초안에 빠져 있으면, 텍스트만 고쳐 저장해도 시간축 전체가 (보정 안 된)
     # 다른 기준으로 바뀌어 "편집하는 순간 싱크가 무너지는" 사후 회귀가 났다(실신고).
     words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+    # 점프컷으로 들어낸 문장의 자막은 초안에서도 뺀다 — 영상엔 없는 말이 자막 목록에 그대로
+    # 남아 있었다(실신고 2026-09-27). 렌더(captions.build_ass)도 같은 기준으로 버린다.
+    words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]
     sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
     # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
@@ -2374,6 +2387,7 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
         )
         # 처음 렌더와 같은 시간축(무음 보정 + 전역 오프셋)으로 초안을 만든다(_caption_lines_for_clip 주석).
         words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+        words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]  # 점프컷 들어낸 곳 제외
         sync_off = float(captions_cfg.get("sync_offset_sec", 0.0) or 0.0)
         max_wpl = captions_cfg.get("max_words_per_line", 4)
         res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]

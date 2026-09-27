@@ -246,8 +246,8 @@ def build_thesis_cut_prompt(
   부연은 절대 넣지 마라. 예화만 있고 적용이 없는 곳에서 끝내지 마라.
 - **skip(점프컷) — 재미없는 부분을 도려내는 핵심 기능**: 잘 되는 채널의 상위 쇼츠를 원본 설교와 대조해 보면
   18/26개가 이렇게 만들어졌다. 원본 80~520초에서 **중간을 여러 군데 들어내** 60초 안팎으로 압축한다(남기는 비율
-  중앙값 66%, 이음새는 한 클립에 1~7곳). 그러니 길어서 어쩔 수 없을 때만 쓰지 말고, **처음부터 밀도를 올리는
-  도구로 써라.** 빼야 할 것: 같은 말 반복, 곁길·부연("이거는 사실 ~만이 목적이 아니라"), 슬라이드 넘기기,
+  중앙값 66%, 이음새는 한 클립에 1~7곳). 단 **안 빼도 60초 안에 들면 추임새("응.", "어.") 말고는 빼지 마라** —
+  길이가 넘칠 때 줄이는 도구다(실측 실패: 59초짜리에서 착지의 근거 문장을 '부연'으로 빼 버림). 빼야 할 것: 같은 말 반복, 곁길·부연("이거는 사실 ~만이 목적이 아니라"), 슬라이드 넘기기,
   수치·연도 나열, 늘어지는 설명. 남길 것: 상황 제시 → 대사·장면 → 반전 → 착지 명제.
   **절대 조건은 '누가 봐도 짜깁기한 티가 나지 않고, 의미·맥락이 자연스럽게 이어질 것'이다.** 실측으로 확인된 기준:
    (1) skip 바로 **앞 문장은 말이 끝난 문장**이어야 한다(쉼표·"~하는데"로 끝나면 안 됨). 실제 이음새 39곳 전부가 지켰다.
@@ -256,9 +256,13 @@ def build_thesis_cut_prompt(
    (3) 뒤 문장이 "그런데/근데/그래서"로 시작하는 건 **괜찮다** — 실제 이음새의 21%가 그 모양이고 자연스럽다.
        다만 "둘째,/세 번째로"처럼 앞 항목을 전제하는 순서 표지로 이어지면 안 된다.
    (4) 대사·반전은 앞뒤를 붙여서 통으로 남겨라. 빼면 웃음이나 반전이 죽는다.
+   (5) **장면의 구체(누가 무엇을 어떻게 했다·숫자·대사)는 재미 그 자체라 빼지 마라.** 빼는 건 해설·반복·곁길이다.
+       네가 scene·why에 적은 내용이 들어 있는 문장은 절대 빼면 안 된다(실측 실패: why에 "직접 요리해 먹는다"를 적어
+       놓고 "시장 봐서 요리를 직접 합니다"를 뺐다). 착지를 떠받치는 약속·은혜 선언("회개하는 자를 받아 주신다")도
+       부연이 아니다. 그래도 길면 해설 쪽(종교적 의미 풀이, 같은 말 되풀이)을 빼라.
   각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는 뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초
   이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다. {hard_max_sec:.0f}초 이내 컷에도 늘어지는 구간이 있으면 빼서
-  밀도를 올려라 — 단 위 4개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
+  밀도를 올려라 — 단 위 5개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
 - 길이(skip 제외 후): 40~60초 목표, 온전한 이야기·크레센도는 {hard_max_sec:.0f}초까지. 설정 없이 명제 한 문장만 뗀 15~20초 조각은
   미달(크레센도+축복 착지가 붙은 25초부터 허용).
 - 한 컷 = 한 명제. 컷끼리 같은 예화·같은 문장을 반복하지 마라(겹치면 더 강한 쪽 하나만). 단, 이 규칙은 "다른 주제를
@@ -526,6 +530,86 @@ def _eff_dur(sentences: list[Sentence], start: int, end: int, skips: list[tuple[
     return sum(sentences[b].end - sentences[a].start for a, b in kept_runs(start, end, skips))
 
 
+# 들어내면 안 되는 skip 되살리기(2026-09-27 실신고 "재밌는 부분·핵심을 잘랐다", 1GM 실측).
+#   · 땅끝 마을: 안 잘라도 59초인데 '밀도'용으로 "하나님은 버리지 아니하시고 회개하는 자를 탁 받아 주시고…"(착지의
+#     근거)를 뺐다. → 안 빼도 max_duration_sec 안에 들면 추임새 말고는 빼지 않는다.
+#   · 호텔밥: 모델 스스로 why에 "직접 요리해 먹는다"를 이유로 적어 놓고 그 문장(S214)을 뺐다. → scene·why·thesis에 쓴
+#     구체어가 들어 있는 문장은 되살린다(상한 안에서).
+_GENERIC_TOKENS = {
+    "하나님", "하나님이", "예수님", "주님", "우리", "우리가", "여러분", "사람", "사람들", "그리고", "그래서", "그런데",
+    "이것", "그것", "때문", "정말", "모든", "하는", "있는", "없는", "것이", "것을", "거예요", "합니다", "입니다",
+}
+
+
+def _content_stems(text: str) -> set[str]:
+    out: set[str] = set()
+    for tok in re.findall(r"[가-힣A-Za-z0-9%]+", text or ""):
+        stem = _PARTICLE_TAIL.sub("", tok) if len(tok) > 2 else tok
+        stem = re.sub(r"(해|하|했|합|하는|해요|합니다|한다|하고|해서|먹는다|먹고)$", "", stem) or stem
+        if len(stem) >= 2 and tok not in _GENERIC_TOKENS and stem not in _GENERIC_TOKENS:
+            out.add(stem)
+    return out
+
+
+def _restore_costly_skips(
+    raw: dict, skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int,
+    max_sec: float, hard_max_sec: float, log: list[str],
+) -> list[tuple[int, int]]:
+    if not skips:
+        return skips
+
+    def _is_filler(i: int) -> bool:
+        return bool(_FILLER_ONLY.match(sentences[i].text.strip())) or len(sentences[i].text.split()) <= 1
+
+    def _filler_only_skips(sk: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        out: list[tuple[int, int]] = []
+        for a, b in sk:
+            run: int | None = None
+            for i in range(a, b + 1):
+                if _is_filler(i):
+                    run = i if run is None else run
+                elif run is not None:
+                    out.append((run, i - 1)); run = None
+            if run is not None:
+                out.append((run, b))
+        return out
+
+    # (a) 안 잘라도 목표 길이 안 → 추임새만 빼고 전부 되살린다
+    if _eff_dur(sentences, start, end, []) <= max_sec + 1.0:
+        kept = _filler_only_skips(skips)
+        if kept != skips:
+            log.append(f"skip 되살림: 안 잘라도 {_eff_dur(sentences, start, end, []):.0f}초(≤{max_sec:.0f}) — 추임새만 뺀다")
+        return kept
+    # (b) 모델이 scene·why·thesis에 쓴 구체어가 든 문장은 되살린다(상한 안에서만, 문장 단위)
+    key = _content_stems(" ".join(str(raw.get(k) or "") for k in ("scene", "why", "thesis")))
+    if not key:
+        return skips
+    cur = list(skips)
+    for a, b in skips:
+        for i in range(a, b + 1):
+            kept_text = " ".join(
+                sentences[x].text for r0, r1 in kept_runs(start, end, cur) for x in range(r0, r1 + 1)
+            )
+            hit = sorted(t for t in key if t in sentences[i].text and t not in kept_text)
+            if not hit:
+                continue
+            trial: list[tuple[int, int]] = []
+            for c0, c1 in cur:
+                if c0 <= i <= c1:
+                    if c0 <= i - 1:
+                        trial.append((c0, i - 1))
+                    if i + 1 <= c1:
+                        trial.append((i + 1, c1))
+                else:
+                    trial.append((c0, c1))
+            if _eff_dur(sentences, start, end, trial) <= hard_max_sec:
+                log.append(f"S{i} 되살림: 장면/이유의 핵심어 {hit[:3]} 가 이 문장에만 있음")
+                cur = trial
+            else:
+                log.append(f"S{i}에 핵심어 {hit[:3]} 있으나 되살리면 {hard_max_sec:.0f}초 초과 — 유지")
+    return _merge_ranges(cur)
+
+
 def verify_and_fix(
     raw: dict,
     sentences: list[Sentence],
@@ -684,6 +768,7 @@ def verify_and_fix(
         if best is not None:
             log.append(f"start S{start} 약한 훅(연도/나열/장문) → S{best}"); start = best
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
+    skips = _restore_costly_skips(raw, skips, sentences, start, end, max_sec, hard_max_sec, log)
     # 하한은 config min_duration_sec 그대로 적용한다(예전 0.8배 여유는 30초대 반쪽 후보를 통과시켰다 —
     # 2026-09-22 정답지 A/B: 하한을 엄격히 해도 적중 6/7·커버 70% 유지, 40초 미만 후보만 2개→1개로 줄었다).
     if dur(start, end) < min_sec:

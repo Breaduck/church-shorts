@@ -672,6 +672,31 @@ def _snap_word_starts_to_voice(
     return out
 
 
+def _in_keep(start: float, end: float, keep_segments: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """[start,end]가 절반 이상 걸친 '남기는 구간'을 돌려준다. 점프컷으로 들어낸 곳에 있으면 None.
+    (2026-09-27 실신고 "중간에 자른 부분인데 자막은 그대로 다 나와 있다" — 들어낸 문장의 자막은
+    잘린 경계에 0.05초짜리로 몰려 번쩍이거나, 편집 자막 경로에선 아예 원래 시각으로 떠서 뒤가 밀렸다.)"""
+    length = max(1e-6, end - start)
+    for a, b in keep_segments:
+        if (min(end, b) - max(start, a)) >= 0.5 * length or a <= (start + end) / 2 <= b:
+            return a, b
+    return None
+
+
+def _apply_keep_to_lines(lines: list[CaptionLine], keep_segments) -> list[CaptionLine]:
+    """편집 자막(원본 시각 기준 줄)을 점프컷 타임라인으로: 들어낸 곳의 줄은 버리고, 남은 줄은 새 시각으로."""
+    out: list[CaptionLine] = []
+    for ln in lines:
+        seg = _in_keep(ln.start, ln.end, keep_segments)
+        if seg is None:
+            continue
+        s0 = _remap_after_silence_removal(max(ln.start, seg[0]), keep_segments)
+        e0 = _remap_after_silence_removal(min(ln.end, seg[1]), keep_segments)
+        e0 = max(e0, s0 + 0.05)
+        out.append(CaptionLine(start=s0, end=e0, words=_distribute_by_chars([w.text for w in ln.words], s0, e0)))
+    return out
+
+
 def _remap_after_silence_removal(t: float, keep_segments: list[tuple[float, float]]) -> float:
     """무음 제거로 압축된 새 타임라인 기준으로 시간을 다시 계산한다.
 
@@ -1039,7 +1064,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 round(float(ko.get("start", 0)), 2): str(en.get("text", "")).strip()
                 for ko, en in zip(ko_sorted, en_sorted)
             }
-        lines = _clamp_lines_non_overlap(_lines_from_overrides(caption_overrides, clip_start))
+        lines = _lines_from_overrides(caption_overrides, clip_start)
+        if keep_segments:
+            lines = _apply_keep_to_lines(lines, keep_segments)
+        lines = _clamp_lines_non_overlap(lines)
         # 크기는 클립 안에서 하나(줄마다 다르면 재생 중 글자가 커졌다 작아졌다 한다 —
         # 실신고 2026-09-06). 그 하나를 정하는 규칙: **사용자가 고른 크기를 먼저 지키고**,
         # 안 들어가는 줄은 2줄로 내린다. 2줄로도 안 되면 그때만 줄인다.
@@ -1122,6 +1150,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if voice_silences and not keep_segments:
         rel_words = _snap_word_starts_to_voice(rel_words, voice_silences)
     if keep_segments:
+        # 점프컷으로 들어낸 문장의 단어는 버린다(리매핑하면 경계에 몰려 번쩍 뜬다).
+        rel_words = [w for w in rel_words if _in_keep(w.start, w.end, keep_segments) is not None]
         rel_words = [
             Word(
                 start=_remap_after_silence_removal(w.start, keep_segments),
