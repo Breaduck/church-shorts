@@ -726,6 +726,18 @@ def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: flo
 
 
 TITLE_CENTER_RATIO = 0.56
+CAPTION_GAP_BELOW_VIDEO = 100
+
+
+def captions_cfg_for_clip(config_captions: dict, clip) -> dict:
+    """설교 클립은 자막 기본 크기를 sermon_font_scale배로(2026-09-27 "설교 기본 자막 크기 키워줘").
+    찬양은 그대로. 렌더와 편집기 미리보기가 반드시 이 함수 하나로 같은 크기를 얻어야 한다."""
+    if getattr(clip, "clip_type", "") == "praise":
+        return config_captions
+    scale = float(config_captions.get("sermon_font_scale", 1.0) or 1.0)
+    if abs(scale - 1.0) < 1e-3:
+        return config_captions
+    return {**config_captions, "font_size": int(round(int(config_captions.get("font_size", 72)) * scale))}
 
 
 def compute_card_margins(card_layout: dict, resolution: tuple[int, int]) -> tuple[int, int]:
@@ -745,7 +757,8 @@ def compute_card_margins(card_layout: dict, resolution: tuple[int, int]) -> tupl
     safe_top = max(24, int(resolution[1] * 0.06))
     title_margin_v = int(safe_top + TITLE_CENTER_RATIO * max(0, video_box_y - safe_top))
     video_box_bottom = video_box_y + card_layout["video_box_height"]
-    caption_margin_v = video_box_bottom + 60
+    # 자막 기본 위치: 영상 박스 아래 60→100px(2026-09-27 "기본 자막 조금 아래로").
+    caption_margin_v = video_box_bottom + CAPTION_GAP_BELOW_VIDEO
     return title_margin_v, caption_margin_v
 
 

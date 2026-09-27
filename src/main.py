@@ -47,6 +47,7 @@ from src.highlights import (
 from src.feedback import format_feedback_for_prompt, load_feedback
 from src.models import EXECUTION_MODEL, resolve as resolve_model
 from src.render import render_clip
+from src.captions import captions_cfg_for_clip
 from src.transcribe import Segment, Word, transcribe_and_save, transcribe_clip_precise, Transcript
 from src.transcript_import import (
     align_plain_text_to_reference,
@@ -2638,7 +2639,7 @@ def render_selected(
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         _run_with_progress_ticker(
-            lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], cfg["captions"]),
+            lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
             start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
             message=f"[{i+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
             est_seconds=max(15.0, clip_len * 0.9),

@@ -1266,7 +1266,9 @@ def _compute_layout(
     from src.render import _compute_card_video_box_height, _compute_card_video_box_y
 
     render_cfg = cfg["render"]
-    captions_cfg = cfg["captions"]
+    from src.captions import captions_cfg_for_clip
+
+    captions_cfg = captions_cfg_for_clip(cfg["captions"], clip)
 
     if full_frame:
         src_w, src_h = source_resolution
@@ -1557,7 +1559,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
     # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
     res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
-    max_units = max(4.0, (res_w - 104) / max(1, cfg["captions"].get("font_size", 72)))
+    from src.captions import captions_cfg_for_clip
+
+    max_units = max(4.0, (res_w - 104) / max(1, captions_cfg_for_clip(cfg["captions"], clip).get("font_size", 72)))
     lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
     out = [
         {
@@ -1639,7 +1643,7 @@ def clip_edit(video_id: str, idx: int):
         "title_font": cfg["captions"].get("title_font_family", ""),
         "title_size": cfg["captions"].get("title_font_size", 160),
         "caption_font": cfg["captions"].get("font_family", ""),
-        "caption_size": cfg["captions"].get("font_size", 72),
+        "caption_size": layout.get("caption_font_size") or cfg["captions"].get("font_size", 72),
         "fill_mode": cfg["render"]["card_layout"].get("fill_mode", "fit"),
     }
 
@@ -2398,7 +2402,9 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
             segs = base_segs
             _apply_corrections(segs, corrections)
 
-        captions_cfg = cfg["captions"]
+        from src.captions import captions_cfg_for_clip
+
+        captions_cfg = captions_cfg_for_clip(cfg["captions"], clip)
         words = _collect_words_in_range(
             segs, clip.start, clip.end,
             strip_filler=captions_cfg.get("strip_filler", True),
