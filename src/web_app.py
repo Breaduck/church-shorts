@@ -408,8 +408,9 @@ CANDIDATES_TEMPLATE = f"""
       <label class="opt-chip" style="display:flex;width:100%;margin:0 0 8px"><input type="checkbox" id="facetrackChk"> 얼굴 추적(화면 확대·화자 따라감)</label>
       <label class="opt-chip" style="display:flex;width:100%;margin:0 0 4px;justify-content:space-between">자막 언어
         <select id="capLangSel">
-          <option value="bilingual" selected>한글+영어 2줄 (기본)</option>
-          <option value="ko">한글만</option>
+          <option value="ko" selected>한글만 (기본)</option>
+          <option value="bilingual">한글+영어 2줄</option>
+          <option value="en">영어만</option>
         </select>
       </label>
       <button type="button" class="yt-modal-close" id="studioModalClose">닫기</button>
@@ -430,7 +431,7 @@ CANDIDATES_TEMPLATE = f"""
     const doRender = async () => {{
       const res = await fetch('/video/{{{{ video_id }}}}/render', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, caption_lang: capLangSel ? capLangSel.value : 'bilingual', facetrack: facetrackChk ? facetrackChk.checked : false, horizontal_indices: window.__pvHorizontal ? Array.from(window.__pvHorizontal) : []}})
+        body: JSON.stringify({{indices: idx, outro: outroChk ? outroChk.checked : true, sfx: sfxChk ? sfxChk.checked : false, motion: motionChk ? motionChk.checked : false, bold_caption: boldCapChk ? boldCapChk.checked : false, caption_lang: capLangSel ? capLangSel.value : 'ko', facetrack: facetrackChk ? facetrackChk.checked : false, horizontal_indices: window.__pvHorizontal ? Array.from(window.__pvHorizontal) : []}})
       }});
       const data = await res.json().catch(function() {{ return {{}}; }});
       if (!res.ok) {{ alert('오류: ' + (data.error || '렌더 요청 실패')); return; }}
@@ -1022,8 +1023,9 @@ def render_route(video_id: str):
     sfx_enabled = bool(body.get("sfx", False))
     motion_enabled = bool(body.get("motion", False))
     caption_preset = "bold_yellow" if body.get("bold_caption") else ""
-    # 자막 언어: 명시적 caption_lang("bilingual"/"ko"/"en")을 우선한다. 기본은 한글+영어
-    # 2줄(사용자 요청 "디폴트로") — 영어 트랙이 있는 클립만 실제 2줄이 되므로 무해.
+    # 자막 언어: 명시적 caption_lang("bilingual"/"ko"/"en")을 우선한다. 기본은 **한글만**
+    # (2026-09-27 사용자: "디폴트는 한글만, 영어 자막을 골라야 영어가 나와야지"). 예전 기본은 한글+영어였는데
+    # 09-08에 '번역 없으면 렌더 때 즉석 번역'이 붙으면서 모든 클립에 영어가 따라 나오게 됐다.
     # 예전 체크박스 2개(english/bilingual)는 '둘 다 체크하면 영어만'이 되는 혼란이 있었다
     # (실신고 2026-09-05) — 셀렉트 하나로 교체, 구 클라이언트 값은 bilingual 우선으로 해석.
     _cl = str(body.get("caption_lang") or "").strip()
@@ -1032,7 +1034,7 @@ def render_route(video_id: str):
     elif _cl == "ko":
         caption_lang = ""
     else:  # 구 체크박스/스튜디오(미전송) 하위호환
-        caption_lang = "bilingual" if body.get("bilingual", True) else ("en" if body.get("english") else "")
+        caption_lang = "bilingual" if body.get("bilingual") else ("en" if body.get("english") else "")
     facetrack_enabled = bool(body.get("facetrack", False))
     # 팝업 '가로 원본' 버튼으로 고른 클립들: 찬양을 쇼츠 레이아웃 없이 원본 가로 그대로,
     # 자막·제목 없이 잘라만 낸다(곡별 개별 업로드용).
