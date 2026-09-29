@@ -260,6 +260,10 @@ def build_thesis_cut_prompt(
        네가 scene·why에 적은 내용이 들어 있는 문장은 절대 빼면 안 된다(실측 실패: why에 "직접 요리해 먹는다"를 적어
        놓고 "시장 봐서 요리를 직접 합니다"를 뺐다). 착지를 떠받치는 약속·은혜 선언("회개하는 자를 받아 주신다")도
        부연이 아니다. 그래도 길면 해설 쪽(종교적 의미 풀이, 같은 말 되풀이)을 빼라.
+   (6) 줄일 때 **가장 먼저 빼는 것은 성경 인물 이야기의 세부**(○○가 어디로 가서 무엇을 했다는 행적, 본문 낭독,
+       시대 배경)다 — 시청자는 성경을 모르는 일반 대중이라 그 세부는 남의 옛날이야기다(사용자 지시). 인물이 한 문장
+       근거로만 스치는 건 두되, 행적을 따라가는 여러 문장은 통째로 들어내고 그 뒤의 적용·대사·착지를 남겨라.
+       반대로 **핵심(core)과 그 착지, 반전 대사는 절대 skip 안에 넣지 마라** — 실측에서 핵심을 건너뛴 컷이 나왔다.
   각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는 뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초
   이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다. {hard_max_sec:.0f}초 이내 컷에도 늘어지는 구간이 있으면 빼서
   밀도를 올려라 — 단 위 5개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
@@ -1082,8 +1086,30 @@ _ENUM_LAST = re.compile(
     r"^(?:>>\s*)?(?:(?:자|그리고|또|이제)[,.]?\s+)?(마지막으로|마지막\s*(?:세|네|다섯)?\s*번째로?|끝으로)"
 )
 _ENUM_FIRST_FALLBACK = re.compile(r"^(?:>>\s*)?(?:자[,.]?\s+)?(먼저|우선)[,\s]")
-ENUM_BUDGET_SEC = 58.0          # 60초 이내(렌더 무음 제거로 더 줄지만 여유를 둔다)
+ENUM_BUDGET_SEC = 58.0          # 60초 이내(렌더 무음 제거로 더 줄지만 여유를 둔다) — 항목 2개 기준
 _ENUM_MAX_GAP_SEC = 900.0       # 항목 사이 최대 간격(대지 설교는 항목 하나가 10분을 넘기도 한다)
+# 2026-09-29 실신고 "나열 점프컷이 너무 에바(과하다)". 실측(IOSxqPI2nUc): 8분(S50~S131, 483초)짜리 2항목 나열을
+# **한 문장씩 7개**(7.5초마다 점프, 원본의 11%만 남음)로 떼어 53초를 만들었다 — "첫 번째는 ~하나님입니다 →
+# (5분 건너뜀) → 그런데 하나님께서는 이 연약한 한 여인의 손을 …(시스라·야엘 소개는 잘림) → …". 목차 낭독이지
+# 쇼츠가 아니다. 1GM도 같은 모양(708초→46초, 5조각). 벤치마크 점프컷은 원본의 40~88%를 남기고 조각 하나가
+# '상황→대사→착지'다. 원인 3가지와 대책:
+#   1) 프롬프트가 "표지 + 가장 선명한 1~2문장"을 요구 → 문장 한 줄씩 띄엄띄엄. → 항목마다 **연속 블록**(2~5문장,
+#      12~22초)을 통째로 남기게 하고, 항목당 구간 ≤2(표지+블록). 성경 인물 줄거리는 통째로 건너뛰고 적용 대목을 잡는다.
+#   2) 예산 58초가 항목 수와 무관 → 3항목이면 항목당 10초, 표지 말고는 남을 게 없다. → 항목 3개부터 20초씩 가산,
+#      hard_max(90)까지(벤치마크 상위 쇼츠 59~111초). 2항목은 여전히 60초 이내.
+#   3) 나열 패스는 일반 검증(_sanitize_skips)을 우회해 이음새 규칙이 하나도 안 걸렸다 → _enum_fix_seams:
+#      단독 문장 조각 확장, 잘려나간 대상을 가리키는 시작 되돌리기, 안 끝난 문장으로 조각이 끝나면 늘리기.
+_ENUM_ITEM_EXTRA_SEC = 20.0     # 항목 3개부터 항목마다 더 주는 길이
+_ENUM_MIN_BLOCK_SENTENCES = 2   # 표지가 아닌 조각의 최소 문장 수
+_ENUM_MIN_BLOCK_SEC = 10.0      # 표지가 아닌 조각의 최소 길이
+_ENUM_EXTEND_CAP = 3            # 조각을 앞/뒤로 늘릴 때 최대 문장 수
+
+
+def _enum_budget(n_items: int, base: float = ENUM_BUDGET_SEC, hard_max: float = 90.0) -> float:
+    """항목 수에 따른 남는 길이 예산: 2항목 58초, 3항목 78초, 4항목부터 hard_max."""
+    if n_items <= 2:
+        return min(base, hard_max)
+    return min(hard_max, base + _ENUM_ITEM_EXTRA_SEC * (n_items - 2))
 
 
 def _enum_number(text: str) -> int:
@@ -1166,18 +1192,33 @@ def _build_enum_prompt(
         + (f" ★항목{mark_no[s.idx]}" if s.idx in mark_no else "") + f" {s.text}"
         for s in sentences[lo: hi + 1]
     )
+    max_runs = 2 * n_items + 2
     return f"""아래는 한국 교회 설교 전사본 일부다. 설교자가 교훈을 {n_items}가지로 나열한다(★항목 표시 문장이
 각 항목의 시작).{first_note} 이 나열 전체를 쇼츠 하나로 만든다 — 모든 항목이 반드시 들어가야 하고, 남는 길이 합계는
 {budget:.0f}초 이내여야 한다(각 문장 앞 괄호가 그 문장 길이). 시청자는 교회를 안 다니는 사람도 포함한 일반 대중.
 
+## 절대 규칙 — 문장을 한 줄씩 띄엄띄엄 뽑지 말 것
+지난 실패: 8분짜리 나열에서 한 문장씩 7개를 떼어 53초를 만들었더니 목차 낭독이 됐다("첫 번째는 ~하나님입니다 →
+(5분 건너뜀) → 그런데 하나님께서는 이 연약한 한 여인의 손을… → (건너뜀) → …"). 시청자는 그 여인이 누군지도 모른 채
+표지만 듣는다. 잘 된 쇼츠의 점프컷은 조각 하나하나가 '상황 → 대사 → 착지'로 이어지는 덩어리다.
+- 항목마다 **연속 블록 하나**(끊기지 않은 2~5문장, 12~22초)를 통째로 남긴다. 블록 = 그 항목에서 시청자가 "내 얘기다"
+  하는 대목: "나는 나이가 적어, 나는 실력이 없어…" 같은 나열, 청중에게 던지는 질문, 일상 대사 재연, 찌르는 한 줄과 그 앞뒤.
+- ★표지 문장이 블록과 떨어져 있으면 [표지 문장] + [블록] 두 구간. 항목당 구간은 최대 2개, 전체 구간 수 ≤ {max_runs}.
+  표지 문장에 항목 이름이 없으면(예: "둘째로요.") 바로 뒤 이름 문장까지 표지로 친다.
+- 성경 인물 줄거리(인물 이름이 나오는 서사, 본문 낭독, 시대 배경 설명)는 **통째로** 건너뛰고 그 뒤에 오는 적용 대목을
+  잡아라. 줄거리 속 한 문장만 떼어 오면("그 여인의 손을 사용하셨다") 이름을 모르는 시청자에겐 소음이다.
+- 예산이 넘치면 블록을 쪼개지 말고 도입·마무리를 먼저 빼라. 그래도 넘치면 각 블록을 2~3문장까지만 줄여라.
+- 이음새: 각 구간의 마지막 문장은 끝난 문장이어야 하고, 구간의 첫 문장이 잘려나간 대상을 가리키는 "그 ○○/이 ○○"로
+  시작하면 안 된다(그 대상이 나오는 앞 문장부터 구간을 시작하라).
+
 ## 구성
 - 도입(선택, 1~2문장): 이 나열이 무엇에 대한 답인지 여는 질문·문제 제기("어떻게 하면 ~할까요?", "~하는 세 가지").
   없으면 생략하고 ★항목1부터 시작.
-- 각 항목: ★표지 문장 + 그 항목을 가장 선명하게 전달하는 1~2문장(핵심 정의·한 줄 예화·찌르는 문장).
-  항목마다 비슷한 분량으로. 표지 문장에 항목 이름이 없으면(예: "둘째로요.") 바로 뒤 이름 문장을 꼭 넣어라.
+- 항목 1~{n_items}: 위 규칙대로 표지 + 연속 블록. 항목마다 비슷한 분량으로.
 - 마무리(선택, 1문장): 전체를 묶는 착지 문장이 있으면.
-- 날릴 것(재미없는 부분): 성경 본문 장황한 낭독·배경 설명·같은 말 반복·추임새·광고·인사·"여러분 그렇죠?" 류.
-- 이음새: 이어 붙였을 때 앞 문장이 끝난 상태여야 하고, 잘려나간 대상을 가리키는 "그 ○○"로 시작하는 문장은 피하라.
+- 날릴 것: 성경 본문 낭독·배경 설명·같은 말 반복·추임새·광고·인사·"여러분 그렇죠?" 류.
+- 블록으로 잡으면 안 되는 것: 이단·타종교·점쟁이·특정 집단을 비판·경계하는 대목("그거 점쟁이지 뭐예요", "조심하세요"),
+  정치·국가·전쟁 이야기. 그 항목의 다른 대목(적용·질문·일상 대사)을 찾아라.
 
 입력:
 {body}
@@ -1190,11 +1231,163 @@ keep은 남길 문장 구간(양끝 포함) 목록, 시간순. 출력은 짧게.
   컷을 만들지 말고 [{{"not_enum": true}}] 만 출력하라."""
 
 
+def _runs_of(ids: set[int]) -> list[tuple[int, int]]:
+    """문장 id 집합 → 연속 구간(inclusive) 목록, 시간순."""
+    s = sorted(ids)
+    runs: list[tuple[int, int]] = []
+    for i in s:
+        if runs and runs[-1][1] == i - 1:
+            runs[-1] = (runs[-1][0], i)
+        else:
+            runs.append((i, i))
+    return runs
+
+
+def _enum_fix_seams(
+    keep_ids: set[int], marks: list[int], sentences: list[Sentence], lo: int, hi: int, log: list[str],
+) -> set[int]:
+    """나열 컷의 조각(연속 구간)들에 일반 컷과 같은 이음새 규칙을 결정론적으로 적용한다(2026-09-29).
+      · 표지가 아닌 조각이 한 문장/10초 미만이면 뒤로 늘린다(한 줄씩 떼어 온 '목차 낭독' 방지).
+      · 조각의 첫 문장이 잘려나간 대상을 가리키면("그 여인", "이 사람") 대상이 나오는 앞 문장까지 되돌린다.
+        못 되돌리면 표지 없는 조각은 버린다.
+      · 조각의 마지막 문장이 안 끝났으면(쉼표·접속형 어미) 끝나는 문장까지 늘린다.
+    표지 문장은 순서 표지("둘째는…")로 시작하는 게 정상이므로 그 검사만 면제한다."""
+    keep = set(keep_ids)
+    mark_set = set(marks)
+
+    def _dur(a: int, b: int) -> float:
+        return sentences[b].end - sentences[a].start
+
+    def _run_has_mark(a: int, b: int) -> bool:
+        return any(a <= m <= b for m in marks)
+
+    # (0) 성경 인물 줄거리 조각 버리기(2026-09-29 사용자: "성경 인물 세부 이야기는 가급적 생략"). 표지 없는 조각의
+    #     절반 이상 문장에 인물 이름이 나오면 줄거리다 — 이름을 모르는 시청자에겐 소음. 예산은 _enum_fill_budget이 채운다.
+    for a, b in _runs_of(keep):
+        if _run_has_mark(a, b) or b - a + 1 < 2:
+            continue
+        named = sum(1 for i in range(a, b + 1) if _BIBLE_NAME_RE.search(sentences[i].text))
+        if named * 2 >= b - a + 1:
+            keep.difference_update(range(a, b + 1))
+            log.append(f"조각 S{a}~S{b} 버림: 성경 인물 줄거리({named}/{b - a + 1}문장에 인물 이름)")
+            continue
+        # 남 비판·경계 대목("그거 점쟁이지 뭐예요", 이단·몰몬)은 일반 컷에서 제외하는 것과 같은 이유로 블록에서도 뺀다
+        pm = next((_POLEMIC_RE.search(sentences[i].text) for i in range(a, b + 1)
+                   if _POLEMIC_RE.search(sentences[i].text)), None)
+        if pm:
+            keep.difference_update(range(a, b + 1))
+            log.append(f"조각 S{a}~S{b} 버림: 남 비판·경계 표지어 '{pm.group(0)}'")
+
+    for _ in range(3):  # 늘리기/되돌리기가 서로를 건드릴 수 있어 몇 번 돌려 안정시킨다
+        changed = False
+        runs = _runs_of(keep)
+        for k, (a, b) in enumerate(runs):
+            # (1) 표지 없는 단독 조각 → 뒤로 늘리기
+            if not _run_has_mark(a, b) and (b - a + 1 < _ENUM_MIN_BLOCK_SENTENCES or _dur(a, b) < _ENUM_MIN_BLOCK_SEC):
+                nb = b
+                while (nb - b < _ENUM_EXTEND_CAP and nb + 1 <= hi
+                       and (nb - a + 1 < _ENUM_MIN_BLOCK_SENTENCES or _dur(a, nb) < _ENUM_MIN_BLOCK_SEC)):
+                    nb += 1
+                if nb > b:
+                    keep.update(range(b + 1, nb + 1)); changed = True
+                    log.append(f"조각 S{a}~S{b} 한 줄뿐 → S{nb}까지 늘림")
+                    b = nb
+            # (2) 첫 문장이 잘려나간 대상을 가리킴 → 앞으로 되돌리기
+            if k > 0 and a not in mark_set:
+                pa, pb = runs[k - 1]
+                kept_before = " ".join(sentences[i].text for i in sorted(keep) if i < a)
+                na = a
+                why = _seam_problem(sentences[pb], sentences[na], kept_before)
+                steps = 0
+                while why and steps < _ENUM_EXTEND_CAP and na - 1 > pb:
+                    na -= 1; steps += 1
+                    why = _seam_problem(sentences[pb], sentences[na], kept_before)
+                if not why and na < a:
+                    keep.update(range(na, a)); changed = True
+                    log.append(f"조각 S{a} 시작이 잘린 대상을 가리켜 S{na}부터로 되돌림")
+                elif why and not _run_has_mark(a, b):
+                    keep.difference_update(range(a, b + 1)); changed = True
+                    log.append(f"조각 S{a}~S{b} 버림: {why}")
+                    continue
+            # (3) 마지막 문장이 안 끝남 → 뒤로 늘리기. 중간 조각은 질문으로 끝나도 되지만(이음새 규칙과 동일)
+            #     클립의 맨 끝 조각이 질문으로 끝나면 답 없이 끝나는 것이라 안 끝난 것으로 본다.
+            is_last = k == len(runs) - 1
+
+            def _open(t: str, last: bool = is_last) -> bool:
+                return _is_incomplete(t) and (last or not t.endswith("?"))
+
+            bt = sentences[b].text.strip()
+            if _open(bt):
+                nb = b
+                while nb - b < _ENUM_EXTEND_CAP and nb + 1 <= hi:
+                    nb += 1
+                    if not _open(sentences[nb].text.strip()):
+                        break
+                if nb > b and not _open(sentences[nb].text.strip()):
+                    keep.update(range(b + 1, nb + 1)); changed = True
+                    log.append(f"조각 끝 S{b} 미완('…{bt[-10:]}') → S{nb}까지 늘림")
+        if not changed:
+            break
+    return keep
+
+
+_ENUM_FILL_SLACK_SEC = 4.0      # 예산에 이만큼도 못 미치면 블록을 늘려 채운다
+_ENUM_BLOCK_MAX_SEC = 26.0      # 블록 하나가 이보다 길어지게는 안 늘린다(항목 간 균형)
+_ENUM_FILL_CAP = 4              # 블록당 최대 늘리는 문장 수
+
+
+def _enum_fill_budget(
+    keep_ids: set[int], marks: list[int], sentences: list[Sentence], hi: int, budget: float, log: list[str],
+) -> set[int]:
+    """모델이 예산을 크게 남기면(2026-09-29 실측: 58초 예산에 43초, 블록마다 13초) 각 블록을 뒤로 한 문장씩
+    돌아가며 늘려 예산을 채운다 — "나는 나이가 적어, 가진 게 없어, 말을 잘 못해"에서 끊긴 나열을 "실력이 없어,
+    경험이 부족해"까지 잇는 식. 표지만 있는 조각은 모델이 일부러 점프한 것이라 안 늘리고, 착지(축원·아멘)로
+    끝난 블록, 다음 문장이 순서 표지·구조 표지·추임새면 멈춘다."""
+    keep = set(keep_ids)
+    mark_set = set(marks)
+    grown: dict[int, int] = {}  # 조각 시작 → 늘린 문장 수
+
+    def _total() -> float:
+        return sum(sentences[b].end - sentences[a].start for a, b in _runs_of(keep))
+
+    if _total() >= budget - _ENUM_FILL_SLACK_SEC:
+        return keep
+    progressed = True
+    while progressed:
+        progressed = False
+        for a, b in _runs_of(keep):
+            if all(i in mark_set for i in range(a, b + 1)):
+                continue  # 표지만 있는 조각
+            last = sentences[b].text.strip()
+            # 질문으로 끝난 블록은 답이 다음 문장에 있으니 길이·횟수 상한을 넘어서라도 한 문장 더 잇는다
+            question = last.endswith("?")
+            if not question and (grown.get(a, 0) >= _ENUM_FILL_CAP
+                                 or sentences[b].end - sentences[a].start >= _ENUM_BLOCK_MAX_SEC):
+                continue
+            if _STRONG_LANDING.search(last) or re.fullmatch(r"(>>\s*)?아멘[.!]?", last):
+                continue
+            nxt = b + 1
+            if nxt > hi or nxt in keep:
+                continue
+            t = sentences[nxt].text.strip()
+            if _FILLER_ONLY.match(t) or _enum_number(t) != 0 or _STRUCT_START.match(t):
+                continue
+            if _total() + (sentences[nxt].end - sentences[b].end) > budget:
+                continue
+            keep.add(nxt); grown[a] = grown.get(a, 0) + 1; progressed = True
+            log.append(f"블록 S{a}~S{b} → S{nxt}까지 늘려 예산 채움")
+    return keep
+
+
 def _fit_enum_keep(
     keep_ids: set[int], marks: list[int], sentences: list[Sentence], budget: float, log: list[str],
+    extra_protected: set[int] | None = None,
 ) -> set[int]:
-    """모든 항목 표지 포함을 강제하고, 합계가 budget을 넘으면 가장 긴 항목의 꼬리부터 덜어낸다."""
-    protected: set[int] = set()
+    """모든 항목 표지 포함을 강제하고, 합계가 budget을 넘으면 가장 긴 항목의 꼬리부터 덜어낸다.
+    덜어낸 뒤 조각 끝이 안 끝난 문장이면 그 문장도 같이 덜어낸다(이음새 유지).
+    extra_protected: 표지 외에 덜어내면 안 되는 문장(핵심 문장, thesis·why의 구체어가 든 문장) —
+    2026-09-29 사용자 "건너뛰기할 때 핵심도 건너뛴다"에 대한 결정론적 보호."""
+    protected: set[int] = set(extra_protected or ())
     for m in marks:
         protected.add(m)
         # "둘째로요." 처럼 표지만 있고 항목 이름이 없으면 다음 문장까지 보호한다.
@@ -1235,20 +1428,33 @@ def _fit_enum_keep(
             break
         keep.discard(victim)
         log.append(f"S{victim} 덜어냄(길이 초과)")
+        # 꼬리를 덜어낸 조각의 새 끝이 안 끝난 문장이면 그것도 덜어낸다 — 안 그러면 "…인데" 하고 점프한다
+        j = victim - 1
+        while j in keep and j not in protected and _is_incomplete(sentences[j].text.strip()) \
+                and (j == max(keep) or not sentences[j].text.strip().endswith("?")):
+            keep.discard(j)
+            log.append(f"S{j} 덜어냄(앞 문장이 미완으로 남아)")
+            j -= 1
     return keep
 
 
 def build_enumeration_cuts(
     sentences: list[Sentence], model: str = "", thinking_tokens: int = 4096,
     timeout_sec: int = 600, budget: float = ENUM_BUDGET_SEC, max_groups: int = 2,
+    hard_max_sec: float = 90.0,
 ) -> tuple[list[dict], list[dict]]:
-    """나열 묶음마다 컷 dict(일반 컷과 같은 모양: core/start/end/skip + enum=True)를 만든다. (컷들, 디버그 로그)"""
+    """나열 묶음마다 컷 dict(일반 컷과 같은 모양: core/start/end/skip + enum=True)를 만든다. (컷들, 디버그 로그)
+    budget은 항목 2개 기준이고 항목 수에 따라 _enum_budget으로 늘어난다(hard_max_sec까지)."""
     cuts: list[dict] = []
     logs: list[dict] = []
+    base_budget = budget
     for marks, has_first in find_enumerations(sentences)[:max_groups]:
         marks = list(marks)
+        n_items = len(marks) + (0 if has_first else 1)
+        budget = _enum_budget(n_items, base_budget, hard_max_sec)
         log: list[str] = [("" if has_first else "(1번 표지 없음) ") + "항목 표지: "
-                          + " / ".join(f"S{m} {sentences[m].text[:20]}" for m in marks)]
+                          + " / ".join(f"S{m} {sentences[m].text[:20]}" for m in marks)
+                          + f" / 예산 {budget:.0f}초({n_items}항목)"]
         lo = max(0, marks[0] - 12)
         if not has_first:  # 1번 항목을 모델이 찾을 수 있게 2→3 간격만큼 앞을 더 보여 준다
             back = max(240.0, sentences[marks[1]].start - sentences[marks[0]].start)
@@ -1290,23 +1496,34 @@ def build_enumeration_cuts(
             log.append(f"모델 실패 → 표지+직후 문장으로 구성: {exc}")
             for m in marks:
                 keep_ids.update({m, min(m + 1, len(sentences) - 1)})
-        keep = _fit_enum_keep(keep_ids, marks, sentences, budget, log)
+        # 핵심 문장은 모델이 keep에 안 넣었어도 강제로 넣고 덜어내기에서 보호한다.
+        core = meta.get("core")
+        try:
+            core = int(core)
+            if not (lo <= core <= hi):
+                core = marks[0]
+        except (TypeError, ValueError):
+            core = marks[0]
+        if core not in keep_ids:
+            log.append(f"핵심 문장 S{core}이 keep에 없음 → 강제 포함")
+            keep_ids.add(core)
+        keep = _enum_fix_seams(keep_ids, marks, sentences, lo, hi, log)
+        keep = _enum_fill_budget(keep, marks, sentences, hi, budget, log)
+        # thesis·why에 적은 구체어가 든 문장은 덜어내기에서 보호(모델이 이유로 쓴 문장을 스스로 빼는 실수 방지)
+        key = _content_stems(" ".join(str(meta.get(k) or "") for k in ("thesis", "why")))
+        key_ids = {i for i in keep if key and sum(1 for t in key if t in sentences[i].text) >= 2}
+        keep = _fit_enum_keep(keep, marks, sentences, budget, log, extra_protected={core} | key_ids)
         ids = sorted(keep)
         start, end = ids[0], ids[-1]
         skips: list[tuple[int, int]] = []
         for a, b in zip(ids, ids[1:]):
             if b > a + 1:
                 skips.append((a + 1, b - 1))
-        core = meta.get("core")
-        try:
-            core = int(core)
-        except (TypeError, ValueError):
-            core = marks[0]
         if core not in keep:
             core = marks[0]
         cut = {
             "core": core, "start": start, "end": end, "skip": [list(x) for x in skips],
-            "appeal": str(meta.get("appeal") or "교훈"),
+            "appeal": "교훈",  # 모델이 여기에 문장을 써 넣기도 해서 고정한다
             "thesis": str(meta.get("thesis") or sentences[marks[0]].text[:40]),
             "why": f"나열형 교훈 {len(marks)}가지 전부 포함 — " + str(meta.get("why") or ""),
             "enum": True,
@@ -1392,6 +1609,7 @@ def select_highlights_v2(
             on_progress(0.70, "첫째·둘째·셋째 나열 교훈을 모으는 중...")
         enum_cuts, enum_logs = build_enumeration_cuts(
             sentences, model=model, budget=min(ENUM_BUDGET_SEC, float(max_duration_sec) - 2.0),
+            hard_max_sec=float(hard_max_duration_sec),
         )
         fixed = enum_cuts + fixed
     except QuotaExceededError:

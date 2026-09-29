@@ -2638,6 +2638,15 @@ def render_selected(
             _sync_keep_ranges(clip, _snap_orig_start, _snap_orig_end)
         out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        # 자막 자동 교정(2026-09-29): 편집 자막이 없는 설교 클립은 whisper 원문이 그대로 구워졌다 — 추임새 제거 +
+        # 문맥 교정(Sonnet, 캐시)을 렌더 직전 줄 텍스트에 건다. 임시 속성이라 clips.json엔 안 남는다.
+        try:
+            from src.caption_autofix import make_text_fixer
+
+            clip.caption_text_fixer = make_text_fixer(video_dir, clip, cfg, use_model=True)
+        except Exception as exc:  # noqa: BLE001 - 교정 준비 실패는 원문 렌더
+            _rlog(video_dir, f"clip{idx} 자막 자동 교정 준비 실패: {exc}")
+            clip.caption_text_fixer = None
         _run_with_progress_ticker(
             lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
             start_pct=base + step * 0.5, end_pct=base + step, progress=progress,

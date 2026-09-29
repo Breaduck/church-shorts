@@ -829,6 +829,8 @@ def build_clip_ass(
         caption_offset_x=clip.caption_offset_x,
         caption_offset_y=clip.caption_offset_y,
         caption_overrides=getattr(clip, "caption_overrides", None) or None,
+        # 자동 자막 교정(추임새 제거·문맥 교정): main.render_selected가 설교 클립에 임시 속성으로 붙인다(직렬화 안 됨).
+        text_fixer=getattr(clip, "caption_text_fixer", None),
         font_style=_clip_font_style(clip),
         voice_silences=voice_silences,
         hook_speedup=hook_speedup,

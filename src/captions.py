@@ -56,10 +56,29 @@ _FILLER_WORDS = {"음", "어", "에", "으", "엄", "아", "응", "어어", "으
 _FILLER_WORDS_AGGRESSIVE = _FILLER_WORDS | {"그", "그그", "인제", "막", "뭐", "저", "저기"}
 
 
+# 추임새 음절만으로 된 토큰("어어어", "으음", "음~", "에에", "허")도 전부 추임새다 — 사전에 없는 변형이
+# 새던 것(2026-09-29 "응. 어 이런 의성어가 자막에 들어간다"). '예/네'는 대답으로도 쓰이므로 사전(_FILLER_WORDS)의
+# 판단을 따르고 여기엔 넣지 않는다.
+_FILLER_SYLLABLE_RE = re.compile(r"^[음어에으엄아응흠허]{1,4}$")
+_FILLER_TRAIL = ".,!?…·~"
+
+
 def _is_filler(text: str, aggressive: bool = False) -> bool:
-    """단어가 순수 추임새인지 — 앞뒤 문장부호는 떼고 판단한다."""
-    t = text.strip().strip(".,!?…·").strip()
+    """단어가 순수 추임새인지 — 앞뒤 문장부호·물결은 떼고 판단한다."""
+    t = text.strip().strip(_FILLER_TRAIL).strip()
+    if not t:
+        return False
+    if _FILLER_SYLLABLE_RE.match(t):
+        return True
     return t in (_FILLER_WORDS_AGGRESSIVE if aggressive else _FILLER_WORDS)
+
+
+def strip_filler_tokens_text(text: str, aggressive: bool = False) -> str:
+    """줄 텍스트(편집기 저장본·교정 결과처럼 단어 시각이 없는 문자열)에서 추임새 토큰을 걷어낸다.
+    단어 단위 경로(_collect_words_in_range)와 같은 판단을 줄 단위에도 적용해, 저장된 자막에 박힌
+    "응. 어"도 렌더·편집기 양쪽에서 사라지게 한다. 전부 추임새면 빈 문자열."""
+    toks = [t for t in (text or "").split() if not _is_filler(t, aggressive)]
+    return " ".join(toks).strip()
 
 
 def _collect_words_in_range(
@@ -132,7 +151,8 @@ def _lines_from_overrides(
 이제는 편집기가 확정한 시간을 그대로 쓴다."""
     lines: list[CaptionLine] = []
     for ov in caption_overrides:
-        text = _clean_word_text(str(ov.get("text", "")))
+        # 비언어 표기에 이어 추임새 토큰("응." "어")도 걷어낸다 — 저장본에 박혀 있어도 영상엔 안 나가게.
+        text = strip_filler_tokens_text(_clean_word_text(str(ov.get("text", ""))))
         if not text:
             continue
         rel_start = float(ov["start"]) - clip_start
@@ -791,6 +811,7 @@ def build_ass(
     caption_offset_x: float = 0.0,
     caption_offset_y: float = 0.0,
     caption_overrides: list | None = None,
+    text_fixer=None,  # 줄 텍스트 목록 → 교정된 목록(1:1). 렌더 직전 추임새 제거·문맥 교정(src/caption_autofix)
     title_font_override: str = "",
     title_size_override: int = 0,
     title_align: str = "",
@@ -1199,6 +1220,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     lines = _clamp_lines_non_overlap(
         chunk_words_into_lines(rel_words, max_words_per_line, max_units=max_units)
     )
+    # 자동 교정(2026-09-29): 줄이 확정된 뒤 텍스트만 1:1로 바꾼다(시간 유지). 바뀐 줄은 글자 수 비례로
+    # 단어 시각을 다시 나누고(편집 자막 경로와 같은 방식), 추임새만 남아 빈 줄이 된 것은 뺀다.
+    if text_fixer and lines:
+        try:
+            fixed = list(text_fixer([" ".join(_display_text(w.text) for w in ln.words) for ln in lines]))
+        except Exception:  # noqa: BLE001 - 교정 실패는 원문 그대로
+            fixed = []
+        if len(fixed) == len(lines):
+            new_lines: list[CaptionLine] = []
+            for ln, ft in zip(lines, fixed):
+                ft = (ft or "").strip()
+                orig = " ".join(_display_text(w.text) for w in ln.words)
+                if not ft:
+                    continue
+                if ft != orig:
+                    ln = CaptionLine(start=ln.start, end=ln.end, words=_distribute_by_chars(ft.split(), ln.start, ln.end))
+                new_lines.append(ln)
+            lines = new_lines
 
     # 편집기에서 한 번도 확정한 적 없는(caption_overrides가 비어 재전사 결과 그대로 굽는)
     # 클립도 '영어 자막'/이중언어를 고르면 그대로 나와야 한다(사용자 신고 2026-09-08). 이
@@ -1344,6 +1383,7 @@ def build_ass_for_clip(
     caption_offset_x: float = 0.0,
     caption_offset_y: float = 0.0,
     caption_overrides: list | None = None,
+    text_fixer=None,  # 줄 텍스트 목록 → 교정된 목록(1:1). 렌더 직전 추임새 제거·문맥 교정(src/caption_autofix)
     font_style: dict | None = None,
     voice_silences: list[tuple[float, float]] | None = None,
     hook_speedup: tuple[float, float] | None = None,
@@ -1389,6 +1429,7 @@ def build_ass_for_clip(
         caption_offset_x=caption_offset_x,
         caption_offset_y=caption_offset_y,
         caption_overrides=caption_overrides,
+        text_fixer=text_fixer,
         title_font_override=fs.get("title_font", ""),
         title_size_override=int(fs.get("title_size", 0) or 0),
         title_align=fs.get("title_align", ""),

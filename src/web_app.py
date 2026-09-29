@@ -1443,10 +1443,11 @@ def _tighten_caption_lines(lines: list[dict], clip, hold_max: float = 6.0):
     return out, dropped, filled
 
 
-def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path) -> list:
+def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path, report: dict | None = None) -> list:
     """이 클립의 자막을 만들 전사 세그먼트 — 실제 렌더가 쓰는 것과 같은 소스를 고른다.
     정밀 재전사 캐시가 있고 '구멍'이 없으면 그것, 아니면 유튜브 자동자막(transcript.json).
-    편집기 초안(_caption_lines_for_clip)과 실제결과 미리보기(clip_truth_frame)가 공유한다."""
+    편집기 초안(_caption_lines_for_clip)과 실제결과 미리보기(clip_truth_frame)가 공유한다.
+    report가 주어지면 report["precise"]에 정밀 캐시를 썼는지 남긴다(자동 교정은 정밀 초안에만 모델을 쓴다)."""
     from src.main import (
         _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_worst_hole,
         json_load_transcript,
@@ -1472,6 +1473,8 @@ def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path) ->
             segs = None
     except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
         segs = None
+    if report is not None:
+        report["precise"] = segs is not None
     if segs is None:
         segs = json_load_transcript(transcript_path)["segments"]
     # 오탈자 교정도 렌더와 동일하게 적용(예전엔 편집기 초안에만 미적용 → 저장 시 오탈자 굳음).
@@ -1495,6 +1498,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
     from src.captions import (
         _clean_word_text, _collect_words_in_range, _display_text, chunk_words_into_lines,
+        strip_filler_tokens_text,
     )
 
     # 유튜브 실황의 찬양 클립은 가사 자막을 넣지 않는다(화면에 교회 가사 슬라이드가 이미
@@ -1508,7 +1512,10 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
         # 규칙을 적용해야 "화면엔 있는데 실제 영상엔 없는" 불일치가 안 생긴다.
         # 비언어 표기([한숨]·[웃음]…)도 렌더가 걷어내므로 여기서도 같이 걷어낸다 —
         # 이미 저장된 caption_overrides에 박혀 있는 경우까지 덮는다(2026-09-23).
-        cleaned = _clean_word_text(text)
+        # 추임새 토큰("응." "어")도 렌더(_lines_from_overrides)와 같이 걷어낸다(2026-09-29).
+        cleaned = strip_filler_tokens_text(
+            _clean_word_text(text), bool(cfg["captions"].get("aggressive_filler", False)),
+        )
         return " ".join(_display_text(w) for w in cleaned.split())
 
     if getattr(clip, "caption_overrides", None):
@@ -1541,7 +1548,8 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     # 수십 줄이 전부 '정확한 정밀 자막 → 부정확한 자동자막 초안'으로 통째로 바뀌어 굳었다.
     # 이제 정밀 재전사 캐시가 있으면 그걸 초안 소스로 쓴다(렌더와 같은 결과) — 한 줄만
     # 고치면 정말 그 한 줄만 달라진다. 캐시가 없으면 예전처럼 자동자막 폴백.
-    segs = _segments_for_clip(video_id, clip, cfg, transcript_path)
+    seg_report: dict = {}
+    segs = _segments_for_clip(video_id, clip, cfg, transcript_path, report=seg_report)
     # 필러 제거 설정도 렌더와 동일하게(예전엔 기본값이라 렌더가 지우는 '그/막/뭐'가 초안에 남았다).
     words = _collect_words_in_range(
         segs, clip.start, clip.end,
@@ -1574,6 +1582,20 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     for i in range(len(out) - 1):
         if out[i]["end"] > out[i + 1]["start"]:
             out[i]["end"] = max(out[i]["start"] + 0.3, out[i + 1]["start"] - 0.02)
+    # 자동 교정(2026-09-29): 렌더(build_ass text_fixer)와 같은 캐시를 읽어 편집기 초안 = 결과물. 정밀 캐시 초안일
+    # 때만 모델을 부르고(자동자막 초안은 렌더 때 어차피 바뀌므로 추임새 제거만), 실패는 원문 유지.
+    try:
+        from src.caption_autofix import make_text_fixer
+
+        fixer = make_text_fixer(OUTPUT_ROOT / video_id, clip, cfg, use_model=bool(seg_report.get("precise")))
+        if fixer and out:
+            fixed = list(fixer([r["text"] for r in out]))
+            if len(fixed) == len(out):
+                out = [
+                    {**r, "text": ft.strip()} for r, ft in zip(out, fixed) if (ft or "").strip()
+                ]
+    except Exception as exc:  # noqa: BLE001 - 교정 실패는 초안 원문 그대로
+        print(f"[captions] 초안 자동 교정 실패(원문 유지): {exc}", flush=True)
     return out
 
 
