@@ -28,7 +28,7 @@ except ImportError:
 
 from src.feedback import PerformanceRecord, load_feedback, upsert_feedback
 from src.models import EXECUTION_MODEL, resolve as resolve_model, sanitize as sanitize_model
-from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
+from src.highlights import CLIPS_LOCK, load_clips_json, merge_ranges, save_clips_json
 from src.main import analyze, load_config, reanalyze_clip_region, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
@@ -1777,6 +1777,7 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
                 continue
             if b - a > 0.1:
                 kr.append([a, b])
+        kr = merge_ranges(kr)  # 겹친 조각을 합친다(겹친 채면 자막이 겹친 만큼 밀림)
         # 한 조각이 start~end 전체와 같으면 굳이 저장하지 않는다(전체 사용 = 기본).
         if len(kr) == 1 and abs(kr[0][0] - clip.start) < 0.05 and abs(kr[0][1] - clip.end) < 0.05:
             kr = []

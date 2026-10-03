@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 
 from src.captions import build_ass_for_clip, shift_ass_times
-from src.highlights import Clip
+from src.highlights import Clip, merge_ranges
 from src.transcribe import Segment
 
 
@@ -160,7 +160,7 @@ def _combine_keep(
             (max(0.0, float(s) - clip_start), min(duration, float(e) - clip_start))
             for s, e in user_keep_abs
         ]
-        user_rel = sorted((s, e) for s, e in user_rel if e - s > 0.05)
+        user_rel = [(s, e) for s, e in merge_ranges((s, e) for s, e in user_rel if e - s > 0.05)]
         if not user_rel:
             user_rel = [(0.0, duration)]
     else:

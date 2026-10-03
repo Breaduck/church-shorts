@@ -910,3 +910,13 @@ def test_display_text_neutralizes_ass_specials():
     assert _display_text("{은혜}\\N입니다.\r") == "｛은혜｝＼N입니다"
     assert _display_text(_display_text("{a}")) == "｛a｝"   # 두 번 거쳐도 그대로
     assert _display_text("그래요?") == "그래요?"
+
+
+def test_overlapping_keep_ranges_are_merged():
+    """겹친 점프컷 구간: select는 한 번만 남기는데 리매핑·길이는 두 번 세어 자막이 밀렸다."""
+    from src.highlights import clip_effective_duration, merge_ranges
+
+    assert merge_ranges([[20, 30], [10, 25], [40, 50]]) == [[10, 30], [40, 50]]
+    assert _combine_keep(60.0, 100.0, [[110, 125], [120, 130]], None) == [(10.0, 30.0)]
+    c = Clip(start=110, end=130, title="t", caption="", hashtags=[], reason="", keep_ranges=[[110, 125], [120, 130]])
+    assert clip_effective_duration(c) == 20.0

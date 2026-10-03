@@ -41,12 +41,24 @@ class QuotaExceededError(RuntimeError):
     CLI 호출을 한 번 더 태워 남은 한도만 갉아먹는다(분석 1회에 최대 4~5회 호출이 나갔다)."""
 
 
+def merge_ranges(ranges) -> list[list[float]]:
+    """구간 목록을 정렬하고 겹치거나 맞닿은 구간을 합친다. 겹친 채로 두면 렌더의 select는 그 프레임을
+    한 번만 남기는데 자막 리매핑·길이 계산은 두 번 세어, 겹친 만큼 자막이 늦게 나왔다."""
+    out: list[list[float]] = []
+    for a, b in sorted([float(a), float(b)] for a, b in ranges):
+        if out and a <= out[-1][1] + 1e-6:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
 def clip_effective_duration(clip) -> float:
     """실제 재생 길이(초). 점프컷(keep_ranges)이 있으면 남길 구간의 합, 없으면 end-start."""
     kr = getattr(clip, "keep_ranges", None) or []
     if kr:
         try:
-            return sum(max(0.0, float(e) - float(s)) for s, e in kr)
+            return sum(max(0.0, e - s) for s, e in merge_ranges(kr))
         except (TypeError, ValueError):
             pass
     return float(clip.end) - float(clip.start)

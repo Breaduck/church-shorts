@@ -1744,7 +1744,15 @@ def analyze(
         # 순수 텍스트를 비례정렬해 선정한 경우, 클립 경계를 참조 자막의 실제 발화 시각으로 스냅한다.
         if snap_reference is not None:
             sp.message("클립 경계를 실제 자막 시각에 맞추는 중...")
+            _old_bounds = [(c.start, c.end) for c in clips]
             clips = snap_clips_to_reference(clips, transcript, snap_reference)
+            # 점프컷 구간(keep_ranges)도 같은 시간축 보정을 받아야 한다 — 예전엔 start/end만 최대 40초
+            # 옮겨 구간이 클립 밖으로 벗어났다. 스냅은 정렬 오차 보정이라 내부 이음새는 선형으로 옮긴다.
+            for c, (os_, oe) in zip(clips, _old_bounds):
+                if getattr(c, "keep_ranges", None) and (c.start, c.end) != (os_, oe) and oe > os_:
+                    k = (c.end - c.start) / (oe - os_)
+                    c.keep_ranges = [[round(c.start + (a - os_) * k, 2), round(c.start + (b - os_) * k, 2)]
+                                     for a, b in c.keep_ranges]
         # 안전망: 스냅(또는 다른 후처리)이 경계를 늘려 길이 상한을 넘긴 클립을 최종적으로 제외한다.
         # _validate_and_build_clips의 상한은 스냅 '이전'에만 적용되므로, 여기서 한 번 더 막는다.
         # 점프컷(keep_ranges) 클립은 원본 구간이 아니라 실제 남는 길이로 잰다.
