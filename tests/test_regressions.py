@@ -932,3 +932,19 @@ def test_extract_json_array_tolerates_prose_and_bare_fence():
     assert _extract_json_array('결과 없음 []') == []
     with pytest.raises(ValueError):
         _extract_json_array("한도에 도달했습니다")
+
+
+def test_praise_reuse_requires_same_titles_and_praise_clips():
+    """곡 제목을 바꿔 입력하거나 설교 후보가 있는 영상이면 찬양 빠른 경로가 옛 후보를 재사용하면 안 된다."""
+    from src.main import _replace_clips_json, _reusable_praise_clips, _write_praise_key
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        mk = lambda t: Clip(start=1, end=200, title="곡", caption="", hashtags=[], reason="", clip_type=t)
+        _replace_clips_json(d, [mk("")])
+        assert _reusable_praise_clips(d, "titles:A") is None          # 설교 후보
+        _replace_clips_json(d, [mk("praise")])
+        assert _reusable_praise_clips(d, "titles:A") is not None      # 기록 없던 옛 찬양 후보는 재사용
+        _write_praise_key(d, "titles:A")
+        assert _reusable_praise_clips(d, "titles:A") is not None
+        assert _reusable_praise_clips(d, "titles:B") is None

@@ -1233,6 +1233,29 @@ def _load_reusable_transcript(transcript_path: Path, mode: str) -> Transcript | 
     return transcript
 
 
+def _write_praise_key(video_dir: Path, key: str) -> None:
+    atomic_write_text(video_dir / "praise_source.txt", key)
+
+
+def _reusable_praise_clips(video_dir: Path, key: str) -> list[Clip] | None:
+    """찬양 빠른 경로의 기존 후보를 재사용해도 되면 돌려준다. 같은 방식·같은 곡 제목으로 만든 찬양 후보일 때만.
+    예전엔 clips.json만 있으면 재사용해, 곡 제목을 바꿔 입력하거나 설교로 분석했던 영상이면 엉뚱한 후보가 나왔다."""
+    clips_path = video_dir / "clips.json"
+    if not clips_path.exists():
+        return None
+    try:
+        saved_key = (video_dir / "praise_source.txt").read_text(encoding="utf-8")
+    except OSError:
+        saved_key = None
+    clips = load_clips_json(clips_path)
+    if not clips or any(getattr(c, "clip_type", "") != "praise" for c in clips):
+        return None
+    # 이 기록이 생기기 전에 만든 찬양 후보(saved_key 없음)는 예전처럼 재사용한다(편집 작업 보존).
+    if saved_key is not None and saved_key != key:
+        return None
+    return clips
+
+
 def _replace_clips_json(video_dir: Path, clips: list[Clip]) -> None:
     """새로 선정한 후보로 clips.json을 교체한다. 기존 후보가 있으면 교체 '직전에' 백업한다.
 
@@ -1374,10 +1397,11 @@ def analyze(
         if title_lines:
             sp.advance("자막 준비 중...")
             sp.set_fraction(1.0, "전사 건너뜀 — 입력한 곡 제목의 정식 가사 사용")
-            clips_path = video_dir / "clips.json"
-            if clips_path.exists() and not force:
+            titles_key = "titles:" + " | ".join(title_lines)
+            reuse = None if force else _reusable_praise_clips(video_dir, titles_key)
+            if reuse is not None:
                 sp.finish("완료: 기존 후보 재사용")
-                return video_dir, load_clips_json(clips_path)
+                return video_dir, reuse
             sp.advance("입력한 곡 제목으로 정식 가사를 가져오는 중...")
             clips = _title_based_praise_clips(dl, video_dir, title_lines, cfg, model, sp)
             if not clips:
@@ -1385,6 +1409,7 @@ def analyze(
                     "가사를 만들지 못했습니다. 곡 제목을 정확히 입력했는지 확인해 주세요."
                 )
             _replace_clips_json(video_dir, clips)
+            _write_praise_key(video_dir, titles_key)
             _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
             sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크는 백그라운드에서 계속돼요)")
             return video_dir, clips
@@ -1396,16 +1421,19 @@ def analyze(
         # 싱크)로 간다. 추정 실패(8분 넘는 다곡 실황 등)면 아래 기존 전체 분석으로 폴백한다.
         if mode == "praise" and dl_local and not song_titles.strip():
             sp.advance("자막 준비 중...")
+            # 이미 이 방식(제목 자동 추정)으로 만든 찬양 후보가 있으면 짧은 전사+모델 호출 전에 재사용한다
+            # (예전엔 추정을 다 돌린 뒤에야 캐시를 봐서 호출이 헛돌았다).
+            reuse = None if force else _reusable_praise_clips(video_dir, "guess")
+            if reuse is not None:
+                sp.finish("완료: 기존 후보 재사용")
+                return video_dir, reuse
             guessed = _quick_guess_praise_title(dl.video_path, dl.duration_sec, cfg, model, sp)
             if guessed:
-                clips_path = video_dir / "clips.json"
-                if clips_path.exists() and not force:
-                    sp.finish("완료: 기존 후보 재사용")
-                    return video_dir, load_clips_json(clips_path)
                 sp.message(f"'{guessed}' 정식 가사를 가져오는 중...")
                 clips = _title_based_praise_clips(dl, video_dir, [guessed], cfg, model, sp)
                 if clips:
                     _replace_clips_json(video_dir, clips)
+                    _write_praise_key(video_dir, "guess")
                     _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
                     sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크는 백그라운드에서 계속돼요)")
                     return video_dir, clips
