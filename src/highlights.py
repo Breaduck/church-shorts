@@ -764,6 +764,12 @@ def _invoke_claude_json(
 
     def _kill_on_timeout() -> None:
         timed_out.set()
+        # Windows에서 claude는 claude.cmd(=cmd.exe)라 proc.kill()은 cmd.exe만 죽이고 실제 작업자
+        # node.exe는 stdout 파이프를 쥔 채 계속 돈다 → 아래 stdout 읽기가 안 끝나 타임아웃이
+        # 무의미했다. 프로세스 트리째 종료한다.
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, check=False)
         try:
             proc.kill()
         except OSError:
@@ -851,11 +857,12 @@ def _invoke_claude_json(
 
     stdout_all = "".join(raw_stdout)
     stderr_all = "".join(stderr_chunks)
-    if timed_out.is_set():
+    # 결과 이벤트가 이미 왔으면 타임아웃 직전에 끝난 정상 결과다 — 버리지 않는다.
+    if timed_out.is_set() and result_event is None:
         raise RuntimeError(
             f"하이라이트 선정이 {timeout_sec}초를 넘겨 중단됐습니다. 잠시 후 다시 시도해 주세요."
         )
-    if proc.returncode != 0:
+    if proc.returncode != 0 and result_event is None:
         if _quota_hint(f"{stdout_all}\n{stderr_all}"):
             _raise_quota(stdout_all or stderr_all)
         raise RuntimeError(
