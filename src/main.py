@@ -2235,432 +2235,444 @@ def render_selected(
     total = len(clip_indices)
     step = 100 / total if total else 100
 
-    for i, idx in enumerate(clip_indices):
-        clip = clips[idx]
-        base = i * step
+    # 클립마다 렌더가 끝난 순간의 경계(start/end/keep_ranges)를 기록해 두고, 중간에 한 클립이
+    # 실패해도 finally에서 이미 만든 클립의 경계는 병합한다(안 그러면 .src 서명과 clips.json이
+    # 어긋나 완성된 클립이 '미렌더'로 보였다). 메모리 clips[idx]가 아니라 실제 렌더한 clip 객체
+    # (영어 트랙 재번역 등으로 copy된 사본 포함)에서 기록해야 스냅 결과가 빠지지 않는다.
+    rendered: dict[int, tuple[float, float, list]] = {}
+    try:
+        for i, idx in enumerate(clip_indices):
+            if not (0 <= idx < len(clips)):  # 대기 중 재선정으로 후보가 줄었으면 건너뜀
+                continue
+            clip = clips[idx]
+            base = i * step
 
-        # 영어 자막 옵션: 렌더 시점에만 한국어(caption_overrides) 대신 영어 트랙으로 바꿔
-        # 굽는다(디스크의 한국어는 그대로 — 병합 저장은 start/end만 반영). 영어 번역이 없는
-        # 클립은 그대로 한국어로 나간다.
-        # 저장된 영어 트랙이 '지금의 한국어 자막'에서 나온 번역인지 먼저 확인한다(실신고
-        # 2026-09-27 "영어 자막 부정확"). 번역은 한 번 찍어둔 스냅숏이라, 그 뒤 한국어를
-        # 고치거나·구간을 바꾸거나·복제하면 옛 번역이 옛 시간축으로 그대로 굽혔다. 안 맞으면
-        # 버리고 → render.py가 지금 확정된 한국어를 그 자리에서 다시 번역한다.
-        if caption_lang in ("en", "bilingual") and getattr(clip, "caption_overrides_en", None):
-            if not _en_track_matches(clip.caption_overrides or [], clip.caption_overrides_en):
-                print(f"[render] 클립 {idx}: 영어 트랙이 현재 한국어 자막과 안 맞음 — 다시 번역")
-                clip = copy.copy(clip)
-                clip.caption_overrides_en = []
-        if caption_lang == "en" and getattr(clip, "caption_overrides_en", None):
-            clip.caption_overrides = clip.caption_overrides_en
+            # 영어 자막 옵션: 렌더 시점에만 한국어(caption_overrides) 대신 영어 트랙으로 바꿔
+            # 굽는다(디스크의 한국어는 그대로 — 병합 저장은 start/end만 반영). 영어 번역이 없는
+            # 클립은 그대로 한국어로 나간다.
+            # 저장된 영어 트랙이 '지금의 한국어 자막'에서 나온 번역인지 먼저 확인한다(실신고
+            # 2026-09-27 "영어 자막 부정확"). 번역은 한 번 찍어둔 스냅숏이라, 그 뒤 한국어를
+            # 고치거나·구간을 바꾸거나·복제하면 옛 번역이 옛 시간축으로 그대로 굽혔다. 안 맞으면
+            # 버리고 → render.py가 지금 확정된 한국어를 그 자리에서 다시 번역한다.
+            if caption_lang in ("en", "bilingual") and getattr(clip, "caption_overrides_en", None):
+                if not _en_track_matches(clip.caption_overrides or [], clip.caption_overrides_en):
+                    print(f"[render] 클립 {idx}: 영어 트랙이 현재 한국어 자막과 안 맞음 — 다시 번역")
+                    clip = copy.copy(clip)
+                    clip.caption_overrides_en = []
+            if caption_lang == "en" and getattr(clip, "caption_overrides_en", None):
+                clip.caption_overrides = clip.caption_overrides_en
 
-        # 찬양 곡 통편집: 정밀 재전사·문장 스냅·훅 배속을 모두 건너뛰고
-        # 곡 구간 그대로 + 상단 제목(곡 제목)을 넣어 렌더한다. 노래에 문장 스냅은
-        # 무의미하고, 배속은 곡 템포를 바꿔버린다.
-        # 가사 자막: 유튜브 실황은 화면에 교회 자막(가사 슬라이드)이 이미 있어 안 넣지만,
-        # 직접 찍어 업로드한 영상(upload_*)은 가사 표시가 없으므로 whisper 전사 기반
-        # 카라오케 자막을 설교와 같은 스타일로 넣는다(사용자 요청, 2026-09-04).
-        if getattr(clip, "clip_type", "") == "praise":
-            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            pr_render = {
-                **cfg["render"],
-                "remove_silence": False,           # 간주/조용한 피아노 구간을 무음으로 오인해 자르지 않게
-                "hook_speedup": {"enabled": False},
-            }
-            # '가로 원본' 모드(팝업 버튼): 쇼츠 세로 카드 대신 원본 가로 비율 그대로,
-            # 자막·제목 전부 없이 곡 구간만 잘라낸다(곡별 개별 업로드용 — 사용자 요청
-            # 2026-09-06 "그냥 자르기 용도임. 자막도 필요없어").
-            if horizontal_indices and idx in horizontal_indices:
-                # 기본 source.mp4는 720p 상한(다운로드 시간 절약)이라 가로 풀프레임에선
-                # 화질 저하가 그대로 보인다(실신고 2026-09-06) — 이 클립만 1080p 원본을
-                # 따로 받아 쓴다(이미 받았으면 재사용, 실패하면 720p 폴백).
-                hd_path = video_path
-                if not video_dir.name.startswith("upload_"):
-                    progress(f"[{i+1}/{total}] 고화질 원본 받는 중...", base)
-                    from src.download import download_video_hd
-
-                    _hd = download_video_hd(
-                        video_dir,
-                        on_progress=lambda p: progress(
-                            f"[{i+1}/{total}] 고화질 원본 받는 중... {p:.0f}%",
-                            base + step * 0.2 * (p / 100),
-                        ),
-                    )
-                    if _hd is not None:
-                        hd_path = _hd
-                    else:
-                        print("[render] 고화질 원본 확보 실패 — 기존 720p 원본으로 폴백")
-                src_w, src_h = _probe_display_resolution(hd_path)
-                if src_w > 1920:  # 인코딩 시간/용량 절약, 비율 유지
-                    src_h = int(src_h * (1920 / src_w))
-                    src_w = 1920
-                out_res = (src_w - src_w % 2, src_h - src_h % 2)
+            # 찬양 곡 통편집: 정밀 재전사·문장 스냅·훅 배속을 모두 건너뛰고
+            # 곡 구간 그대로 + 상단 제목(곡 제목)을 넣어 렌더한다. 노래에 문장 스냅은
+            # 무의미하고, 배속은 곡 템포를 바꿔버린다.
+            # 가사 자막: 유튜브 실황은 화면에 교회 자막(가사 슬라이드)이 이미 있어 안 넣지만,
+            # 직접 찍어 업로드한 영상(upload_*)은 가사 표시가 없으므로 whisper 전사 기반
+            # 카라오케 자막을 설교와 같은 스타일로 넣는다(사용자 요청, 2026-09-04).
+            if getattr(clip, "clip_type", "") == "praise":
+                out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
                 pr_render = {
-                    **pr_render,
-                    "resolution": out_res,
-                    "background_mode": "crop",     # 스케일+크롭 — 패딩 여백이 원천적으로 없음
-                    "hook": {"enabled": False},    # 상단 제목(곡명) 오버레이 제거
+                    **cfg["render"],
+                    "remove_silence": False,           # 간주/조용한 피아노 구간을 무음으로 오인해 자르지 않게
+                    "hook_speedup": {"enabled": False},
                 }
-                # 자막 이벤트 0개: 전사 세그먼트도, 확정 자막(caption_overrides)도 안 넘긴다.
-                # 원본 clip은 건드리지 않는다(디스크의 가사 자막은 보존 — 얕은 복사로 충분,
-                # 리스트 참조만 새로 비운 것이라 원본 리스트는 그대로다).
-                clip = copy.copy(clip)
-                clip.caption_overrides = []
-                clip.caption_overrides_en = []
+                # '가로 원본' 모드(팝업 버튼): 쇼츠 세로 카드 대신 원본 가로 비율 그대로,
+                # 자막·제목 전부 없이 곡 구간만 잘라낸다(곡별 개별 업로드용 — 사용자 요청
+                # 2026-09-06 "그냥 자르기 용도임. 자막도 필요없어").
+                if horizontal_indices and idx in horizontal_indices:
+                    # 기본 source.mp4는 720p 상한(다운로드 시간 절약)이라 가로 풀프레임에선
+                    # 화질 저하가 그대로 보인다(실신고 2026-09-06) — 이 클립만 1080p 원본을
+                    # 따로 받아 쓴다(이미 받았으면 재사용, 실패하면 720p 폴백).
+                    hd_path = video_path
+                    if not video_dir.name.startswith("upload_"):
+                        progress(f"[{i+1}/{total}] 고화질 원본 받는 중...", base)
+                        from src.download import download_video_hd
+
+                        _hd = download_video_hd(
+                            video_dir,
+                            on_progress=lambda p: progress(
+                                f"[{i+1}/{total}] 고화질 원본 받는 중... {p:.0f}%",
+                                base + step * 0.2 * (p / 100),
+                            ),
+                        )
+                        if _hd is not None:
+                            hd_path = _hd
+                        else:
+                            print("[render] 고화질 원본 확보 실패 — 기존 720p 원본으로 폴백")
+                    src_w, src_h = _probe_display_resolution(hd_path)
+                    if src_w > 1920:  # 인코딩 시간/용량 절약, 비율 유지
+                        src_h = int(src_h * (1920 / src_w))
+                        src_w = 1920
+                    out_res = (src_w - src_w % 2, src_h - src_h % 2)
+                    pr_render = {
+                        **pr_render,
+                        "resolution": out_res,
+                        "background_mode": "crop",     # 스케일+크롭 — 패딩 여백이 원천적으로 없음
+                        "hook": {"enabled": False},    # 상단 제목(곡명) 오버레이 제거
+                    }
+                    # 자막 이벤트 0개: 전사 세그먼트도, 확정 자막(caption_overrides)도 안 넘긴다.
+                    # 원본 clip은 건드리지 않는다(디스크의 가사 자막은 보존 — 얕은 복사로 충분,
+                    # 리스트 참조만 새로 비운 것이라 원본 리스트는 그대로다).
+                    clip = copy.copy(clip)
+                    clip.caption_overrides = []
+                    clip.caption_overrides_en = []
+                    _run_with_progress_ticker(
+                        lambda: render_clip(hd_path, [], clip, out_path, pr_render, dict(cfg["captions"])),
+                        start_pct=base, end_pct=base + step, progress=progress,
+                        message=f"[{i+1}/{total}] 찬양 가로 원본 렌더링 중: {clip.title}",
+                        est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
+                    )
+                    out_path.with_suffix(".src").write_text(
+                        render_signature(clip.start, clip.end), encoding="utf-8"
+                    )
+                    outputs.append(out_path)
+                    rendered[idx] = (clip.start, clip.end, [list(r) for r in (getattr(clip, "keep_ranges", None) or [])])
+                    continue
+                # 주의: captions enabled=False로 두면 ffmpeg subtitles 필터가 통째로 빠져
+                # 같은 ASS에 든 '제목'까지 안 구워진다(실측: 제목 없는 찬양 렌더). 켠 채로 두고
+                # 세그먼트로 자막 유무를 조절한다(빈 리스트 = 가사 자막 이벤트 0개).
+                pr_captions = dict(cfg["captions"])
+                is_upload = video_dir.name.startswith("upload_")
+                pr_segments = base_segments if is_upload else []
+                # 카라오케(파란/하늘색 강조, 목소리를 따라 색이 바뀜)는 업로드 여부와 무관하게
+                # 찬양 전체 기본 꺼짐(정적 흰 자막) — 사용자가 팝업의 '🎨 파란 강조'를 눌러
+                # 명시적으로 켠 클립만 예외. 예전엔 이 스위치가 아래 is_upload 블록 안에만
+                # 있어서, 유튜브 링크 찬양 클립(is_upload=False)에 caption_overrides가 생기면
+                # (가사 가져오기/AI 교정/번역 버튼은 업로드 여부를 안 가리고 동작함) 전역 설정
+                # (config 기본 template="karaoke", 설교용)이 그대로 새어 들어가 파란 강조가
+                # 켜지는 사고가 있었다(실신고 2026-09-05: "유튜브 링크 넣는 찬양도 파란색으로
+                # 변해. 그 기능 모두 꺼줘 디폴트로").
+                karaoke_on = bool(getattr(clip, "caption_karaoke", False))
+                pr_captions["template"] = "karaoke" if karaoke_on else "minimal"
+                if is_upload:
+                    # 직접 찍어 올린 영상은 원본 16:9를 그대로 유지하고(카드 세로 크롭 없음),
+                    # 가사 자막은 영상 화면 위에 흰 글씨로 오버레이한다(사용자 요청, 2026-09-04).
+                    # 싱크 정밀도보다 가사 정확도가 우선이라는 것도 같은 요청 — 이 부분은 이미
+                    # correct_praise_lyrics(정식 가사 교정)로 처리돼 있으므로 여기선 레이아웃만 바꾼다.
+                    src_w, src_h = _probe_display_resolution(video_path)
+                    if src_w > 1920:  # 너무 크면 다운스케일(인코딩 시간/용량 절약), 비율은 유지
+                        src_h = int(src_h * (1920 / src_w))
+                        src_w = 1920
+                    out_res = (src_w - src_w % 2, src_h - src_h % 2)  # 짝수 강제(인코더 요구사항)
+                    pr_render = {
+                        **pr_render, "resolution": out_res,
+                        # "pad"는 반올림 오차로 한두 픽셀 흰 여백이 생길 수 있다(사용자가 실제로
+                        # 흰 배경/템플릿에 갇힌다고 신고, 2026-09-05) — "crop"은 채우기 색을 아예
+                        # 쓰지 않는 스케일+크롭이라 여백이 원천적으로 생기지 않는다. out_res가 이미
+                        # 소스 자체 비율이라 크롭도 사실상 0px(인코더 짝수 강제분 정도).
+                        "background_mode": "crop",
+                        # 제목(곡명) 오버레이도 없앤다(사용자 요청: "제목은 없애고 그냥 자막만").
+                        "hook": {"enabled": False},
+                        # 아웃트로는 이제 비율 유지+흰 패딩으로 만들어져(render._get_or_create_outro_segment)
+                        # 16:9에 붙여도 안 찌그러진다 — 강제 off를 풀고 체크박스(outro_enabled)를 따른다
+                        # (실신고 2026-09-05: "끝에 로고 넣기 2초도 작동을 안 하네 찬양에선").
+                    }
+                    # 카라오케 on/off는 위에서 이미 결정(업로드 여부 무관, 기본 꺼짐). 여기선
+                    # 업로드 전용 레이아웃(흰 글씨 오버레이·확대·강조색)만 덧붙인다.
+                    pr_captions = {
+                        **pr_captions,
+                        "position": "bottom",
+                        # 1.35→1.28: "아주아주 조금만 줄여"(2026-09-05 미세조정, 97→92px 수준)
+                        "font_size": int(pr_captions.get("font_size", 72) * 1.28),
+                        "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
+                        # 카라오케 켜졌을 때 강조색: 기존 진한 블루 대신 더 연한 하늘색(사용자 요청).
+                        "karaoke_highlight_color": "&H00FACE87",  # 연한 하늘색(#87CEFA, ASS는 BGR)
+                        "outline_color": "&H00000000",     # 검정 외곽선(어떤 배경에도 읽히도록)
+                        "outline_width": max(3, int(pr_captions.get("outline_width", 0) or 0)),
+                    }
                 _run_with_progress_ticker(
-                    lambda: render_clip(hd_path, [], clip, out_path, pr_render, dict(cfg["captions"])),
+                    lambda: render_clip(video_path, pr_segments, clip, out_path, pr_render, pr_captions),
                     start_pct=base, end_pct=base + step, progress=progress,
-                    message=f"[{i+1}/{total}] 찬양 가로 원본 렌더링 중: {clip.title}",
+                    message=f"[{i+1}/{total}] 찬양 렌더링 중: {clip.title}",
+                    # 곡은 3~6분으로 길다 — 인코딩 시간도 대략 길이에 비례(QSV 기준 실측 보수치)
                     est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
                 )
                 out_path.with_suffix(".src").write_text(
                     render_signature(clip.start, clip.end), encoding="utf-8"
                 )
                 outputs.append(out_path)
+                rendered[idx] = (clip.start, clip.end, [list(r) for r in (getattr(clip, "keep_ranges", None) or [])])
                 continue
-            # 주의: captions enabled=False로 두면 ffmpeg subtitles 필터가 통째로 빠져
-            # 같은 ASS에 든 '제목'까지 안 구워진다(실측: 제목 없는 찬양 렌더). 켠 채로 두고
-            # 세그먼트로 자막 유무를 조절한다(빈 리스트 = 가사 자막 이벤트 0개).
-            pr_captions = dict(cfg["captions"])
-            is_upload = video_dir.name.startswith("upload_")
-            pr_segments = base_segments if is_upload else []
-            # 카라오케(파란/하늘색 강조, 목소리를 따라 색이 바뀜)는 업로드 여부와 무관하게
-            # 찬양 전체 기본 꺼짐(정적 흰 자막) — 사용자가 팝업의 '🎨 파란 강조'를 눌러
-            # 명시적으로 켠 클립만 예외. 예전엔 이 스위치가 아래 is_upload 블록 안에만
-            # 있어서, 유튜브 링크 찬양 클립(is_upload=False)에 caption_overrides가 생기면
-            # (가사 가져오기/AI 교정/번역 버튼은 업로드 여부를 안 가리고 동작함) 전역 설정
-            # (config 기본 template="karaoke", 설교용)이 그대로 새어 들어가 파란 강조가
-            # 켜지는 사고가 있었다(실신고 2026-09-05: "유튜브 링크 넣는 찬양도 파란색으로
-            # 변해. 그 기능 모두 꺼줘 디폴트로").
-            karaoke_on = bool(getattr(clip, "caption_karaoke", False))
-            pr_captions["template"] = "karaoke" if karaoke_on else "minimal"
-            if is_upload:
-                # 직접 찍어 올린 영상은 원본 16:9를 그대로 유지하고(카드 세로 크롭 없음),
-                # 가사 자막은 영상 화면 위에 흰 글씨로 오버레이한다(사용자 요청, 2026-09-04).
-                # 싱크 정밀도보다 가사 정확도가 우선이라는 것도 같은 요청 — 이 부분은 이미
-                # correct_praise_lyrics(정식 가사 교정)로 처리돼 있으므로 여기선 레이아웃만 바꾼다.
-                src_w, src_h = _probe_display_resolution(video_path)
-                if src_w > 1920:  # 너무 크면 다운스케일(인코딩 시간/용량 절약), 비율은 유지
-                    src_h = int(src_h * (1920 / src_w))
-                    src_w = 1920
-                out_res = (src_w - src_w % 2, src_h - src_h % 2)  # 짝수 강제(인코더 요구사항)
-                pr_render = {
-                    **pr_render, "resolution": out_res,
-                    # "pad"는 반올림 오차로 한두 픽셀 흰 여백이 생길 수 있다(사용자가 실제로
-                    # 흰 배경/템플릿에 갇힌다고 신고, 2026-09-05) — "crop"은 채우기 색을 아예
-                    # 쓰지 않는 스케일+크롭이라 여백이 원천적으로 생기지 않는다. out_res가 이미
-                    # 소스 자체 비율이라 크롭도 사실상 0px(인코더 짝수 강제분 정도).
-                    "background_mode": "crop",
-                    # 제목(곡명) 오버레이도 없앤다(사용자 요청: "제목은 없애고 그냥 자막만").
-                    "hook": {"enabled": False},
-                    # 아웃트로는 이제 비율 유지+흰 패딩으로 만들어져(render._get_or_create_outro_segment)
-                    # 16:9에 붙여도 안 찌그러진다 — 강제 off를 풀고 체크박스(outro_enabled)를 따른다
-                    # (실신고 2026-09-05: "끝에 로고 넣기 2초도 작동을 안 하네 찬양에선").
-                }
-                # 카라오케 on/off는 위에서 이미 결정(업로드 여부 무관, 기본 꺼짐). 여기선
-                # 업로드 전용 레이아웃(흰 글씨 오버레이·확대·강조색)만 덧붙인다.
-                pr_captions = {
-                    **pr_captions,
-                    "position": "bottom",
-                    # 1.35→1.28: "아주아주 조금만 줄여"(2026-09-05 미세조정, 97→92px 수준)
-                    "font_size": int(pr_captions.get("font_size", 72) * 1.28),
-                    "primary_color": "&H00FFFFFF",    # 흰색 자막(영상 위 오버레이라 대비 위해)
-                    # 카라오케 켜졌을 때 강조색: 기존 진한 블루 대신 더 연한 하늘색(사용자 요청).
-                    "karaoke_highlight_color": "&H00FACE87",  # 연한 하늘색(#87CEFA, ASS는 BGR)
-                    "outline_color": "&H00000000",     # 검정 외곽선(어떤 배경에도 읽히도록)
-                    "outline_width": max(3, int(pr_captions.get("outline_width", 0) or 0)),
-                }
-            _run_with_progress_ticker(
-                lambda: render_clip(video_path, pr_segments, clip, out_path, pr_render, pr_captions),
-                start_pct=base, end_pct=base + step, progress=progress,
-                message=f"[{i+1}/{total}] 찬양 렌더링 중: {clip.title}",
-                # 곡은 3~6분으로 길다 — 인코딩 시간도 대략 길이에 비례(QSV 기준 실측 보수치)
-                est_seconds=max(30.0, (clip.end - clip.start) * 0.5),
-            )
-            out_path.with_suffix(".src").write_text(
-                render_signature(clip.start, clip.end), encoding="utf-8"
-            )
-            outputs.append(out_path)
-            continue
 
-        # 최종 화면 자막은 유튜브 자동자막(부정확)이 아니라 이 정밀 재전사 결과를 쓴다.
-        # precise_model_size로 정밀 재전사만 더 정확한 모델(예: large-v3)로 올릴 수 있다
-        # (짧은 선택 클립에만 돌리므로 전체 영상을 큰 모델로 돌리는 부담 없이 정확도만 취함).
-        # 성경 고유명사 상시 사전(정적) + 이 클립에서 뽑은 고유명사(동적)를 함께 hotwords로 넣어
-        # large-v3가 이름 철자를 맞추게 한다(룻→'루시', 기드온→'기도원' 류 방지, 이중 방어).
-        # 사용자가 자막 편집기에서 자막을 확정했으면 재전사 없이 그대로 렌더한다
-        # (편집 결과가 최우선이고, 느린 large-v3 재전사도 건너뛰어 훨씬 빠르다).
-        #
-        # 2026-09-03에 이 fast-path를 없애고 편집 자막도 아래 정밀 재전사(최대 4단계 재시도
-        # 캐스케이드: batched/순차/VAD끔 조합)를 거치게 했었는데, 되돌린다 — 그 재시도 단계마다
-        # 결과가 근소하게 달라질 수 있어(폴백 임계값 근처일 때 특히) "고칠 때마다 결과가
-        # 달라진다"·"한 부분만 고쳤는데 전체가 다시 처리된다"는 정확한 사용자 신고를 받았다.
-        # 편집 자막은 텍스트가 이미 확정돼 있어 재전사로 얻을 게 없다(재전사는 '무슨 말인지'를
-        # 알아내는 용도인데 이미 사용자가 알려줬다) — 그런데도 무겁고 비결정적인 파이프라인을
-        # 태우는 건 손해뿐이었다. 카라오케 타이밍은 base_segments(참조 전사의 실제 발화 시각,
-        # 롤링 중복 제거됨)로 충분히 정확하고, 이건 매번 똑같아 결과가 안정적이다.
-        if getattr(clip, "caption_overrides", None):
-            if not getattr(clip, "trimmed", False):
-                _ov_start, _ov_end = clip.start, clip.end
-                last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
-                clip.end = max(clip.end, last_ov_end + 0.3)
-                clip.end = _snap_clip_end_to_sentence(clip, base_segments)
-                _sync_keep_ranges(clip, _ov_start, _ov_end)
-            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다 — 카라오케 강조가
-            # 목소리 리듬을 따라가려면 단어별 '실제 발화 시각' 참조가 필요하다. 기준 우선순위:
-            #   1) 정밀 재전사 캐시(있으면): whisper large-v3의 단어 시각 — 가장 정확.
-            #      유튜브 자동자막은 단어 시작이 0.2~0.5초씩 '들쭉날쭉' 이르러 전역 오프셋
-            #      (+0.25초)으로는 평균만 맞고 단어별 미세 오차가 남는다("파란색이 미세하게
-            #      안 맞는다" 신고의 원인). 캐시는 '읽기만' 하므로(재전사 없음) 빠르고,
-            #      항상 같은 파일이라 결과도 결정적이다.
-            #   2) 캐시가 없으면 base_segments(참조 전사) — 예전 동작 그대로.
-            ov_hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
-            ov_sig = hashlib.md5(
-                f"{w.get('initial_prompt', '')}|{ov_hotwords or ''}".encode("utf-8")
+            # 최종 화면 자막은 유튜브 자동자막(부정확)이 아니라 이 정밀 재전사 결과를 쓴다.
+            # precise_model_size로 정밀 재전사만 더 정확한 모델(예: large-v3)로 올릴 수 있다
+            # (짧은 선택 클립에만 돌리므로 전체 영상을 큰 모델로 돌리는 부담 없이 정확도만 취함).
+            # 성경 고유명사 상시 사전(정적) + 이 클립에서 뽑은 고유명사(동적)를 함께 hotwords로 넣어
+            # large-v3가 이름 철자를 맞추게 한다(룻→'루시', 기드온→'기도원' 류 방지, 이중 방어).
+            # 사용자가 자막 편집기에서 자막을 확정했으면 재전사 없이 그대로 렌더한다
+            # (편집 결과가 최우선이고, 느린 large-v3 재전사도 건너뛰어 훨씬 빠르다).
+            #
+            # 2026-09-03에 이 fast-path를 없애고 편집 자막도 아래 정밀 재전사(최대 4단계 재시도
+            # 캐스케이드: batched/순차/VAD끔 조합)를 거치게 했었는데, 되돌린다 — 그 재시도 단계마다
+            # 결과가 근소하게 달라질 수 있어(폴백 임계값 근처일 때 특히) "고칠 때마다 결과가
+            # 달라진다"·"한 부분만 고쳤는데 전체가 다시 처리된다"는 정확한 사용자 신고를 받았다.
+            # 편집 자막은 텍스트가 이미 확정돼 있어 재전사로 얻을 게 없다(재전사는 '무슨 말인지'를
+            # 알아내는 용도인데 이미 사용자가 알려줬다) — 그런데도 무겁고 비결정적인 파이프라인을
+            # 태우는 건 손해뿐이었다. 카라오케 타이밍은 base_segments(참조 전사의 실제 발화 시각,
+            # 롤링 중복 제거됨)로 충분히 정확하고, 이건 매번 똑같아 결과가 안정적이다.
+            if getattr(clip, "caption_overrides", None):
+                if not getattr(clip, "trimmed", False):
+                    _ov_start, _ov_end = clip.start, clip.end
+                    last_ov_end = max((float(o["end"]) for o in clip.caption_overrides), default=clip.end)
+                    clip.end = max(clip.end, last_ov_end + 0.3)
+                    clip.end = _snap_clip_end_to_sentence(clip, base_segments)
+                    _sync_keep_ranges(clip, _ov_start, _ov_end)
+                out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                # 편집 자막(caption_overrides)은 줄 단위라 단어별 시각이 없다 — 카라오케 강조가
+                # 목소리 리듬을 따라가려면 단어별 '실제 발화 시각' 참조가 필요하다. 기준 우선순위:
+                #   1) 정밀 재전사 캐시(있으면): whisper large-v3의 단어 시각 — 가장 정확.
+                #      유튜브 자동자막은 단어 시작이 0.2~0.5초씩 '들쭉날쭉' 이르러 전역 오프셋
+                #      (+0.25초)으로는 평균만 맞고 단어별 미세 오차가 남는다("파란색이 미세하게
+                #      안 맞는다" 신고의 원인). 캐시는 '읽기만' 하므로(재전사 없음) 빠르고,
+                #      항상 같은 파일이라 결과도 결정적이다.
+                #   2) 캐시가 없으면 base_segments(참조 전사) — 예전 동작 그대로.
+                ov_hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+                ov_sig = hashlib.md5(
+                    f"{w.get('initial_prompt', '')}|{ov_hotwords or ''}".encode("utf-8")
+                ).hexdigest()[:8]
+                ov_model = w.get("precise_model_size", w["model_size"])
+                ref_segments = _precise_cache_find(
+                    video_dir / "precise_cache", ov_model, ov_sig, clip.start, clip.end + 4.0
+                )
+                if ref_segments is not None and _precise_worst_hole(
+                    base_segments, ref_segments, clip.start, clip.end
+                ) >= 5.0:
+                    ref_segments = None  # 구멍 난 캐시는 신뢰하지 않는다(자막 씹힘 방지)
+                if ref_segments is not None:
+                    _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: 정밀 캐시")
+                else:
+                    ref_segments = base_segments
+                    _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: base(캐시 없음)")
+                _run_with_progress_ticker(
+                    lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], cfg["captions"]),
+                    start_pct=base, end_pct=base + step, progress=progress,
+                    message=f"[{i+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
+                    est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
+                )
+                out_path.with_suffix(".src").write_text(
+                    render_signature(clip.start, clip.end), encoding="utf-8"
+                )
+                outputs.append(out_path)
+                rendered[idx] = (clip.start, clip.end, [list(r) for r in (getattr(clip, "keep_ranges", None) or [])])
+                continue
+
+            hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+            clip_len = clip.end - clip.start
+            precise_model = w.get("precise_model_size", w["model_size"])
+            cache_dir = video_dir / "precise_cache"
+            # 프롬프트/hotwords가 바뀌면 캐시도 무효가 되어야 한다(사전을 고쳐도 옛 오탈자
+            # 캐시가 계속 나오는 문제 방지). 해시를 캐시 파일명에 넣는다.
+            sig = hashlib.md5(
+                f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
             ).hexdigest()[:8]
-            ov_model = w.get("precise_model_size", w["model_size"])
-            ref_segments = _precise_cache_find(
-                video_dir / "precise_cache", ov_model, ov_sig, clip.start, clip.end + 4.0
+
+            # 같은 구간을 이미 정밀 재전사했다면 재사용한다. 편집기에서 제목/폰트/위치만 바꿔
+            # 재렌더할 때도 클립당 1~3분짜리 large-v3 CPU 재전사를 매번 다시 돌리던 것이
+            # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
+            tr_a = max(0.0, clip.start - START_BUFFER_SEC)
+            tr_b = clip.end + END_BUFFER_SEC
+            # 캐시 요구 범위는 [시작, 끝+4초]면 충분하다: 시작 스냅으로 당겨져 저장된 start 때문에
+            # tr_a(시작-4초)로 찾으면 자기 자신이 만든 캐시도 못 찾아 매번 재전사했다(실측).
+            # 끝+4초는 "이미 문장 끝에 스냅돼 있는지" 확인에 필요한 최소 버퍼.
+            cached_segs = _precise_cache_find(
+                cache_dir, precise_model, sig, clip.start, clip.end + 4.0
             )
-            if ref_segments is not None and _precise_worst_hole(
-                base_segments, ref_segments, clip.start, clip.end
+            if cached_segs is not None and _precise_worst_hole(
+                base_segments, cached_segs, clip.start, clip.end
             ) >= 5.0:
-                ref_segments = None  # 구멍 난 캐시는 신뢰하지 않는다(자막 씹힘 방지)
-            if ref_segments is not None:
-                _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: 정밀 캐시")
+                # 과거에 '부분 실종' 결과가 캐시된 경우(초반 20초 자막 실종 사고) 재사용하지 않는다.
+                _rlog(video_dir, f"clip{idx} 캐시에 자막 구멍 발견 → 캐시 무시, 재전사")
+                cached_segs = None
+            if cached_segs is not None:
+                progress(f"[{i+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
+                segs = cached_segs
             else:
-                ref_segments = base_segments
-                _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: base(캐시 없음)")
-            _run_with_progress_ticker(
-                lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], cfg["captions"]),
-                start_pct=base, end_pct=base + step, progress=progress,
-                message=f"[{i+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
-                est_seconds=max(15.0, (clip.end - clip.start) * 0.9),
-            )
-            out_path.with_suffix(".src").write_text(
-                render_signature(clip.start, clip.end), encoding="utf-8"
-            )
-            outputs.append(out_path)
-            continue
-
-        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
-        clip_len = clip.end - clip.start
-        precise_model = w.get("precise_model_size", w["model_size"])
-        cache_dir = video_dir / "precise_cache"
-        # 프롬프트/hotwords가 바뀌면 캐시도 무효가 되어야 한다(사전을 고쳐도 옛 오탈자
-        # 캐시가 계속 나오는 문제 방지). 해시를 캐시 파일명에 넣는다.
-        sig = hashlib.md5(
-            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
-        ).hexdigest()[:8]
-
-        # 같은 구간을 이미 정밀 재전사했다면 재사용한다. 편집기에서 제목/폰트/위치만 바꿔
-        # 재렌더할 때도 클립당 1~3분짜리 large-v3 CPU 재전사를 매번 다시 돌리던 것이
-        # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
-        tr_a = max(0.0, clip.start - START_BUFFER_SEC)
-        tr_b = clip.end + END_BUFFER_SEC
-        # 캐시 요구 범위는 [시작, 끝+4초]면 충분하다: 시작 스냅으로 당겨져 저장된 start 때문에
-        # tr_a(시작-4초)로 찾으면 자기 자신이 만든 캐시도 못 찾아 매번 재전사했다(실측).
-        # 끝+4초는 "이미 문장 끝에 스냅돼 있는지" 확인에 필요한 최소 버퍼.
-        cached_segs = _precise_cache_find(
-            cache_dir, precise_model, sig, clip.start, clip.end + 4.0
-        )
-        if cached_segs is not None and _precise_worst_hole(
-            base_segments, cached_segs, clip.start, clip.end
-        ) >= 5.0:
-            # 과거에 '부분 실종' 결과가 캐시된 경우(초반 20초 자막 실종 사고) 재사용하지 않는다.
-            _rlog(video_dir, f"clip{idx} 캐시에 자막 구멍 발견 → 캐시 무시, 재전사")
-            cached_segs = None
-        if cached_segs is not None:
-            progress(f"[{i+1}/{total}] 이전 정밀 자막 재사용: {clip.title}", base + step * 0.5)
-            segs = cached_segs
-        else:
-            # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
-            # 멈춰 있으면 사용자가 "안 만들어진다"고 오해한다(실제로 겪은 피드백). 재전사/렌더
-            # 두 무진행 구간 모두 흉내 진행률 티커로 부드럽게 채워 "작동 중"임을 보여준다.
-            # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
-            # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
-            # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
-            def _precise(vad: bool, batched: bool = True) -> list[Segment]:
-                return transcribe_clip_precise(
-                    video_path, tr_a, tr_b,
-                    model_size=precise_model,
-                    device=w["device"], compute_type=w["compute_type"],
-                    language=w["language"], vad_filter=vad,
-                    initial_prompt=w.get("initial_prompt"),
-                    hotwords=hotwords,
-                    cpu_threads=int(w.get("cpu_threads", 0)),
-                    batch_size=int(w.get("batch_size", 8)),
-                    batched=batched,
-                )
-
-            vad_default = w.get("vad_filter", True)
-            try:
-                segs = _run_with_progress_ticker(
-                    lambda: _precise(vad_default),
-                    start_pct=base, end_pct=base + step * 0.45, progress=progress,
-                    message=f"[{i+1}/{total}] 자막 정밀 인식 중: {clip.title}",
-                    est_seconds=max(20.0, clip_len * 1.8),
-                )
-            except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
-                progress(f"[{i+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
-                _rlog(video_dir, f"clip{idx} 정밀 재전사 예외: {type(e).__name__}: {e}")
-                segs = []
-
-            # 배치 모드 '부분 실종' 검사: 단어 수(35% 기준)로는 못 잡는, base엔 발화가
-            # 있는데 정밀 결과가 통째로 빈 구간(실측: 초반 22초 자막 실종)을 잡는다.
-            # 구멍이 크면 느리지만 검증된 순차 모드로 다시 전사한다.
-            hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
-            if segs and hole >= 5.0:
-                _rlog(video_dir, f"clip{idx} 정밀(배치) 자막 구멍 {hole:.1f}초 → 순차 모드 재전사")
-                try:
-                    segs_seq = _run_with_progress_ticker(
-                        lambda: _precise(vad_default, batched=False),
-                        start_pct=base + step * 0.4, end_pct=base + step * 0.45, progress=progress,
-                        message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
-                        est_seconds=max(30.0, clip_len * 2.2),
+                # large-v3 CPU 재전사는 클립 하나에 1~3분씩 걸리는데 그동안 진행률이 한 지점에
+                # 멈춰 있으면 사용자가 "안 만들어진다"고 오해한다(실제로 겪은 피드백). 재전사/렌더
+                # 두 무진행 구간 모두 흉내 진행률 티커로 부드럽게 채워 "작동 중"임을 보여준다.
+                # 정밀 재전사(faster-whisper)는 특정 클립에서 'maximum decoding length must be > 0'
+                # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
+                # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
+                def _precise(vad: bool, batched: bool = True) -> list[Segment]:
+                    return transcribe_clip_precise(
+                        video_path, tr_a, tr_b,
+                        model_size=precise_model,
+                        device=w["device"], compute_type=w["compute_type"],
+                        language=w["language"], vad_filter=vad,
+                        initial_prompt=w.get("initial_prompt"),
+                        hotwords=hotwords,
+                        cpu_threads=int(w.get("cpu_threads", 0)),
+                        batch_size=int(w.get("batch_size", 8)),
+                        batched=batched,
                     )
-                    if _precise_worst_hole(base_segments, segs_seq, clip.start, clip.end) < hole:
-                        segs = segs_seq
-                except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
-                    _rlog(video_dir, f"clip{idx} 순차 재전사 예외: {type(e).__name__}: {e}")
 
-            base_n = _count_words(base_segments, clip.start, clip.end)
-            precise_n = _count_words(segs, clip.start, clip.end)
-            # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
-            # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
-            # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
-            # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
-            # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
-            # 판정 여유: 정밀 전사는 실제 발화만 세고 base(유튜브 자막)는 롤링 중복·추임새가 섞여
-            # 단어 수가 부풀기 쉽다. 50%로 잡으면 멀쩡한 정밀 자막이 51 vs 50처럼 아슬아슬하게
-            # 버려지는 사고가 난다(실측) - 35%면 "진짜 부실"만 걸러진다.
-            weak = (precise_n < max(3, int(base_n * 0.35))) if base_n >= 5 else (precise_n == 0)
-            if weak and vad_default:
+                vad_default = w.get("vad_filter", True)
                 try:
-                    segs2 = _run_with_progress_ticker(
-                        lambda: _precise(False),
-                        start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
-                        message=f"[{i+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                    segs = _run_with_progress_ticker(
+                        lambda: _precise(vad_default),
+                        start_pct=base, end_pct=base + step * 0.45, progress=progress,
+                        message=f"[{i+1}/{total}] 자막 정밀 인식 중: {clip.title}",
                         est_seconds=max(20.0, clip_len * 1.8),
                     )
-                    if _count_words(segs2, clip.start, clip.end) > precise_n:
-                        segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
-                        # 이 재시도도 배치 모드(batched=True)라 같은 '구멍' 사고가 재발할 수 있다.
-                        # 단어 수만 보고 그대로 채택하면 구멍이 다시 렌더로 새어나가므로 한 번 더 검사한다.
-                        hole2 = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
-                        if hole2 >= 5.0:
-                            _rlog(video_dir, f"clip{idx} VAD끔 재시도도 자막 구멍 {hole2:.1f}초 → 순차 모드 재전사")
-                            try:
-                                segs_seq2 = _run_with_progress_ticker(
-                                    lambda: _precise(False, batched=False),
-                                    start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
-                                    message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
-                                    est_seconds=max(30.0, clip_len * 2.2),
-                                )
-                                if _precise_worst_hole(base_segments, segs_seq2, clip.start, clip.end) < hole2:
-                                    segs, precise_n = segs_seq2, _count_words(segs_seq2, clip.start, clip.end)
-                            except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
-                                _rlog(video_dir, f"clip{idx} 2차 순차 재전사 예외: {type(e).__name__}: {e}")
-                except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
-                    pass
-            # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
-            # 단어 수(35%)만이 아니라 '구멍'도 본다: 재시도까지 다 해도 5초+ 구간이 통째로 빈
-            # 정밀 결과는 단어 수 검사를 통과해도 그대로 구우면 그 구간 자막이 실종된다
-            # (실측: base 54단어 vs precise 32단어=59%로 통과했지만 16초 구멍 → 자막 공백 렌더).
-            final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
-            if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
-                progress(
-                    f"[{i+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
-                    base + step * 0.5,
+                except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속
+                    progress(f"[{i+1}/{total}] 정밀 인식 실패({e}) → 재시도", base + step * 0.45)
+                    _rlog(video_dir, f"clip{idx} 정밀 재전사 예외: {type(e).__name__}: {e}")
+                    segs = []
+
+                # 배치 모드 '부분 실종' 검사: 단어 수(35% 기준)로는 못 잡는, base엔 발화가
+                # 있는데 정밀 결과가 통째로 빈 구간(실측: 초반 22초 자막 실종)을 잡는다.
+                # 구멍이 크면 느리지만 검증된 순차 모드로 다시 전사한다.
+                hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+                if segs and hole >= 5.0:
+                    _rlog(video_dir, f"clip{idx} 정밀(배치) 자막 구멍 {hole:.1f}초 → 순차 모드 재전사")
+                    try:
+                        segs_seq = _run_with_progress_ticker(
+                            lambda: _precise(vad_default, batched=False),
+                            start_pct=base + step * 0.4, end_pct=base + step * 0.45, progress=progress,
+                            message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
+                            est_seconds=max(30.0, clip_len * 2.2),
+                        )
+                        if _precise_worst_hole(base_segments, segs_seq, clip.start, clip.end) < hole:
+                            segs = segs_seq
+                    except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
+                        _rlog(video_dir, f"clip{idx} 순차 재전사 예외: {type(e).__name__}: {e}")
+
+                base_n = _count_words(base_segments, clip.start, clip.end)
+                precise_n = _count_words(segs, clip.start, clip.end)
+                # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
+                # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
+                # 통째로 무음 처리해 빈 결과나 'maximum decoding length must be > 0' 예외를 내는 사례가
+                # 있어(실측: tMJLm4Hrax8), 이 재시도로 정확한 large-v3 자막을 되살린다. 순수 추가라
+                # 재시도가 실패해도 결과는 기존과 동일(아래 원본 폴백).
+                # 판정 여유: 정밀 전사는 실제 발화만 세고 base(유튜브 자막)는 롤링 중복·추임새가 섞여
+                # 단어 수가 부풀기 쉽다. 50%로 잡으면 멀쩡한 정밀 자막이 51 vs 50처럼 아슬아슬하게
+                # 버려지는 사고가 난다(실측) - 35%면 "진짜 부실"만 걸러진다.
+                weak = (precise_n < max(3, int(base_n * 0.35))) if base_n >= 5 else (precise_n == 0)
+                if weak and vad_default:
+                    try:
+                        segs2 = _run_with_progress_ticker(
+                            lambda: _precise(False),
+                            start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
+                            message=f"[{i+1}/{total}] 자막 재인식(정밀·VAD 끔): {clip.title}",
+                            est_seconds=max(20.0, clip_len * 1.8),
+                        )
+                        if _count_words(segs2, clip.start, clip.end) > precise_n:
+                            segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
+                            # 이 재시도도 배치 모드(batched=True)라 같은 '구멍' 사고가 재발할 수 있다.
+                            # 단어 수만 보고 그대로 채택하면 구멍이 다시 렌더로 새어나가므로 한 번 더 검사한다.
+                            hole2 = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+                            if hole2 >= 5.0:
+                                _rlog(video_dir, f"clip{idx} VAD끔 재시도도 자막 구멍 {hole2:.1f}초 → 순차 모드 재전사")
+                                try:
+                                    segs_seq2 = _run_with_progress_ticker(
+                                        lambda: _precise(False, batched=False),
+                                        start_pct=base + step * 0.45, end_pct=base + step * 0.5, progress=progress,
+                                        message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
+                                        est_seconds=max(30.0, clip_len * 2.2),
+                                    )
+                                    if _precise_worst_hole(base_segments, segs_seq2, clip.start, clip.end) < hole2:
+                                        segs, precise_n = segs_seq2, _count_words(segs_seq2, clip.start, clip.end)
+                                except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
+                                    _rlog(video_dir, f"clip{idx} 2차 순차 재전사 예외: {type(e).__name__}: {e}")
+                    except Exception:  # noqa: BLE001 - 재시도도 실패하면 아래 원본 폴백
+                        pass
+                # 그래도 부실하면 원본(유튜브 자동자막/medium) 전사로 폴백해 자막이 비는 것만은 막는다.
+                # 단어 수(35%)만이 아니라 '구멍'도 본다: 재시도까지 다 해도 5초+ 구간이 통째로 빈
+                # 정밀 결과는 단어 수 검사를 통과해도 그대로 구우면 그 구간 자막이 실종된다
+                # (실측: base 54단어 vs precise 32단어=59%로 통과했지만 16초 구멍 → 자막 공백 렌더).
+                final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
+                if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
+                    progress(
+                        f"[{i+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
+                        base + step * 0.5,
+                    )
+                    _rlog(
+                        video_dir,
+                        f"clip{idx} 폴백: precise {precise_n}단어/구멍 {final_hole:.1f}초 (base {base_n}단어)",
+                    )
+                    segs = base_segments
+                elif segs and precise_n > 0:
+                    _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
+                    # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
+                    # 자막 구멍이 남아 있는 결과도 캐시하지 않는다(불량 캐시가 계속 재사용되는 사고 방지).
+                    if _precise_worst_hole(base_segments, segs, clip.start, clip.end) < 5.0:
+                        _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
+            # 확정 오탈자 교정(출애굽기/여호와 등). 캐시는 원본 그대로 저장하고 매번 여기서 교정한다
+            # (교정 사전을 나중에 더 채워도 재전사 없이 다음 렌더부터 바로 반영되게).
+            _apply_corrections(segs, corrections)
+            # 경계 스냅 기준: 정밀 전사가 건강하면 그것을 쓴다 — large-v3는 구두점 있는 진짜
+            # 문장 단위라 "문장 중간 끊김/앞 문장 꼬리 시작"을 정확히 잡는다. 유튜브 자막 조각
+            # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
+            # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
+            used_precise = bool(segs) and (segs is not base_segments)
+            # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
+            if not getattr(clip, "trimmed", False):
+                _snap_orig_start, _snap_orig_end = clip.start, clip.end
+                snap_src = segs if used_precise else (base_segments or segs)
+                # 시작 스냅도 폴백(base) 경로에서 함께 돌린다: 이제 세그먼트가 아니라 단어 단위
+                # 문장 경계 기준이라 롤링 자막에서도 안전하다(실측: 폴백 렌더가 앞 문장 꼬리
+                # '겁니다.'로 시작하던 문제).
+                new_start = _snap_clip_start_to_sentence(clip, snap_src)
+                if new_start != clip.start:
+                    _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
+                    clip.start = new_start
+                # 끝 스냅 허용폭 12초: 6초였을 때 문장 끝이 조금 멀면 스냅이 포기해
+                # '이름을 그래서'처럼 말 중간에 뚝 끊겼다(실측). 늘어난 길이가 상한을 넘으면
+                # 아래 하드캡이 끝(펀치라인)을 지키고 시작을 당겨 해결한다.
+                # 단, 인용문 앵커링이 성공한 클립(anchored)은 이미 '생각의 완결' 문장 끝에
+                # 정렬돼 있으므로 정밀 전사 기준 미세 조정(4초)만 허용한다 — 휴리스틱이
+                # 앵커를 다음 주제까지 끌고 가는 과확장을 막는다.
+                snap_budget = 4.0 if getattr(clip, "anchored", False) else 12.0
+                new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=snap_budget)
+                if new_end != clip.end:
+                    _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
+                    clip.end = new_end
+                # 길이 절대 상한(hard_max_duration_sec, 기본 80초): 2026 조사 결과 쇼츠/릴스 모두
+                # 45~60초가 스위트스팟이지만 알고리즘의 실제 기준은 '완결 시청률'이라, 문장/맥락이
+                # 60초 안에 안 끝나면 80초까지는 끊지 않고 완결시키는 게 낫다(말이 중간에 끊긴
+                # 클립은 어떤 길이보다 성과가 나쁘다). 상한을 넘으면 끝(펀치라인)은 지키고
+                # 시작을 당겨 상한 안으로 넣는다.
+                hard_len = float(
+                    cfg["highlights"].get(
+                        "hard_max_duration_sec", float(cfg["highlights"]["max_duration_sec"]) + 5.0
+                    )
                 )
-                _rlog(
-                    video_dir,
-                    f"clip{idx} 폴백: precise {precise_n}단어/구멍 {final_hole:.1f}초 (base {base_n}단어)",
-                )
-                segs = base_segments
-            elif segs and precise_n > 0:
-                _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
-                # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
-                # 자막 구멍이 남아 있는 결과도 캐시하지 않는다(불량 캐시가 계속 재사용되는 사고 방지).
-                if _precise_worst_hole(base_segments, segs, clip.start, clip.end) < 5.0:
-                    _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
-        # 확정 오탈자 교정(출애굽기/여호와 등). 캐시는 원본 그대로 저장하고 매번 여기서 교정한다
-        # (교정 사전을 나중에 더 채워도 재전사 없이 다음 렌더부터 바로 반영되게).
-        _apply_corrections(segs, corrections)
-        # 경계 스냅 기준: 정밀 전사가 건강하면 그것을 쓴다 — large-v3는 구두점 있는 진짜
-        # 문장 단위라 "문장 중간 끊김/앞 문장 꼬리 시작"을 정확히 잡는다. 유튜브 자막 조각
-        # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
-        # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
-        used_precise = bool(segs) and (segs is not base_segments)
-        # 사용자가 직접 구간을 자른 경우(trimmed)엔 건드리지 않는다.
-        if not getattr(clip, "trimmed", False):
-            _snap_orig_start, _snap_orig_end = clip.start, clip.end
-            snap_src = segs if used_precise else (base_segments or segs)
-            # 시작 스냅도 폴백(base) 경로에서 함께 돌린다: 이제 세그먼트가 아니라 단어 단위
-            # 문장 경계 기준이라 롤링 자막에서도 안전하다(실측: 폴백 렌더가 앞 문장 꼬리
-            # '겁니다.'로 시작하던 문제).
-            new_start = _snap_clip_start_to_sentence(clip, snap_src)
-            if new_start != clip.start:
-                _rlog(video_dir, f"clip{idx} 시작 문장 스냅: {clip.start:.2f} -> {new_start:.2f}")
-                clip.start = new_start
-            # 끝 스냅 허용폭 12초: 6초였을 때 문장 끝이 조금 멀면 스냅이 포기해
-            # '이름을 그래서'처럼 말 중간에 뚝 끊겼다(실측). 늘어난 길이가 상한을 넘으면
-            # 아래 하드캡이 끝(펀치라인)을 지키고 시작을 당겨 해결한다.
-            # 단, 인용문 앵커링이 성공한 클립(anchored)은 이미 '생각의 완결' 문장 끝에
-            # 정렬돼 있으므로 정밀 전사 기준 미세 조정(4초)만 허용한다 — 휴리스틱이
-            # 앵커를 다음 주제까지 끌고 가는 과확장을 막는다.
-            snap_budget = 4.0 if getattr(clip, "anchored", False) else 12.0
-            new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=snap_budget)
-            if new_end != clip.end:
-                _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
-                clip.end = new_end
-            # 길이 절대 상한(hard_max_duration_sec, 기본 80초): 2026 조사 결과 쇼츠/릴스 모두
-            # 45~60초가 스위트스팟이지만 알고리즘의 실제 기준은 '완결 시청률'이라, 문장/맥락이
-            # 60초 안에 안 끝나면 80초까지는 끊지 않고 완결시키는 게 낫다(말이 중간에 끊긴
-            # 클립은 어떤 길이보다 성과가 나쁘다). 상한을 넘으면 끝(펀치라인)은 지키고
-            # 시작을 당겨 상한 안으로 넣는다.
-            hard_len = float(
-                cfg["highlights"].get(
-                    "hard_max_duration_sec", float(cfg["highlights"]["max_duration_sec"]) + 5.0
-                )
+                # 점프컷 클립(keep_ranges)은 원본 구간이 길어도 실제 길이는 상한 안이므로 앞을 잘라내면 안 된다.
+                if clip.end - clip.start > hard_len and not (getattr(clip, "keep_ranges", None) or []):
+                    new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
+                    progress(
+                        f"[{i+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",
+                        base + step * 0.5,
+                    )
+                    clip.start = new_start
+                _sync_keep_ranges(clip, _snap_orig_start, _snap_orig_end)
+            out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            # 자막 자동 교정(2026-09-29): 편집 자막이 없는 설교 클립은 whisper 원문이 그대로 구워졌다 — 추임새 제거 +
+            # 문맥 교정(Sonnet, 캐시)을 렌더 직전 줄 텍스트에 건다. 임시 속성이라 clips.json엔 안 남는다.
+            try:
+                from src.caption_autofix import make_text_fixer
+
+                clip.caption_text_fixer = make_text_fixer(video_dir, clip, cfg, use_model=True)
+            except Exception as exc:  # noqa: BLE001 - 교정 준비 실패는 원문 렌더
+                _rlog(video_dir, f"clip{idx} 자막 자동 교정 준비 실패: {exc}")
+                clip.caption_text_fixer = None
+            _run_with_progress_ticker(
+                lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
+                start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
+                message=f"[{i+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
+                est_seconds=max(15.0, clip_len * 0.9),
             )
-            # 점프컷 클립(keep_ranges)은 원본 구간이 길어도 실제 길이는 상한 안이므로 앞을 잘라내면 안 된다.
-            if clip.end - clip.start > hard_len and not (getattr(clip, "keep_ranges", None) or []):
-                new_start = _advance_clip_start(clip.end - hard_len, base_segments or segs)
-                progress(
-                    f"[{i+1}/{total}] 길이 {clip.end - clip.start:.0f}초 → 상한 {hard_len:.0f}초로 앞부분 트림",
-                    base + step * 0.5,
-                )
-                clip.start = new_start
-            _sync_keep_ranges(clip, _snap_orig_start, _snap_orig_end)
-        out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        # 자막 자동 교정(2026-09-29): 편집 자막이 없는 설교 클립은 whisper 원문이 그대로 구워졌다 — 추임새 제거 +
-        # 문맥 교정(Sonnet, 캐시)을 렌더 직전 줄 텍스트에 건다. 임시 속성이라 clips.json엔 안 남는다.
-        try:
-            from src.caption_autofix import make_text_fixer
-
-            clip.caption_text_fixer = make_text_fixer(video_dir, clip, cfg, use_model=True)
-        except Exception as exc:  # noqa: BLE001 - 교정 준비 실패는 원문 렌더
-            _rlog(video_dir, f"clip{idx} 자막 자동 교정 준비 실패: {exc}")
-            clip.caption_text_fixer = None
-        _run_with_progress_ticker(
-            lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
-            start_pct=base + step * 0.5, end_pct=base + step, progress=progress,
-            message=f"[{i+1}/{total}] 쇼츠 렌더링 중: {clip.title}",
-            est_seconds=max(15.0, clip_len * 0.9),
-        )
-        out_path.with_suffix(".src").write_text(
-            render_signature(clip.start, clip.end), encoding="utf-8"
-        )
-        outputs.append(out_path)
-
-    # 렌더 과정에서 스냅/편집자막으로 clip.start/end가 조정됐을 수 있다. 이를 clips.json에
-    # 반영해 검토 UI의 'N초' 라벨이 실제 렌더된 영상 길이와 일치하게 한다.
-    _merge_render_bounds(video_dir / "clips.json", clips, clip_indices, orig_bounds)
+            out_path.with_suffix(".src").write_text(
+                render_signature(clip.start, clip.end), encoding="utf-8"
+            )
+            outputs.append(out_path)
+            rendered[idx] = (clip.start, clip.end, [list(r) for r in (getattr(clip, "keep_ranges", None) or [])])
+    finally:
+        # 렌더 과정에서 스냅/편집자막으로 clip.start/end가 조정됐을 수 있다. 이를 clips.json에
+        # 반영해 검토 UI의 'N초' 라벨이 실제 렌더된 영상 길이와 일치하게 한다.
+        _merge_render_bounds(video_dir / "clips.json", rendered, orig_bounds)
 
     progress("모든 클립 렌더링 완료", 100)
     return outputs
@@ -2668,8 +2680,7 @@ def render_selected(
 
 def _merge_render_bounds(
     clips_path: Path,
-    rendered_clips: list[Clip],
-    clip_indices: list[int],
+    rendered: dict[int, tuple[float, float, list]],
     orig_bounds: dict[int, tuple[float, float]],
 ) -> None:
     """렌더가 조정한 클립 경계(start/end)만 디스크 최신본에 병합 저장한다.
@@ -2682,14 +2693,20 @@ def _merge_render_bounds(
         낡은 경계를 쓰지 않고 사용자 편집을 우선한다 — .src 서명이 어긋나 UI에 '미렌더'로
         표시되고, 다시 만들면 편집이 반영된다(올바른 동작).
       - 재선정으로 clips.json이 통째로 바뀐 경우도 경계 불일치로 걸러져 새 후보를 오염시키지 않는다."""
+    if not rendered:
+        return
     with CLIPS_LOCK:
         fresh = load_clips_json(clips_path)
-        for idx in clip_indices:
+        for idx, (start, end, keep) in rendered.items():
             if not (0 <= idx < len(fresh)) or idx not in orig_bounds:
                 continue
             if (fresh[idx].start, fresh[idx].end) == orig_bounds[idx]:
-                fresh[idx].start = rendered_clips[idx].start
-                fresh[idx].end = rendered_clips[idx].end
+                fresh[idx].start = start
+                fresh[idx].end = end
+                # 스냅이 옮긴 점프컷 구간도 함께 저장한다. start/end만 저장하면 다음 렌더에서
+                # _sync_keep_ranges가 '안 움직였다'고 보고 건너뛰어 마지막 구간이 옛 끝에 머물고,
+                # 늘린 끝부분이 select에서 다시 잘렸다('끝이 끊긴다' 재발 경로).
+                fresh[idx].keep_ranges = keep
         save_clips_json(fresh, clips_path)
 
 

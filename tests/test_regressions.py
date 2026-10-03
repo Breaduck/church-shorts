@@ -811,3 +811,23 @@ def test_facetrack_expr_depth_stays_shallow_for_long_clips():
     assert ev(-1.0) == pytest.approx(x(0.0), abs=0.1)
     assert ev(10.25) == pytest.approx((x(centers[20][1]) + x(centers[21][1])) / 2, abs=0.1)
     assert ev(500.0) == pytest.approx(x(centers[-1][1]), abs=0.1)
+
+
+def test_merge_render_bounds_saves_keep_ranges_and_skips_edited():
+    """렌더 병합: 스냅으로 옮긴 keep_ranges도 저장해야(안 하면 다음 렌더에서 끝이 다시 잘림),
+    렌더 중 사용자가 경계를 바꾼 클립은 덮어쓰지 않고, 기록 안 된(실패한) 클립은 그대로 둔다."""
+    from src.main import _merge_render_bounds
+
+    mk = lambda s, e, kr=None: Clip(start=s, end=e, title="t", caption="", hashtags=[], reason="",
+                                    keep_ranges=kr or [])
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "clips.json"
+        save_clips_json([mk(10, 40, [[10, 20], [30, 40]]), mk(50, 80), mk(100, 130)], p)
+        orig = {0: (10, 40), 1: (50, 80), 2: (100, 130)}
+        # 1번은 렌더 중 사용자가 편집함, 2번은 렌더 실패(기록 없음)
+        cur = load_clips_json(p); cur[1].start = 55; save_clips_json(cur, p)
+        _merge_render_bounds(p, {0: (10, 43.5, [[10, 20], [30, 43.5]]), 1: (50, 82, [])}, orig)
+        out = load_clips_json(p)
+        assert (out[0].end, out[0].keep_ranges) == (43.5, [[10, 20], [30, 43.5]])
+        assert (out[1].start, out[1].end) == (55, 80)
+        assert (out[2].start, out[2].end) == (100, 130)
