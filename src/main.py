@@ -1186,6 +1186,70 @@ def map_lines_to_voice_times(
     return out
 
 
+def _write_transcript_meta(transcript_path: Path, vad: bool) -> None:
+    """whisper 직접 전사의 조건을 옆에 기록한다(_load_reusable_transcript가 재사용 여부 판단에 씀)."""
+    atomic_write_text(transcript_path.with_name("transcript.meta.json"), json.dumps({"vad": bool(vad)}))
+
+
+def _load_reusable_transcript(transcript_path: Path, mode: str) -> Transcript | None:
+    """저장된 transcript.json을 재사용해도 되면 읽어 돌려주고, 아니면 None(다시 전사).
+
+    - 빈 전사(세그먼트 0개)는 재사용하지 않는다: VAD 오판 등으로 한 번 빈 결과가 저장되면
+      예전엔 그 영상은 영원히 '후보 없음'이었다.
+    - 찬양 모드인데 VAD를 켜고 전사한 결과(=설교 모드로 먼저 분석한 업로드)는 재사용하지 않는다:
+      VAD가 노래 구간을 통째로 버려 곡이 안 잡힌다. (설교 모드에서 찬양용 VAD-off 전사를 쓰는 건 무해.)
+    - 읽다 깨진 파일이면 다시 전사한다(원자적 저장 이전에 생긴 반쪽 파일 대비).
+    """
+    if not transcript_path.exists():
+        return None
+    try:
+        transcript = Transcript(**json_load_transcript(transcript_path))
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        print(f"[main] transcript.json 읽기 실패, 다시 전사: {e}", flush=True)
+        return None
+    if not transcript.segments:
+        return None
+    if mode == "praise":
+        try:
+            meta = json.loads(transcript_path.with_name("transcript.meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("vad") is True:
+            print("[main] 설교 모드(VAD) 전사라 노래 구간이 빠져 있음 - 찬양용으로 다시 전사", flush=True)
+            return None
+    return transcript
+
+
+def _replace_clips_json(video_dir: Path, clips: list[Clip]) -> None:
+    """새로 선정한 후보로 clips.json을 교체한다. 기존 후보가 있으면 교체 '직전에' 백업한다.
+
+    - 옛 clips.json은 clips.{ts}.bak.json으로 복사(버전 보존).
+    - 옛 렌더 산출물(short_N.mp4/.ass/.src)은 clips/backup_{ts}/로 '이동'해 새 후보에 붙지 않게 한다
+      (재선정이 같은 장면을 다시 고르면 서명까지 같아져 옛 스타일 영상이 '완성됨'으로 붙어 보였다).
+    예전엔 이 백업·이동을 선정 '전에' 해서, 선정이 실패하면(세션 한도 등) 옛 후보는 남았는데
+    렌더 파일만 사라져 전부 '미렌더'로 보였다. 그리고 찬양 경로는 백업 없이 덮어썼다. 이제 모든
+    경로가 성공해서 저장할 때만 이 함수 하나로 백업 → 교체한다."""
+    clips_path = video_dir / "clips.json"
+    with CLIPS_LOCK:
+        if clips_path.exists():
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            shutil.copy2(clips_path, clips_path.with_name(f"clips.{ts}.bak.json"))
+            render_dir = video_dir / "clips"
+            stale = (
+                [p for p in render_dir.iterdir() if p.is_file() and p.name.startswith("short_")]
+                if render_dir.exists() else []
+            )
+            if stale:
+                arch = render_dir / f"backup_{ts}"
+                arch.mkdir(exist_ok=True)
+                for p in stale:
+                    try:
+                        shutil.move(str(p), str(arch / p.name))
+                    except OSError:
+                        pass  # 사용 중 파일 등은 남겨둔다(치명적이지 않음)
+        save_clips_json(clips, clips_path)
+
+
 def analyze(
     url: str, config_path: Path = Path("config.yaml"), progress=_default_progress,
     transcript_text: str = "", force: bool = False, model: str = "",
@@ -1307,8 +1371,7 @@ def analyze(
                 raise RuntimeError(
                     "가사를 만들지 못했습니다. 곡 제목을 정확히 입력했는지 확인해 주세요."
                 )
-            with CLIPS_LOCK:
-                save_clips_json(clips, clips_path)
+            _replace_clips_json(video_dir, clips)
             _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
             sp.finish(f"완료: 찬양 {len(clips)}곡 (가사 자동 싱크는 백그라운드에서 계속돼요)")
             return video_dir, clips
@@ -1329,8 +1392,7 @@ def analyze(
                 sp.message(f"'{guessed}' 정식 가사를 가져오는 중...")
                 clips = _title_based_praise_clips(dl, video_dir, [guessed], cfg, model, sp)
                 if clips:
-                    with CLIPS_LOCK:
-                        save_clips_json(clips, clips_path)
+                    _replace_clips_json(video_dir, clips)
                     _sync_praise_clips_bg(dl.video_path, video_dir, clips, cfg, video_id=dl.video_id)
                     sp.finish(f"완료: 찬양 '{guessed}' (제목 자동 추정 + 가사 자동 싱크는 백그라운드에서 계속돼요)")
                     return video_dir, clips
@@ -1347,9 +1409,12 @@ def analyze(
         # 이 경로에서만 채점을 냉정하게 하도록 프롬프트 경고를 켜는 플래그.
         transcript_is_cleaned = False
         # 붙여넣은 자막이 있으면 캐시된 transcript.json보다 그것을 우선(사용자 의도 존중).
-        if transcript_path.exists() and not transcript_text.strip():
+        cached_transcript = (
+            None if transcript_text.strip() else _load_reusable_transcript(transcript_path, mode)
+        )
+        if cached_transcript is not None:
             sp.set_fraction(1.0, "기존 자막 재사용")
-            transcript = Transcript(**json_load_transcript(transcript_path))
+            transcript = cached_transcript
         elif transcript_text.strip():
             # 사용자가 붙여넣은 자막을 최우선으로 사용(전사 건너뜀).
             sp.message("붙여넣은 자막 사용 중...")
@@ -1379,6 +1444,7 @@ def analyze(
                         "유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사하거나 SRT/VTT를 붙여넣으세요."
                     )
             sp.set_fraction(1.0, "붙여넣은 자막 사용")
+            _write_transcript_meta(transcript_path, vad=False)
             atomic_write_text(transcript_path, json.dumps(transcript.to_json(), ensure_ascii=False, indent=2))
         else:
             if dl_local:
@@ -1420,7 +1486,9 @@ def analyze(
                 # 0세그먼트, vad_filter=False면 32세그먼트 정상 전사됨). 이러면 하이라이트
                 # 후보가 통째로 비어(clips.json=[]) 사용자에게는 "아무것도 안 뜬다"로 보인다.
                 # VAD 끄고 한 번 더 시도해 되살린다 — 실패해도 기존 폴백(에러 메시지)은 그대로.
+                _write_transcript_meta(transcript_path, vad=_vad)
                 if _vad and not transcript.segments:
+                    _write_transcript_meta(transcript_path, vad=False)
                     sp.message("전사 결과가 비어 있어 무음 감지 없이 재시도하는 중...")
                     transcript = transcribe_and_save(
                         dl.video_path, transcript_path,
@@ -1434,6 +1502,7 @@ def analyze(
                     )
             else:
                 sp.set_fraction(1.0, "유튜브 자동 자막 사용")
+                _write_transcript_meta(transcript_path, vad=False)  # 옛 whisper 기록이 남아 오판하지 않게
             atomic_write_text(transcript_path, json.dumps(transcript.to_json(), ensure_ascii=False, indent=2))
 
         clips_path = video_dir / "clips.json"
@@ -1443,35 +1512,6 @@ def analyze(
         if clips_path.exists() and not regenerate:
             sp.finish(f"완료: 기존 후보 재사용")
             return video_dir, load_clips_json(clips_path)
-        if clips_path.exists() and regenerate:
-            # 기존 후보를 버전 백업하되 원본은 '복사'로 남긴다(예전엔 이동이었음).
-            # 이동 방식은 재선정이 실패하면(세션 한도 등 — 2026-09-01 실제 발생) clips.json이
-            # 사라진 채 남아 영상 페이지가 404가 되고 이전 후보까지 잃는다. 원본을 남기면
-            # 실패 시 이전 후보가 그대로 살아 있고, 재선정 중 '옛 캐시를 완료로 오인'하는
-            # 문제는 _clips_ready의 mtime(job.started 이후) 검사가 이미 막아준다.
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            backup = clips_path.with_name(f"clips.{ts}.bak.json")
-            with CLIPS_LOCK:
-                shutil.copy2(clips_path, backup)
-            # 옛 렌더 산출물(short_N.mp4/.ass/.src)도 백업 폴더로 '이동'해 새 후보에 붙지
-            # 않게 한다(삭제 아님 — 버전 보존 원칙). 재선정이 같은 장면을 다시 고르면 인용문
-            # 앵커링 때문에 시작·끝(=서명)까지 동일해져, 예전 스타일로 구운 옛 영상이 새
-            # 후보의 '완성됨'으로 그대로 붙어 보이는 잔해물 문제가 있었다(실신고).
-            render_dir = video_dir / "clips"
-            if render_dir.exists():
-                stale = [
-                    p for p in render_dir.iterdir()
-                    if p.is_file() and p.name.startswith("short_")
-                ]
-                if stale:
-                    arch = render_dir / f"backup_{ts}"
-                    arch.mkdir(exist_ok=True)
-                    for p in stale:
-                        try:
-                            shutil.move(str(p), str(arch / p.name))
-                        except OSError:
-                            pass  # 사용 중 파일 등은 남겨둔다(치명적이지 않음)
-
         # 찬양 모드: 곡별 구간 감지 → 시간순 후보 저장(채점/앵커링/오디오 힌트 없음) --------
         if mode == "praise":
             sp.advance("AI가 예배 실황에서 찬양 곡을 찾는 중...")
@@ -1553,8 +1593,7 @@ def analyze(
                                 c.caption_overrides = lines
                 except Exception:  # noqa: BLE001 - 가사 교정 실패해도 후보 저장은 계속
                     traceback.print_exc()
-            with CLIPS_LOCK:
-                save_clips_json(clips, clips_path)
+            _replace_clips_json(video_dir, clips)
             # 업로드 찬양: 싱크 맞추기가 즉시 되도록 타이밍 전사를 백그라운드로 예열.
             if dl_local:
                 _prewarm_praise_sync_cache(dl.video_path, video_dir, clips, cfg)
@@ -1705,8 +1744,7 @@ def analyze(
         # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
         clips.sort(key=lambda c: c.score or 0, reverse=True)
         apply_default_sermon_speed(clips, cfg)
-        with CLIPS_LOCK:
-            save_clips_json(clips, clips_path)
+        _replace_clips_json(video_dir, clips)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips
     finally:

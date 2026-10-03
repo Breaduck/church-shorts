@@ -873,3 +873,31 @@ def test_clip_uid_assigned_on_save_and_kept():
         assert len(u) == 12
         cs = load_clips_json(p); cs[0].title = "b"; save_clips_json(cs, p)
         assert load_clips_json(p)[0].uid == u
+
+
+def test_transcript_reuse_rules_and_reselect_backup():
+    """빈 전사·설교(VAD) 전사를 찬양에 재사용하지 않고, 재선정 백업/렌더 이동은 저장 성공 시점에만."""
+    from src.main import _load_reusable_transcript, _replace_clips_json, _write_transcript_meta
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        tp = d / "transcript.json"
+        tp.write_text(json.dumps({"segments": [], "language": "ko", "duration_sec": 10}), encoding="utf-8")
+        assert _load_reusable_transcript(tp, "sermon") is None
+        seg = {"start": 0, "end": 2, "text": "안녕", "words": [{"start": 0, "end": 2, "text": "안녕"}]}
+        tp.write_text(json.dumps({"segments": [seg], "language": "ko", "duration_sec": 10}), encoding="utf-8")
+        _write_transcript_meta(tp, vad=True)
+        assert _load_reusable_transcript(tp, "sermon") is not None
+        assert _load_reusable_transcript(tp, "praise") is None
+        _write_transcript_meta(tp, vad=False)
+        assert _load_reusable_transcript(tp, "praise") is not None
+
+        (d / "clips").mkdir()
+        (d / "clips" / "short_1.mp4").write_text("x")
+        mk = lambda s: Clip(start=s, end=s + 30, title="t", caption="", hashtags=[], reason="")
+        _replace_clips_json(d, [mk(1)])            # 처음: 백업할 것 없음
+        assert (d / "clips" / "short_1.mp4").exists()
+        _replace_clips_json(d, [mk(100)])          # 교체: 옛 렌더는 backup_*로 이동, 옛 후보는 .bak
+        assert not (d / "clips" / "short_1.mp4").exists()
+        assert list(d.glob("clips.*.bak.json")) and list((d / "clips").glob("backup_*/short_1.mp4"))
+        assert load_clips_json(d / "clips.json")[0].start == 100
