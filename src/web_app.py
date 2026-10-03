@@ -1198,7 +1198,7 @@ def upload_clip_route(video_id: str, idx: int):
             video_path,
             title=clip.title or f"{video_id} 쇼츠 {idx + 1}",
             description=clip.caption,
-            tags=[h.lstrip("#") for h in clip.hashtags],
+            tags=clip.hashtags,  # upload_short가 정리(# 제거·문자열 방어·길이 제한)
             category_id=cfg.get("category_id", "22"),
             privacy_status=cfg.get("default_privacy", "unlisted"),
         )

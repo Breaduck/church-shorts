@@ -6,6 +6,7 @@ from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -17,7 +18,9 @@ SCOPES = [
 TOKEN_PATH = Path("secrets/youtube_token.json")
 
 
-def get_credentials() -> Credentials:
+def get_credentials(interactive: bool = True) -> Credentials:
+    """interactive=False(백그라운드 성과 추적)면 브라우저 로그인 창을 띄우지 않고 예외를 낸다 —
+    예전엔 토큰이 없거나 만료되면 백그라운드 스레드가 아무도 안 보는 로그인 대기로 영원히 멈췄다."""
     client_secrets_path = os.environ.get(
         "YOUTUBE_CLIENT_SECRETS_PATH", "secrets/youtube_client_secret.json"
     )
@@ -26,9 +29,18 @@ def get_credentials() -> Credentials:
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
 
     if not creds or not creds.valid:
+        refreshed = False
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+                refreshed = True
+            except RefreshError:
+                # 갱신 토큰이 폐기/만료됨(Google 'Testing' 상태 앱은 7일마다 만료). 예전엔 알 수 없는
+                # 오류로 업로드가 계속 실패해 secrets/youtube_token.json을 손으로 지워야 했다 → 재로그인으로.
+                creds = None
+        if not refreshed:
+            if not interactive:
+                raise RuntimeError("YouTube 로그인이 만료됐습니다. 편집기에서 업로드를 한 번 하면 다시 로그인됩니다.")
             if not Path(client_secrets_path).exists():
                 raise RuntimeError(
                     "YouTube 업로드에 필요한 OAuth 인증 파일이 없습니다: "
@@ -51,6 +63,27 @@ def get_credentials() -> Credentials:
     return creds
 
 
+def sanitize_title(title: str) -> str:
+    """YouTube 제목 규칙: 줄바꿈 불가·'<' '>' 금지·100자 이하(어기면 invalidTitle로 업로드 실패).
+    화면 제목은 Enter로 줄을 나누므로 공백으로 이어 붙인다."""
+    t = " ".join((title or "").replace("<", "").replace(">", "").split())
+    return t[:100].rstrip() or "쇼츠"
+
+
+def sanitize_tags(tags) -> list[str]:
+    """해시태그가 문자열("#a #b")로 저장된 옛 클립 방어 + '#' 제거 + 합계 500자 제한."""
+    if isinstance(tags, str):
+        tags = tags.split()
+    out, total = [], 0
+    for t in tags or []:
+        t = str(t).strip().lstrip("#").replace("<", "").replace(">", "")
+        if not t or total + len(t) + 1 > 480:
+            continue
+        out.append(t)
+        total += len(t) + 1
+    return out
+
+
 def upload_short(
     video_path: Path,
     title: str,
@@ -60,6 +93,8 @@ def upload_short(
     privacy_status: str = "unlisted",
 ) -> str:
     """쇼츠를 업로드하고 video id를 반환한다."""
+    title, tags = sanitize_title(title), sanitize_tags(tags)
+    description = (description or "").replace("<", "").replace(">", "")[:5000]  # 설명도 < > 금지·5000자
     creds = get_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
@@ -85,7 +120,7 @@ def fetch_video_stats(youtube_video_id: str) -> dict:
     """업로드된 영상의 조회수/좋아요/댓글 수를 가져온다 (YouTube Data API v3, statistics part).
     저장(saves)/공유(shares)/평균 조회율(retention_pct)은 이 API로 얻을 수 없다
     (YouTube Analytics API/Studio 전용 지표라서 Data API v3 statistics에는 없음)."""
-    creds = get_credentials()
+    creds = get_credentials(interactive=False)
     youtube = build("youtube", "v3", credentials=creds)
     resp = youtube.videos().list(part="statistics", id=youtube_video_id).execute()
     items = resp.get("items", [])
