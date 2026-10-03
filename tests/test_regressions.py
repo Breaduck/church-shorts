@@ -831,3 +831,20 @@ def test_merge_render_bounds_saves_keep_ranges_and_skips_edited():
         assert (out[0].end, out[0].keep_ranges) == (43.5, [[10, 20], [30, 43.5]])
         assert (out[1].start, out[1].end) == (55, 80)
         assert (out[2].start, out[2].end) == (100, 130)
+
+
+def test_model_output_robustness_scores_and_lists():
+    """모델 출력 하나가 이상해도 선정 전체가 죽지 않는다: "8점"/"높음" 점수, 문자열 해시태그,
+    start 누락 클립(그 클립만 건너뜀)."""
+    from src.highlights import _as_str_list, _validate_and_build_clips
+    from src.scoring import compute_scores
+
+    r = compute_scores({"core_score": "8점", "hook": "8/10", "retention": "높음"})
+    assert r["core_score"] == 8.0 and r["subscores"]["hook"] == 8.0 and r["subscores"]["retention"] == 5.0
+    assert _as_str_list("#설교 #은혜") == ["#설교", "#은혜"]
+    assert _as_str_list("그래도, 괜찮아", split=False) == ["그래도, 괜찮아"]
+    assert _as_str_list(["a", " ", "b"]) == ["a", "b"]
+    raw = [{"end": 50}, "garbage", {"start": "x", "end": 9},
+           {"start": 10, "end": 50, "title": "t", "hashtags": "#a #b", "core_score": "7점"}]
+    clips = _validate_and_build_clips(raw, 600.0, 20, 60, 90)
+    assert len(clips) == 1 and clips[0].hashtags == ["#a", "#b"] and clips[0].core_score == 7.0

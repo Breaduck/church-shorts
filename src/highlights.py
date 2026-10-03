@@ -368,6 +368,19 @@ def _stream_delta(ev: dict) -> tuple[str, str] | None:
     return None
 
 
+def _as_str_list(v, split: bool = True) -> list[str]:
+    """모델이 리스트 대신 "#설교 #은혜"/"a, b" 문자열을 줄 때가 있다(실측). 문자열을 그대로 돌리면
+    글자 하나하나가 항목이 돼(해시태그 '#','설'…, 키워드는 한 글자 hotword로 whisper에 샘) 쉼표/공백으로 쪼갠다.
+    split=False(제목 후보처럼 항목 안에 쉼표가 들어갈 수 있는 경우)면 문자열은 한 항목으로 둔다."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        v = re.split(r"[,\s]+", v) if split and ("," in v or "#" in v) else [v]
+    elif not isinstance(v, (list, tuple)):
+        v = [v]
+    return [str(x).strip() for x in v if str(x).strip()]
+
+
 def _extract_json_array(text: str) -> list[dict]:
     """claude -p 응답 텍스트에서 JSON 배열만 뽑아낸다."""
     fenced = re.search(r"```json\s*(\[.*?\])\s*```", text, re.DOTALL)
@@ -399,8 +412,12 @@ def _validate_and_build_clips(
     hard_max_duration = float(hard_max_duration_sec or max_duration_sec * 1.5)
     clips: list[Clip] = []
     for i, c in enumerate(raw_clips):
-        start = float(c["start"])
-        end = float(c["end"])
+        try:
+            start = float(c["start"])
+            end = float(c["end"])
+        except (KeyError, TypeError, ValueError):
+            print(f"[highlights] 클립 {i} 건너뜀: start/end 형식 이상({str(c)[:80]})")
+            continue
         if end <= start:
             print(f"[highlights] 클립 {i} 건너뜀: end({end})가 start({start}) 이하")
             continue
@@ -433,7 +450,7 @@ def _validate_and_build_clips(
                 end=end,
                 title=str(c.get("title", "")).strip(),
                 caption=str(c.get("caption", "")).strip(),
-                hashtags=list(c.get("hashtags", [])),
+                hashtags=_as_str_list(c.get("hashtags")),
                 reason=str(c.get("reason", "")).strip(),
                 score=computed["score"],
                 core_score=computed["core_score"],
@@ -449,10 +466,8 @@ def _validate_and_build_clips(
                 payoff_line=str(c.get("payoff_line", "")).strip(),
                 insight=str(c.get("insight", "")).strip(),
                 core_line=str(c.get("core_line", "")).strip(),
-                title_candidates=[
-                    str(t).strip() for t in c.get("title_candidates", []) if str(t).strip()
-                ],
-                keywords=[str(k).strip() for k in c.get("keywords", []) if str(k).strip()],
+                title_candidates=_as_str_list(c.get("title_candidates"), split=False),
+                keywords=_as_str_list(c.get("keywords")),
             )
         )
     return clips

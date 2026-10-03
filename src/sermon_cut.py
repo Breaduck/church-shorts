@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from src.highlights import Clip, QuotaExceededError, _invoke_claude_json
+from src.highlights import Clip, QuotaExceededError, _as_str_list, _invoke_claude_json
 from src.scoring import compute_scores
 from src.transcribe import Transcript
 
@@ -1656,7 +1656,7 @@ def select_highlights_v2(
         for r in raw_scores:
             try:
                 scored[int(r.get("index"))] = r
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, AttributeError):  # 원소 하나가 dict가 아니어도 나머지는 살린다
                 continue
     except Exception as exc:  # noqa: BLE001 - 채점 실패해도 컷은 살린다
         print(f"[v2] 2차 채점 실패(컷은 유지, 기본 점수): {exc}", flush=True)
@@ -1696,7 +1696,7 @@ def select_highlights_v2(
             start=clip_start, end=e.end,
             title=str(r.get("title") or c.get("thesis") or core_line).strip()[:40],
             caption=str(r.get("caption", "")).strip(),
-            hashtags=[str(h) for h in (r.get("hashtags") or ["#설교", "#은혜", "#말씀"])],
+            hashtags=_as_str_list(r.get("hashtags")) or ["#설교", "#은혜", "#말씀"],
             reason=str(c.get("why", "")).strip(),
             score=computed["score"], core_score=computed["core_score"], viral_score=computed["viral_score"],
             hook_score=_f("hook"), retention_score=_f("retention"), emotion_score=_f("emotion"),
@@ -1705,8 +1705,8 @@ def select_highlights_v2(
             hook_line=hook_text, payoff_line=e.text, core_line=core_line,
             insight=str(r.get("insight", "")).strip(),
             anchored=True,  # 경계가 문장 시각으로 확정됨 — 렌더의 끝 스냅은 미세조정만
-            title_candidates=[str(t).strip() for t in (r.get("title_candidates") or []) if str(t).strip()],
-            keywords=[str(k).strip() for k in (r.get("keywords") or []) if str(k).strip()],
+            title_candidates=_as_str_list(r.get("title_candidates"), split=False),
+            keywords=_as_str_list(r.get("keywords")),
             keep_ranges=keep_abs,
         ))
     return clips

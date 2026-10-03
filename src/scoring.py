@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import re
+
 
 # viral을 이루는 세부 축의 가중치 (합 = 1.0).
 # hook을 가장 크게, 그다음 리텐션·감정·공감 순. payoff(마무리)도 무겁게.
@@ -75,6 +77,20 @@ def compute_total_score(core_score: float, viral_score: float) -> int:
     return int(round(_clamp(total, 0.0, 100.0)))
 
 
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _num(v) -> float | None:
+    """모델이 준 점수 값을 숫자로. "8점"·"8/10"·" 7.5 "는 첫 숫자를 쓰고, 숫자가 없으면("높음") None.
+    예전엔 float()에 그대로 넣어 값 하나가 이상하면 ValueError로 선정 전체가 죽었다."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = _NUM_RE.search(str(v))
+    return float(m.group()) if m else None
+
+
 def compute_scores(raw: dict) -> dict:
     """모델이 준 원시 dict에서 최종 점수 묶음을 계산해 돌려준다.
 
@@ -84,19 +100,20 @@ def compute_scores(raw: dict) -> dict:
 
     반환: {core_score, viral_score, score, subscores(dict)}
     """
-    core_score = raw.get("core_score")
-    core_score = float(core_score) if core_score is not None else 5.0
+    core_score = _num(raw.get("core_score"))
+    core_score = core_score if core_score is not None else 5.0
 
     axis_keys = list(VIRAL_WEIGHTS.keys())
-    has_subscores = any(raw.get(k) is not None for k in axis_keys)
+    parsed = {k: _num(raw.get(k)) for k in axis_keys}
+    has_subscores = any(v is not None for v in parsed.values())
 
     if has_subscores:
-        subscores = {k: (float(raw[k]) if raw.get(k) is not None else 5.0) for k in axis_keys}
+        subscores = {k: (v if v is not None else 5.0) for k, v in parsed.items()}
         viral_score = compute_viral_score(subscores)
     else:
         # 하위호환: 세부 축이 없으면 예전에 모델이 직접 준 viral_score를 쓴다.
-        v = raw.get("viral_score")
-        viral_score = float(v) if v is not None else 5.0
+        v = _num(raw.get("viral_score"))
+        viral_score = v if v is not None else 5.0
         subscores = {}
 
     # score는 항상 우리 공식으로 재계산해 일관성을 보장한다(모델이 준 score는 무시).
