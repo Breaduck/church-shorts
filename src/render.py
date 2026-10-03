@@ -171,7 +171,9 @@ def _combine_keep(
         return None
     if len(combined) == 1 and combined[0][0] <= 0.01 and combined[0][1] >= duration - 0.01:
         return None  # 통째로 남김 = 자를 것 없음(빠른 경로)
-    return combined
+    # select 식은 소수 2자리로 찍히는데 자막 리매핑·afade·효과음은 이 값을 원래 정밀도로 써서 컷마다
+    # 최대 5ms씩 어긋남이 쌓였다 → 여기서 한 번 반올림해 모두가 같은 값을 쓰게 한다.
+    return [(round(s, 2), round(e, 2)) for s, e in combined]
 
 
 def _vertical_transform(background_mode: str, resolution: tuple[int, int], pad_color: str = "white") -> str:

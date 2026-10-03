@@ -98,10 +98,13 @@ def main() -> None:
     outro = cfg["render"].get("outro", {}) or {}
     outro_sec = float(outro.get("duration_sec", 0) or 0) if outro.get("enabled") else 0.0
     overhead = pad + outro_sec
+    # 배속(설교 기본 1.1배 등)은 자막을 구운 뒤 후처리로 걸린다 → 본문 길이·ASS 시각을 배속으로 나눠 비교.
+    speed = min(2.0, max(1.0, float(getattr(clip, "playback_speed", 1.0) or 1.0)))
+    expect = expect / speed
 
     print(f"\n  점프컷 렌더: {jc['duration']:.1f}초 (기대 {expect + overhead:.1f}초 = 내용 {expect:.1f} + 여운/로고 {overhead:.1f})")
     print(f"  통짜 렌더  : {wh['duration']:.1f}초")
-    print(f"  줄어든 양  : {wh['duration'] - jc['duration']:.1f}초 (빼려던 양 {clip.end - clip.start - expect:.1f}초)")
+    print(f"  줄어든 양  : {wh['duration'] - jc['duration']:.1f}초 (빼려던 양 {(clip.end - clip.start) / speed - expect:.1f}초, 배속 {speed:g})")
 
     ok = True
     if abs(jc["duration"] - (expect + overhead)) > 2.0:
@@ -122,7 +125,7 @@ def main() -> None:
             h, m_, s = t.split(":")
             return int(h) * 3600 + int(m_) * 60 + float(s)
         if times:
-            last = max(sec(t) for t in times)
+            last = max(sec(t) for t in times) / speed
             print(f"  자막 마지막 시작 {last:.1f}초 / 영상 {jc['duration']:.1f}초")
             if last > jc["duration"] + 0.5:
                 print("  [실패] 자막이 영상 길이를 넘습니다 — 압축 타임라인 리매핑 누락"); ok = False
