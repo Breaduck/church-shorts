@@ -788,3 +788,26 @@ def test_retention_csv_hook_cliff_and_source_mapping():
     assert a["hook_leak"] == 45.0
     assert len(a["cliffs"]) == 1 and a["cliffs"][0]["lost"] == 10.0
     assert "그러나" in a["cliffs"][0]["said"]
+
+
+def test_facetrack_expr_depth_stays_shallow_for_long_clips():
+    """얼굴추적 크롭 식: 선형 nested if는 키프레임 ~100개(50초+)에서 ffmpeg 중첩 한도를 넘어
+    렌더가 -22로 실패했다. 균형 트리로 깊이가 log n이어야 하고 값은 구간 선형보간 그대로."""
+    from src.facetrack import build_crop_x_expr
+
+    centers = [(i * 0.5, (i % 7) / 7) for i in range(200)]   # 100초, 2fps
+    expr = build_crop_x_expr(centers, 1920.0, 1080.0, 840.0)
+    depth = mx = 0
+    for ch in expr:
+        depth += (ch == "(") - (ch == ")")
+        mx = max(mx, depth)
+    assert mx < 40
+
+    def ev(t):
+        e = expr.replace("if(", "IF(").replace("lt(", "LT(").replace("gte(", "GTE(")
+        return eval(e, {"IF": lambda c, a, b: a if c else b, "LT": lambda a, b: a < b,
+                        "GTE": lambda a, b: a >= b, "t": t})
+    x = lambda fx: max(0.0, min(840.0, fx * 1920 - 540))
+    assert ev(-1.0) == pytest.approx(x(0.0), abs=0.1)
+    assert ev(10.25) == pytest.approx((x(centers[20][1]) + x(centers[21][1])) / 2, abs=0.1)
+    assert ev(500.0) == pytest.approx(x(centers[-1][1]), abs=0.1)

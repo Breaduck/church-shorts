@@ -131,16 +131,23 @@ def build_crop_x_expr(
             dedup.append((t, x))
     if len(dedup) == 1:
         return f"{dedup[0][1]:.1f}"
-    # 뒤에서부터 nested if(lt(t,t_i), lerp, ...) 구성.
-    expr = f"{dedup[-1][1]:.1f}"
-    for i in range(len(dedup) - 1, 0, -1):
-        t0, x0 = dedup[i - 1]
-        t1, x1 = dedup[i]
-        dt = max(1e-3, t1 - t0)
-        slope = (x1 - x0) / dt
-        seg = f"({x0:.1f}+({slope:.3f})*(t-{t0:.3f}))"
-        expr = f"if(lt(t,{t1:.3f}),{seg},{expr})"
-    # 첫 구간 이전(t<t0_first)은 첫 값으로.
+    # 구간 탐색을 균형 이진트리 if로 구성한다. 선형 nested if는 키프레임 ~100개(약 50초)에서
+    # ffmpeg 식 파서 중첩 한도를 넘어 렌더 자체가 실패했다(-22). 트리는 깊이 log2(n)이고
+    # 프레임당 비교 횟수도 n→log n으로 줄어든다.
+    def seg(k: int) -> str:  # 구간 k: [t_{k-1}, t_k) 선형보간
+        t0, x0 = dedup[k - 1]
+        t1, x1 = dedup[k]
+        slope = (x1 - x0) / max(1e-3, t1 - t0)
+        return f"({x0:.1f}+({slope:.3f})*(t-{t0:.3f}))"
+
+    def tree(a: int, b: int) -> str:  # 구간 a..b-1
+        if b - a == 1:
+            return seg(a)
+        mid = (a + b) // 2
+        return f"if(lt(t,{dedup[mid - 1][0]:.3f}),{tree(a, mid)},{tree(mid, b)})"
+
     t_first, x_first = dedup[0]
-    expr = f"if(lt(t,{t_first:.3f}),{x_first:.1f},{expr})"
-    return expr
+    t_last, x_last = dedup[-1]
+    expr = f"if(gte(t,{t_last:.3f}),{x_last:.1f},{tree(1, len(dedup))})"
+    # 첫 구간 이전(t<t0_first)은 첫 값으로.
+    return f"if(lt(t,{t_first:.3f}),{x_first:.1f},{expr})"
