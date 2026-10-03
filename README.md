@@ -82,6 +82,15 @@ venv/Scripts/python.exe -m src.main "https://www.youtube.com/watch?v=XXXXXXXX"
 `config.yaml`에서 쇼츠 개수, 길이, 자막 스타일, 세로 변환 방식(blur/crop),
 하이라이트 카테고리 등을 조절할 수 있습니다.
 
+**내 PC에서만 바꿀 설정은 `config.local.yaml`에 적으세요.** `config.yaml`은 editor.bat 자동
+업데이트 때 최신 기본값으로 덮어써집니다. `config.local.yaml`에는 바꿀 키만 같은 구조로 적으면
+그 위에 덮어 적용됩니다. 예:
+
+```yaml
+render:
+  video_encoder: libx264
+```
+
 ## 진행 단계
 
 - **Phase A** (현재): 링크 → 쇼츠 생성까지 완전 자동

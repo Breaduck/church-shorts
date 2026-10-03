@@ -43,3 +43,7 @@ server_err.txt
 _scratch/
 /*.mp4
 /*.png
+
+# 각 PC 전용 설정 덮어쓰기(config.yaml 위에 병합) - 자동 업데이트가 건드리지 않음
+config.local.yaml
+.installed_requirements

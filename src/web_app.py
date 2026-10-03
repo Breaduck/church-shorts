@@ -15,7 +15,6 @@ import time
 import traceback
 from pathlib import Path
 
-import yaml
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 # .env를 읽는다(.env.example이 YOUTUBE_CLIENT_SECRETS_PATH를 안내하는데 여기서 안 읽으면
@@ -30,7 +29,7 @@ except ImportError:
 from src.feedback import PerformanceRecord, load_feedback, upsert_feedback
 from src.models import EXECUTION_MODEL, resolve as resolve_model, sanitize as sanitize_model
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
-from src.main import analyze, reanalyze_clip_region, render_selected, render_signature
+from src.main import analyze, load_config, reanalyze_clip_region, render_selected, render_signature
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
 app = Flask(__name__)
@@ -73,7 +72,7 @@ def _clips_ready(video_id: str, job: dict | None) -> bool:
 
 
 def _load_config() -> dict:
-    return yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    return load_config(Path("config.yaml"))  # config.local.yaml 덮어쓰기 포함(main과 동일)
 
 
 # ETA는 파이프라인(main.StageProgress / _run_with_progress_ticker)이 단계별 예상시간으로

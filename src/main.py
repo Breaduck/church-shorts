@@ -58,8 +58,27 @@ from src.transcript_import import (
 from src.youtube_captions import get_transcript_from_youtube
 
 
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
 def load_config(path: Path = Path("config.yaml")) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    """config.yaml(코드와 함께 배포되는 기본값) 위에 같은 폴더의 config.local.yaml(각 PC 전용,
+    git·자동 업데이트 대상 아님)을 덮어 쓴다. config.yaml을 직접 고치면 editor.bat 자동 업데이트가
+    매번 원래대로 되돌린다 — PC별 설정(인코더·쇼츠 개수 등)은 config.local.yaml에 필요한 키만 적는다."""
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    local = path.with_name("config.local.yaml")
+    if local.exists():
+        try:
+            over = yaml.safe_load(local.read_text(encoding="utf-8")) or {}
+            if isinstance(over, dict):
+                cfg = _deep_merge(cfg, over)
+        except (OSError, yaml.YAMLError) as e:
+            print(f"[config] config.local.yaml 읽기 실패, 기본값만 사용: {e}", flush=True)
+    return cfg
 
 
 def _default_progress(message: str, pct: float, eta_seconds: float | None = None) -> None:

@@ -19,14 +19,22 @@ AI 분석 자체는 여전히 각자 로컬에 설치된 Claude CLI로 돈다 �
   [[project_bat_filename_ascii_2026-09-20]]). 이 두 파일이 바뀌면 다음 zip 재다운로드에서만
   반영되고, 그건 드문 일이다(런처는 거의 안 바뀜, 실제로 자주 바뀌는 건 src/ 쪽).
 - 실패해도(오프라인·방화벽 등) 조용히 넘어간다 — 에디터 실행 자체를 막지 않는다.
+- requirements.txt가 바뀌었으면 venv에 pip install -r을 돌린다 — 안 하면 새 의존성을 쓰는 코드가
+  다른 PC에서 ImportError로 아예 안 뜬다(fonttools 때 실제로 겪음).
+- 파일 하나라도 갱신에 실패하면 마커를 안 쓴다 → 다음 실행에서 다시 시도(옛/새 코드 혼재 방지).
+- 편집기가 이미 떠 있으면(5000 응답) 갱신하지 않는다 — 실행 중인 서버가 나중에 지연 import하는
+  모듈만 새 코드가 돼 옛/새가 섞인다. 다음에 편집기를 새로 켤 때 갱신된다.
+- 사용자 설정은 config.local.yaml(갱신 대상 아님)에 둔다. config.yaml은 코드 기본값이라 갱신된다.
 - 최초 실행(마커 파일이 없음)은 다운로드하지 않고 현재 커밋을 그대로 최신으로 기록한다 —
   방금 받은 zip이 이미 최신이므로 즉시 재다운로드하는 낭비를 피한다.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -37,6 +45,7 @@ REPO = "Breaduck/church-shorts"
 BRANCH = "master"
 ROOT = Path(__file__).resolve().parent.parent  # scripts/ 의 부모 = 프로젝트 루트
 MARKER = ROOT / ".installed_commit"
+REQ_MARKER = ROOT / ".installed_requirements"  # 마지막으로 pip 설치에 성공한 requirements.txt 해시
 SKIP_DIRS = {"output", "secrets", "venv", ".git"}
 SKIP_FILES = {"editor.bat", "install.bat"}  # 자기 자신 실행 중 덮어쓰기 방지
 TIMEOUT_SEC = 6
@@ -52,6 +61,46 @@ def _latest_sha() -> str | None:
         return sha if isinstance(sha, str) and sha else None
     except Exception:
         return None
+
+
+def _editor_running() -> bool:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:5000/", timeout=1):
+            return True
+    except Exception:
+        return False
+
+
+def _file_hash(p: Path) -> str:
+    try:
+        return hashlib.sha1(p.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _ensure_requirements() -> bool:
+    """requirements.txt가 마지막 설치 성공 때와 다르면 pip install -r. 성공해야 해시를 기록하므로
+    실패하면 다음 실행에서 다시 시도된다."""
+    req = ROOT / "requirements.txt"
+    h = _file_hash(req)
+    if not h:
+        return True
+    try:
+        done = REQ_MARKER.read_text(encoding="utf-8").strip()
+    except OSError:
+        done = ""
+    if done == h:
+        return True
+    print("[update] 필요한 패키지가 바뀌어 설치 중... (1~2분)")
+    proc = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(req)], cwd=str(ROOT))
+    if proc.returncode != 0:
+        print("[update] 패키지 설치 실패 - 다음 실행 때 다시 시도합니다")
+        return False
+    try:
+        REQ_MARKER.write_text(h, encoding="utf-8")
+    except OSError:
+        pass
+    return True
 
 
 def _current_sha() -> str:
@@ -87,6 +136,7 @@ def _apply_update(sha: str) -> bool:
         src_root = roots[0]
 
         copied = 0
+        failed = 0
         for item in src_root.rglob("*"):
             if item.is_dir():
                 continue
@@ -101,13 +151,20 @@ def _apply_update(sha: str) -> bool:
                 shutil.copy2(item, dest)
                 copied += 1
             except OSError as e:
+                failed += 1
                 print(f"[update] {rel} 갱신 실패({e}) - 건너뜀")
-        try:
-            MARKER.write_text(sha, encoding="utf-8")
-        except OSError:
-            pass
-        print(f"[update] 최신 코드로 갱신됨 ({copied}개 파일)")
+
+    if not _ensure_requirements():
+        failed += 1
+    if failed:
+        print(f"[update] {copied}개 갱신, {failed}건 실패 - 다음 실행 때 다시 시도합니다")
         return True
+    try:
+        MARKER.write_text(sha, encoding="utf-8")
+    except OSError:
+        pass
+    print(f"[update] 최신 코드로 갱신됨 ({copied}개 파일)")
+    return True
 
 
 def main() -> int:
@@ -120,12 +177,16 @@ def main() -> int:
         # 기록만 해둔다. 다음 실행부터 진짜로 최신과 비교한다.
         try:
             MARKER.write_text(latest, encoding="utf-8")
+            REQ_MARKER.write_text(_file_hash(ROOT / "requirements.txt"), encoding="utf-8")  # install.bat이 막 설치함
         except OSError:
             pass
         return 0
 
     current = _current_sha()
     if latest == current:
+        return 0
+    if _editor_running():
+        print("[update] 편집기가 실행 중이라 이번엔 갱신하지 않음 - 편집기를 닫고 다시 켜면 갱신됩니다")
         return 0
 
     print(f"[update] 새 버전 발견 - 코드 갱신 중... ({(current[:7] or '?')} -> {latest[:7]})")
