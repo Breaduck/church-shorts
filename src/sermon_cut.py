@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 
 from src.highlights import Clip, QuotaExceededError, _as_str_list, _invoke_claude_json
-from src.scoring import compute_scores
+from src.scoring import VIRAL_WEIGHTS, _num, compute_scores
 from src.transcribe import Transcript
 
 
@@ -777,6 +777,10 @@ def verify_and_fix(
     # 2026-09-22 정답지 A/B: 하한을 엄격히 해도 적중 6/7·커버 70% 유지, 40초 미만 후보만 2개→1개로 줄었다).
     if dur(start, end) < min_sec:
         return None, log + [f"길이 {dur(start,end):.0f}초 < 하한 {min_sec:.0f}초 → 탈락"]
+    # 시작을 당긴 뒤 skip 재검사로 들어낼 구간이 되살아나면 상한을 넘을 수 있다. 예전엔 여기서 안 막아
+    # main.py가 '스냅 후 과확장'이라는 엉뚱한 로그로 조용히 버렸다 → 원인이 보이게 여기서 판정한다.
+    if dur(start, end) > hard_max_sec:
+        return None, log + [f"skip 재검사 후 길이 {dur(start,end):.0f}초 > 상한 {hard_max_sec:.0f}초 → 탈락"]
     fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end, "skip": [list(s) for s in skips]})
     return fixed, log
 
@@ -1611,7 +1615,18 @@ def select_highlights_v2(
             sentences, model=model, budget=min(ENUM_BUDGET_SEC, float(max_duration_sec) - 2.0),
             hard_max_sec=float(hard_max_duration_sec),
         )
-        fixed = enum_cuts + fixed
+        if enum_cuts:
+            # 일반 컷이 같은 첫째·둘째 구간을 잡았으면 쇼츠 두 개가 겹쳐 나온다 → 나열 컷과 30% 이상 겹치는 일반 컷은 뺀다.
+            def _span(c):
+                return sentences[c["start"]].start, sentences[c["end"]].end
+            def _ov(a, b):
+                (s1, e1), (s2, e2) = _span(a), _span(b)
+                inter = max(0.0, min(e1, e2) - max(s1, s2))
+                return inter / max(1e-6, min(e1 - s1, e2 - s2))
+            kept = [c for c in fixed if all(_ov(c, ec) < 0.3 for ec in enum_cuts)]
+            if len(kept) < len(fixed):
+                print(f"[v2] 나열 컷과 겹치는 일반 컷 {len(fixed) - len(kept)}개 제외", flush=True)
+            fixed = enum_cuts + kept
     except QuotaExceededError:
         raise
     except Exception as exc:  # noqa: BLE001 - 나열 컷 실패로 일반 선정을 잃지 않는다
@@ -1670,7 +1685,9 @@ def select_highlights_v2(
         # 2차 채점이 실패/누락된 클립: 예전엔 전 축 6점(=60점)으로 채웠는데, 정직하게 채점된
         # 클립 상당수가 60점 미만이라 **채점 못 한 클립이 2~3위로 올라가는 순위 역전**이 났다
         # (main.py가 score 내림차순으로 정렬). 이제 명시적으로 바닥 점수를 주고 맨 뒤로 보낸다.
-        if r:
+        # 행은 있는데 점수 축이 하나도 없으면(예: {"index":0,"title":…}) 채점 실패와 같다 — 예전엔
+        # 하위호환 경로가 core·viral을 5로 채워 50점이 돼, 정직하게 낮게 채점된 클립보다 위로 갔다.
+        if r and any(_num(r.get(k)) is not None for k in ("core_score", "viral_score", *VIRAL_WEIGHTS)):
             computed = compute_scores(r)
         else:
             computed = compute_scores({"core_score": 1, "hook": 1, "retention": 1, "emotion": 1,
