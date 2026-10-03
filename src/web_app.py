@@ -2691,6 +2691,10 @@ def sync_captions_route(video_id: str, idx: int):
         return jsonify({"error": "참조할 단어 시각이 없습니다"}), 400
     # 정렬 목표 시각도 처음 렌더와 같은 시간축(무음 보정 + 전역 오프셋)으로.
     words = _voice_corrected_words(words, video_id, clip.start, clip.end)
+    # 점프컷으로 들어낸 구간의 말은 영상에 없다 — 초안·렌더와 같이 빼야 자막이 없는 말에 붙지 않는다.
+    words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]
+    if not words:
+        return jsonify({"error": "참조할 단어 시각이 없습니다"}), 400
     sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
 
     def norm(s: str) -> str:
