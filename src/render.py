@@ -361,10 +361,10 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
     원본 클립 그대로 두는 쪽이 렌더 전체를 실패시키는 것보다 안전하다(호출자가 로그만 남김)."""
     list_path = output_path.with_suffix(".concat.txt")
     tmp_path = output_path.with_suffix(".withoutro.mp4")
-    list_path.write_text(
-        f"file '{output_path.resolve().as_posix()}'\nfile '{outro_path.resolve().as_posix()}'\n",
-        encoding="utf-8",
-    )
+    def _q(p: Path) -> str:  # concat 목록 인용: 경로 속 ' 는 '\'' 로(예: 사용자 폴더 O'Brien)
+        return "'" + p.resolve().as_posix().replace("'", "'\\''") + "'"
+
+    list_path.write_text(f"file {_q(output_path)}\nfile {_q(outro_path)}\n", encoding="utf-8")
     try:
         cmd = [
             "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",

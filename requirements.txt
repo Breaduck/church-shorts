@@ -1,14 +1,15 @@
 # 유튜브가 자주 바뀌어 오래된 yt-dlp는 403(다운로드 거부)이 난다. 오류 나면 pip install -U yt-dlp.
+# 다른 패키지는 다음 메이저 버전 미만으로 묶는다(새 PC 설치가 이 PC가 안 겪어본 메이저 버전을 받지 않게). yt-dlp만 일부러 상한 없음.
 yt-dlp>=2026.8.19
-faster-whisper>=1.0.0
-numpy>=1.26.0
-librosa>=0.10.0
-soundfile>=0.12.0
-PyYAML>=6.0
+faster-whisper>=1.0.0,<2
+numpy>=1.26.0,<3
+librosa>=0.10.0,<1
+soundfile>=0.12.0,<1
+PyYAML>=6.0,<7
 # fonts.py가 폰트 name 테이블에서 family 이름을 읽고(ASS Fontname), captions.py가 제목
 # 크기를 실측(_fit_title_font_size)하는 데 쓴다. 최상단 import라 없으면 편집기가 아예 안 뜬다.
-fonttools>=4.50
-Flask>=3.0.0
+fonttools>=4.50,<5
+Flask>=3.0.0,<4
 python-dotenv>=1.0.0
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.2.0
