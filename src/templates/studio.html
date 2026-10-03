@@ -2585,6 +2585,7 @@ function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); res
 function markDirty() { dirty = true; $('projEdited').textContent = ' - 편집됨'; scheduleAutoSave(); }
 function payload() {
   const p = {
+    uid: C.uid || '',
     captions: collect(),
     caption_size: parseInt($('pSize').value, 10) || 0,
     caption_size_en: parseInt($('pSizeEn').value, 10) || 0,
@@ -2638,7 +2639,11 @@ function payload() {
 async function save() {
   const vChanged = vsegsChanged();
   const r = await fetch('/video/' + VIDEO_ID + '/clip/' + IDX + '/position', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
-  if (!r.ok) { setStatus('저장 실패'); return false; }
+  if (!r.ok) {
+    let msg = '저장 실패';
+    try { msg = (await r.json()).error || msg; } catch (e) {}
+    setStatus(msg); return false;
+  }
   dirty = false; clipRangeDirty = false; $('projEdited').textContent = '';
   if (vChanged) {
     // 영상 길이가 바뀌었으니(진짜 컷) 새 구간 기준으로 페이지를 다시 불러온다 — 자막은

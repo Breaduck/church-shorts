@@ -1174,6 +1174,7 @@
     $('.pv-cancel').addEventListener('click', close);
     function buildPayload() {
       const payload = {
+        uid: C.uid || '',
         title: chosenTitle,
         title_offset_x: state.title.x, title_offset_y: state.title.y,
         title_size: state.title.size,
@@ -1208,7 +1209,10 @@
       const r = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/position', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       });
-      if (!r.ok) return false;
+      if (!r.ok) {
+        if (r.status === 409) { try { alert((await r.json()).error); } catch (e) {} }
+        return false;
+      }
       // 저장 성공 → 현재 상태를 새 기준으로: 다음 저장에서 '구간 바뀜' 오판 방지, dirty 해제.
       C.start = outS; C.end = outE;
       C.keep_ranges = segs.length > 1 ? segs.map((sg) => [sg.s, sg.e]) : [];

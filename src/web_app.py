@@ -1726,6 +1726,7 @@ def duplicate_clip(video_id: str, idx: int):
         # 편집창을 처음 열 때 잘라낸 구간이 아니라 원본 영상 전체가 보이게 하는 일회성
         # 힌트(사용자 요청: "복제될 때는 원본 영상 전체가 편집창에서 보이게").
         dup.show_full_source_once = True
+        dup.uid = ""  # 복제본은 별개 후보 — 저장 때 새 uid
         clips.append(dup)
         new_idx = len(clips) - 1
         save_clips_json(clips, clips_path)
@@ -1750,6 +1751,8 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
 
     body = request.get_json() or {}
     clip = clips[idx]
+    if body.get("uid") and clip.uid and str(body["uid"]) != clip.uid:
+        return jsonify({"error": "이 편집창을 연 뒤 후보가 새로 분석돼 바뀌었습니다. 새로고침 후 다시 편집해 주세요."}), 409
     # 저장 전 구간 — 아래에서 '실제로 영상을 잘랐는지' 판정해, 안 잘랐는데 빈 자막이 오면 무시한다.
     _before_range = (round(clip.start, 2), round(clip.end, 2),
                      [[round(float(a), 2), round(float(b), 2)] for a, b in (getattr(clip, "keep_ranges", None) or [])])
@@ -2252,6 +2255,7 @@ def clip_preview_info(video_id: str, idx: int):
     return jsonify({
         "layout": layout,
         "clip": {
+            "uid": clip.uid,
             "title": clip.title,
             "title_candidates": cands[:5],
             "start": clip.start,

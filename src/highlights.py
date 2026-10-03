@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
@@ -131,6 +132,9 @@ class Clip:
     # 비어 있으면 [start,end] 전체를 남긴다. 여러 개면 렌더가 무음 제거와 같은 방식으로 이어붙인다
     # (render._combine_keep → select/aselect 필터). start/end는 이 구간들의 바깥 경계와 일치시킨다.
     keep_ranges: list = field(default_factory=list)
+    # 후보 고유 id(저장 시 자동 부여). 편집 저장은 배열 인덱스로 찾아가는데, 편집창을 연 채 '새로 분석'으로
+    # 후보 목록이 통째로 바뀌면 옛 3번의 편집이 새 3번에 덮였다 → 편집창이 연 클립의 uid를 같이 보내 대조한다.
+    uid: str = ""
 
     @property
     def duration_sec(self) -> float:
@@ -1576,6 +1580,9 @@ def save_clips_json(clips: list[Clip], path: Path) -> None:
     직전 버전은 .bak으로 한 세대 남겨, 상위 로직 버그로 빈 배열을 저장해버린 경우에도
     수동 복구가 가능하게 한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    for c in clips:
+        if not getattr(c, "uid", ""):
+            c.uid = uuid.uuid4().hex[:12]
     data = json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=2)
     if path.exists():
         try:

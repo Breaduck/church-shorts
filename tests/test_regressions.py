@@ -862,3 +862,14 @@ def test_atomic_write_and_corrupt_feedback_tolerated():
         atomic_write_text(p, "[]")
         assert p.read_text(encoding="utf-8") == "[]"
         assert [x.name for x in Path(d).iterdir()] == ["feedback.json"]
+
+
+def test_clip_uid_assigned_on_save_and_kept():
+    """편집 저장 대조용 uid: 저장 때 비어 있으면 부여, 다시 읽고 저장해도 유지(재선정 시엔 새 Clip이라 새 uid)."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "clips.json"
+        save_clips_json([Clip(start=1, end=30, title="a", caption="", hashtags=[], reason="")], p)
+        u = load_clips_json(p)[0].uid
+        assert len(u) == 12
+        cs = load_clips_json(p); cs[0].title = "b"; save_clips_json(cs, p)
+        assert load_clips_json(p)[0].uid == u

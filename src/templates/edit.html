@@ -403,6 +403,7 @@ applyFontPreview();
 
 function payload() {
   const p = {
+    uid: {{ (clip.uid or '') | tojson }},
     title: titleInput.value,
     title_offset_x: state.title.x, title_offset_y: state.title.y,
     caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
