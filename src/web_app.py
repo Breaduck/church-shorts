@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import subprocess
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
@@ -33,6 +35,40 @@ from src.main import analyze, load_config, reanalyze_clip_region, render_selecte
 from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
 
 app = Flask(__name__)
+# 업로드 상한(예배 실황 원본도 넉넉히). 상한이 없으면 터널로 열었을 때 디스크를 채울 수 있다.
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 ** 3
+
+# 외부 접속 보호. 라우트에 인증이 없는데 cloudflared 터널은 localhost로 들어오므로 루프백 바인드만으로는
+# 못 막는다(터널 URL만 알면 이 PC 계정으로 유튜브 업로드·Claude 한도 소모가 가능했다).
+#  - SHORTS_TOKEN을 설정하면 외부 요청은 ?token=… (한 번 열면 쿠키로 기억) 이 있어야 통과.
+#  - 설정 안 했으면 외부 요청도 그대로 허용하되(기존 사용 방식 유지), 유튜브 업로드만은 막는다.
+_ACCESS_TOKEN = os.environ.get("SHORTS_TOKEN", "")
+
+
+def _is_remote_request() -> bool:
+    return bool(request.headers.get("Cf-Connecting-Ip")) or request.remote_addr not in ("127.0.0.1", "::1", None)
+
+
+@app.before_request
+def _guard_remote_access():
+    if not _is_remote_request():
+        return None
+    if _ACCESS_TOKEN:
+        given = request.args.get("token") or request.cookies.get("shorts_token") or ""
+        if not hmac.compare_digest(given, _ACCESS_TOKEN):
+            return Response("접근 권한이 없습니다. 주소 끝에 ?token=… 을 붙여 여세요.", status=401,
+                            mimetype="text/plain; charset=utf-8")
+        return None
+    if request.method == "POST" and request.path.endswith("/upload"):
+        return jsonify({"error": "외부 접속에서는 유튜브 업로드가 막혀 있습니다(편집기 PC에서 하거나 SHORTS_TOKEN을 설정하세요)."}), 403
+    return None
+
+
+@app.after_request
+def _remember_token(resp):
+    if _ACCESS_TOKEN and request.args.get("token") and hmac.compare_digest(request.args["token"], _ACCESS_TOKEN):
+        resp.set_cookie("shorts_token", _ACCESS_TOKEN, httponly=True, samesite="Lax", max_age=30 * 86400)
+    return resp
 OUTPUT_ROOT = Path("output")
 
 # 단일 사용자 로컬 도구이므로 메모리 내 딕셔너리로 작업 상태를 추적한다 (DB 불필요).
@@ -893,7 +929,8 @@ def analyze_upload_route():
     # 자막으로 쓴다(사용자 요청 2026-09-05: 노래 전사 정확도가 너무 낮음). sermon엔 무의미.
     song_titles = (request.form.get("song_titles") or "").strip() if mode == "praise" else ""
 
-    video_id = "upload_" + time.strftime("%Y%m%d_%H%M%S")
+    # 같은 초에 두 업로드가 들어오면 같은 폴더를 써서 서로의 source.mp4를 덮어썼다 → 짧은 난수 접미사.
+    video_id = "upload_" + time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     video_dir = OUTPUT_ROOT / video_id
     video_dir.mkdir(parents=True, exist_ok=True)
     # 확장자와 무관하게 source.mp4로 저장한다 — ffmpeg/whisper는 파일 내용으로 컨테이너를
@@ -985,7 +1022,8 @@ def video_detail(video_id: str):
         status_message=job.get("message", "처리 중..."),
         pct=pct,
         clips=clips,
-        clips_summary_json=json.dumps(clips_summary, ensure_ascii=False),
+        # <script> 안에 그대로 들어가므로 '</'를 끊는다(제목에 '</script>'가 있으면 페이지가 깨졌다).
+        clips_summary_json=json.dumps(clips_summary, ensure_ascii=False).replace("</", "<\\/"),
         analyze_error=analyze_error,
         rendering=job.get("rendering", False),
         render_message=job.get("render_message", "렌더링 준비 중..."),
@@ -1743,6 +1781,15 @@ def save_clip_position(video_id: str, idx: int):
         return _save_clip_position_locked(clips_path, idx)
 
 
+def _num(v, default: float = 0.0) -> float:
+    """편집기 숫자칸 값을 float로. 빈칸(null)·"abc"·NaN이면 default — 값 하나 때문에 저장 전체가 500이 나지 않게."""
+    try:
+        f = float(v)
+        return f if f == f else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _save_clip_position_locked(clips_path: Path, idx: int):
     clips = load_clips_json(clips_path)
     if idx < 0 or idx >= len(clips):
@@ -1782,8 +1829,8 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
         if len(kr) == 1 and abs(kr[0][0] - clip.start) < 0.05 and abs(kr[0][1] - clip.end) < 0.05:
             kr = []
         clip.keep_ranges = kr
-    clip.title_offset_x = float(body.get("title_offset_x", clip.title_offset_x))
-    clip.title_offset_y = float(body.get("title_offset_y", clip.title_offset_y))
+    clip.title_offset_x = _num(body.get("title_offset_x", clip.title_offset_x), clip.title_offset_x)
+    clip.title_offset_y = _num(body.get("title_offset_y", clip.title_offset_y), clip.title_offset_y)
     # 편집기의 숫자 입력칸을 비우면 JSON에 null이 실려 온다. 키는 있고 값이 null이라
     # 기본값 인자가 안 먹으므로(float(None) → TypeError → 저장 전체가 500) 따로 막는다.
     for _k in ("caption_offset_x", "caption_offset_y"):
@@ -1854,9 +1901,9 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
                 continue
             _ft.append({
                 "start": a, "end": b, "text": txt,
-                "x": float(t.get("x", 0) or 0), "y": float(t.get("y", 0) or 0),
-                "size": int(float(t.get("size", 0) or 0)),
-                "track": max(0, int(float(t.get("track", 0) or 0))),
+                "x": _num(t.get("x")), "y": _num(t.get("y")),
+                "size": int(_num(t.get("size"))),
+                "track": max(0, int(_num(t.get("track")))),
             })
         clip.free_texts = sorted(_ft, key=lambda o: (o["track"], o["start"]))
     # 영어 자막 트랙(번역). 한국어는 그대로 두고 별도 저장 → 렌더 옵션으로 전환.
@@ -1880,10 +1927,10 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
             setattr(clip, k, str(body.get(k, "") or ""))
     for k in ("title_size", "caption_size", "caption_size_en"):
         if k in body:
-            setattr(clip, k, int(float(body.get(k) or 0)))
+            setattr(clip, k, int(_num(body.get(k))))
     for k in ("title_spacing", "caption_spacing"):
         if k in body:
-            setattr(clip, k, float(body.get(k) or 0))
+            setattr(clip, k, _num(body.get(k)))
     # 자막 스타일 프리셋(캡컷식 박스·색상, 2026-09-08 요청). caption_text_color/box_color는
     # CSS #RRGGBB 문자열 그대로 저장하고, ASS 변환(BGR·알파 반전)은 렌더 시점에 한다.
     for k in ("caption_text_color", "caption_box_color"):
@@ -2031,8 +2078,10 @@ def clip_preview_frame(video_id: str, idx: int):
     video_dir = OUTPUT_ROOT / video_id
     # fill_mode별로 캐시를 분리한다: 편집기에서 화면모드를 바꾸면 미리보기 프레임도 다시
     # 만들어져야 하는데, 파일명이 같으면 옛 모드의 캐시가 계속 나간다.
+    # 구간(start/end)도 키에 넣는다: 트림·재선정으로 같은 인덱스의 시작 시각이 바뀌어도 옛 프레임이 나갔다.
     fill_tag = (getattr(clip, "fill_mode", "") or "cfg")
-    out_path = (video_dir / "clips" / f"_preview_{idx}_{fill_tag}.jpg").resolve()
+    sig = hashlib.md5(render_signature(clip.start, clip.end).encode()).hexdigest()[:8]
+    out_path = (video_dir / "clips" / f"_preview_{idx}_{fill_tag}_{sig}.jpg").resolve()
     if not out_path.exists():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         cfg = _load_config()
@@ -2095,7 +2144,8 @@ def clip_truth_frame(video_id: str, idx: int):
         return jsonify({"error": "원본 영상이 없습니다"}), 404
     cfg = _load_config()
     segs = _segments_for_clip(video_id, clip, cfg, video_dir / "transcript.json")
-    out = (video_dir / "clips" / f"_truth_{idx}.jpg").resolve()
+    # 요청마다 다른 이름: 고정 이름이면 두 요청(탭 두 개, 팝업+스튜디오)이 서로의 ASS/이미지를 덮어썼다.
+    out = (video_dir / "clips" / f"_truth_{idx}_{uuid.uuid4().hex[:8]}.jpg").resolve()
     from src.captions import captions_cfg_for_clip
     from src.render import render_truth_frame
     try:
@@ -2103,10 +2153,21 @@ def clip_truth_frame(video_id: str, idx: int):
         render_truth_frame(source, segs, clip, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip), t, out)
     except Exception as e:  # noqa: BLE001 - 실패 사유를 팝업에 그대로 보여준다
         traceback.print_exc()
+        _cleanup_truth_files(out)
         return jsonify({"error": str(e)[:600]}), 500
-    resp = send_file(out, mimetype="image/jpeg")
+    data = out.read_bytes()
+    _cleanup_truth_files(out)
+    resp = Response(data, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+def _cleanup_truth_files(out: Path) -> None:
+    for p in out.parent.glob(out.stem + "*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 @app.route("/media/<video_id>/source.mp4")

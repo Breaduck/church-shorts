@@ -65,6 +65,9 @@ cloudflared tunnel --url http://localhost:5000
 
 출력된 `https://*.trycloudflare.com` 주소를 전달하면 상대는 브라우저만으로 접속합니다.
 다만 이 경우 렌더링·AI 분석은 전부 **내 PC와 내 Claude 구독**을 씁니다.
+터널로 들어온 접속에서는 유튜브 업로드가 막혀 있습니다. 주소를 아는 사람만 들어오게 하려면
+편집기를 켜기 전에 `set SHORTS_TOKEN=아무암호`를 설정하고 `https://…trycloudflare.com/?token=아무암호`로
+전달하세요(한 번 열면 브라우저가 기억합니다, 이때는 업로드도 허용).
 (참고: Cloudflare Pages에 올라간 것은 정적 `index.html` 소개 페이지뿐이고,
 실제 편집기 UI는 Flask 서버인 `src/web_app.py`입니다.)
 
