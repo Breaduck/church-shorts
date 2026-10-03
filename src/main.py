@@ -289,11 +289,18 @@ _bg_downloads: dict[str, threading.Thread] = {}
 _bg_downloads_lock = threading.Lock()
 
 
-def _start_download_bg(url: str, output_root: Path) -> None:
+_bg_download_errors: dict[str, str] = {}
+
+
+def _start_download_bg(url: str, output_root: Path, video_id: str = "") -> None:
     try:
         download_video(url, output_root)
-    except Exception:  # noqa: BLE001 - 실패해도 렌더 단계의 자기치유(재다운로드)가 다시 시도한다
+        _bg_download_errors.pop(video_id, None)
+    except Exception as e:  # noqa: BLE001 - 실패해도 렌더 단계의 자기치유(재다운로드)가 다시 시도한다
         traceback.print_exc()
+        if video_id:
+            # 예전엔 출력만 하고 삼켜서, 기다리던 전사 단계가 '파일 없음' 같은 엉뚱한 오류로 죽었다.
+            _bg_download_errors[video_id] = str(e)[:300]
 
 
 def _rlog(video_dir: Path, msg: str) -> None:
@@ -306,12 +313,18 @@ def _rlog(video_dir: Path, msg: str) -> None:
         pass
 
 
-def wait_for_download(video_id: str, timeout: float = 1800) -> None:
-    """백그라운드 다운로드가 돌고 있으면 완료(또는 timeout)까지 기다린다."""
+def wait_for_download(video_id: str, timeout: float = 1800) -> str | None:
+    """백그라운드 다운로드가 돌고 있으면 완료까지 기다린다. 실패했으면 그 사유를 돌려준다(성공/없음은 None).
+
+    timeout이 지나도 안 끝났으면 예외를 낸다 — 예전엔 그냥 돌아와서, 렌더의 자기치유가 아직 살아 있는
+    첫 다운로드와 '동시에' 같은 파일을 다시 받으며 서로의 조각 파일(.part)을 지워 둘 다 망가졌다."""
     with _bg_downloads_lock:
         t = _bg_downloads.get(video_id)
     if t is not None and t.is_alive():
         t.join(timeout)
+        if t.is_alive():
+            raise RuntimeError(f"영상 다운로드가 {int(timeout)}초 넘게 끝나지 않았습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.")
+    return _bg_download_errors.get(video_id)
 
 
 # 단계별 실측 소요시간 기록. 진행바 ETA가 "고정 예상값"이라 실제와 어긋나던 문제를,
@@ -1334,7 +1347,7 @@ def analyze(
                 t = _bg_downloads.get(dl.video_id)
                 if t is None or not t.is_alive():
                     t = threading.Thread(
-                        target=_start_download_bg, args=(url, output_root), daemon=True
+                        target=_start_download_bg, args=(url, output_root, dl.video_id), daemon=True
                     )
                     _bg_downloads[dl.video_id] = t
                     t.start()
@@ -1458,7 +1471,9 @@ def analyze(
                 # 로컬 전사는 영상(오디오) 파일이 필요한 유일한 분석 단계 — 백그라운드
                 # 다운로드가 아직이면 여기서만 기다린다(자동자막/붙여넣기 경로는 안 기다림).
                 sp.message("전사를 위해 영상 다운로드를 기다리는 중...")
-                wait_for_download(dl.video_id)
+                dl_err = wait_for_download(dl.video_id)
+                if dl_err and not dl.video_path.exists():
+                    raise RuntimeError(f"영상 다운로드 실패로 전사할 수 없습니다: {dl_err}")
                 sp.message("자동 자막이 없어 직접 전사 중 (시간이 걸릴 수 있어요)...")
                 w = cfg["whisper"]
                 # 찬양 모드: VAD가 노래(음악+합창)를 '음성 아님'으로 판단해 곡 구간 전체를
@@ -1610,7 +1625,9 @@ def analyze(
         sp.advance("핵심 구간 분석 중...")
         peak_hints = []
         if cfg["audio_peaks"].get("enabled", True):
-            wait_for_download(dl.video_id)  # 오디오 분석은 실제 파일 필요 (기본은 비활성)
+            dl_err = wait_for_download(dl.video_id)  # 오디오 분석은 실제 파일 필요 (기본은 비활성)
+            if dl_err and not dl.video_path.exists():
+                raise RuntimeError(f"영상 다운로드 실패: {dl_err}")
             peak_hints = detect_peak_hints(
                 dl.video_path,
                 frame_length_sec=cfg["audio_peaks"]["frame_length_sec"],

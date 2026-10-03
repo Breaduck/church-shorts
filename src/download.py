@@ -140,6 +140,13 @@ def download_video(
 
     # 재다운로드 전에 이전 실패가 남긴 조각/임시 파일을 정리한다(병합 꼬임/오인 방지).
     _cleanup_partials(video_dir)
+    # 위 재사용 검사를 통과 못 한 source.mp4(0바이트·오디오 없음)도 지운다. 남겨두면 yt-dlp가
+    # '이미 받았음'으로 건너뛰고 아래 오디오 검사가 매번 같은 오류를 내 영영 복구되지 않았다.
+    if target.exists():
+        try:
+            target.unlink()
+        except OSError:
+            pass
 
     # 영상/오디오가 별도 스트림으로 순차 다운로드되어 각각 0~100%를 다시 찍으므로,
     # 진행률 바가 뒤로 튀지 않도록 지금까지 본 최댓값만 콜백한다.
