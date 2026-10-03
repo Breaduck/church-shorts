@@ -771,3 +771,20 @@ def test_skip_restored_when_clip_fits_without_it():
     assert _restore_costly_skips({}, [(3, 3)], ss, 0, 5, 60.0, 90.0, log) == []
     ss[3] = Sentence(idx=3, start=30.0, end=39.5, text="응.", words=[])
     assert _restore_costly_skips({}, [(3, 3)], ss, 0, 5, 60.0, 90.0, []) == [(3, 3)]
+
+
+def test_retention_csv_hook_cliff_and_source_mapping():
+    """지속률 CSV: 3초 경계를 걸친 하락은 훅 이탈로, 중간 급락은 원본 시각+그때 한 말로 잡는다(점프컷 구간 건너뜀)."""
+    from src.retention import analyze, output_to_source, parse_retention_csv
+
+    csv_text = "Video position,Audience retention\n" + "\n".join(
+        f"{i / 100},{1 - (0.45 if i >= 4 else 0) - (0.1 if i >= 40 else 0):.2f}" for i in range(101))
+    pts = parse_retention_csv(csv_text)
+    assert pts[0] == (0.0, 100.0)
+    ranges = [[100.0, 120.0], [200.0, 240.0]]   # 60초 본편, 점프컷
+    assert output_to_source(25.0, ranges, 60.0) == 205.0
+    segs = [{"start": 203.0, "end": 206.0, "text": "", "words": [{"start": 203.0, "end": 204.0, "text": "그러나"}]}]
+    a = analyze(pts, 62.0, outro_sec=2.0, ranges=ranges, segments=segs)
+    assert a["hook_leak"] == 45.0
+    assert len(a["cliffs"]) == 1 and a["cliffs"][0]["lost"] == 10.0
+    assert "그러나" in a["cliffs"][0]["said"]

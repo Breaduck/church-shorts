@@ -48,6 +48,8 @@ class PerformanceRecord:
     rating: str = RATING_OK
     notes: str = ""
     logged_at: str = ""
+    # 스튜디오 지속률 CSV 분석(src/retention.py analyze 결과). 첫 3초 이탈·급락 지점과 그때 하던 말.
+    retention_analysis: dict = field(default_factory=dict)
 
 
 def load_feedback(path: Path = FEEDBACK_PATH) -> list[PerformanceRecord]:
@@ -98,6 +100,8 @@ def _record_signal(r: PerformanceRecord) -> float:
         base += 2.0
     if r.rating == RATING_HIT and pred < 80:
         base += 2.0
+    if r.retention_analysis:   # 곡선이 있으면 '어디서' 나갔는지까지 알려주는 사례라 우선 노출
+        base += 1.0
     return base
 
 
@@ -113,6 +117,9 @@ def _fmt_metrics(r: PerformanceRecord) -> str:
         parts.append(f"공유 {r.shares:,}")
     if r.likes is not None:
         parts.append(f"좋아요 {r.likes:,}")
+    if r.retention_analysis:
+        from src.retention import summarize
+        parts.append("이탈: " + summarize(r.retention_analysis))
     return "·".join(parts) if parts else "지표없음"
 
 
@@ -156,6 +163,16 @@ def format_feedback_for_prompt(
         lessons.append(f"- 예측 80+였는데 실제로 망한 클립이 {len(over)}건 있었다. 네 기준이 과대평가하는 결이 있으니 냉정하게.")
     if under:
         lessons.append(f"- 예측 80 미만이었는데 실제로 터진 클립이 {len(under)}건 있었다. 놓친 강점 결이 있으니 재검토하라.")
+    # 지속률 곡선이 있는 클립: '어느 문장에서 나갔나'가 점수보다 구체적인 교훈이다.
+    ra = [r for r in records if r.retention_analysis]
+    leaky = [r for r in ra if (r.retention_analysis.get("hook_leak") or 0) >= 40]
+    if leaky:
+        ex = "; ".join(f'"{(r.retention_analysis.get("hook_said") or r.hook_text)[:40]}"' for r in leaky[:3])
+        lessons.append(f"- 첫 3초에 40% 이상 스와이프된 클립이 {len(leaky)}건: {ex} — 이런 첫 문장으로 시작하는 컷은 피하라.")
+    cliff_lines = [c.get("said") for r in ra for c in (r.retention_analysis.get("cliffs") or []) if c.get("said")]
+    if cliff_lines:
+        lessons.append("- 시청자가 급히 빠져나간 직전 문장들(이런 이음새·곁가지는 컷에서 빼라): "
+                       + " / ".join(f'"{t[:40]}"' for t in cliff_lines[:5]))
     if lessons:
         lines.append("")
         lines.append("### 도출된 채널 교훈:")

@@ -11,12 +11,19 @@
 사용법:
     venv/Scripts/python.exe scripts/build_ground_truth.py            # 상위 30개 쇼츠
     venv/Scripts/python.exe scripts/build_ground_truth.py 50         # 상위 50개
+    venv/Scripts/python.exe scripts/build_ground_truth.py 30 --multiple   # 조회수 대신 '주변 배수'로 상위 30개
+
+--multiple: 원시 조회수 순위는 '채널이 컸던 시기'와 오래 쌓인 영상을 고른다. youtube-agent-skill(swipe.py)의
+'자기 채널 중앙값 대비 배수' 아이디어를 한 채널용으로 바꿔, 업로드 순서상 앞뒤 이웃(±NEIGHBORS개) 쇼츠의
+조회수 중앙값으로 나눈 값으로 순위를 매긴다. 같은 시기 다른 쇼츠보다 얼마나 더 터졌나 = 내용의 힘.
+배수(multiple)는 플래그와 무관하게 정답지 항목에 항상 기록한다.
 """
 from __future__ import annotations
 
 import difflib
 import json
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -34,6 +41,7 @@ MIN_GAP = 25            # 이 길이(문자) 이상 통째로 빠진 곳만 '점
 MIN_COVERAGE = 0.80     # 쇼츠 대사의 이만큼이 원본에서 발견돼야 같은 설교로 인정
 MIN_SHORT_DUR = 25      # 이보다 짧은 쇼츠는 설교 클립이 아니라 행사·예고편
 MAX_SERMON_CANDIDATES = 6   # 같은 날짜 영상이 많으면 긴 것부터 이만큼만 시도
+NEIGHBORS = 10              # 배수 계산 때 앞뒤로 볼 이웃 쇼츠 수
 
 _MONTHS = ["January", "February", "March", "April", "May", "June",
            "July", "August", "September", "October", "November", "December"]
@@ -131,10 +139,24 @@ def align(short_id: str, sermon_id: str) -> dict | None:
             "coverage": round(cov, 2), "cuts": cuts}
 
 
+def add_neighbor_multiple(rows: list[dict]) -> None:
+    """rows(채널 탭 순서 = 업로드 최신순)에 multiple = 조회수 / 앞뒤 이웃 조회수 중앙값 을 채운다."""
+    for i, r in enumerate(rows):
+        near = [x["views"] for x in rows[max(0, i - NEIGHBORS): i + NEIGHBORS + 1] if x is not r and x["views"]]
+        med = statistics.median(near) if near else 0
+        r["multiple"] = round(r["views"] / med, 2) if med else 0.0
+
+
 def main() -> None:
-    top_n = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    top_n = int(args[0]) if args else 30
+    by_multiple = "--multiple" in sys.argv
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    shorts = sorted(list_channel("shorts", 200), key=lambda r: -r["views"])[:top_n]
+    channel_shorts = [r for r in list_channel("shorts", 200) if r.get("dur", 0) == 0 or r["dur"] >= MIN_SHORT_DUR]
+    add_neighbor_multiple(channel_shorts)
+    multiple_of = {r["id"]: r["multiple"] for r in channel_shorts}
+    key = (lambda r: -r["multiple"]) if by_multiple else (lambda r: -r["views"])
+    shorts = sorted(channel_shorts, key=key)[:top_n]
     videos = list_channel("videos", 400)
     existing = {}
     gt_path = EVAL_DIR / "ground_truth.json"
@@ -142,6 +164,9 @@ def main() -> None:
         existing = json.loads(gt_path.read_text(encoding="utf-8"))
 
     gt: dict[str, dict] = dict(existing)
+    for sh, g in gt.items():   # 배수 도입 전에 만든 항목도 채운다
+        if sh in multiple_of:
+            g["multiple"] = multiple_of[sh]
     for row in shorts:
         sh = row["id"]
         if sh in gt:
@@ -181,8 +206,9 @@ def main() -> None:
             got = f"{best['coverage']:.0%}" if best else "없음"
             print(f"{sh}: 원본 못 찾음(최고 일치율 {got}) {m['title'][:30]}")
             continue
-        gt[sh] = {**best, "short_dur": m["dur"], "views": m["views"], "title": m["title"]}
-        print(f"{sh} {m['views']:>6}회 쇼츠 {m['dur']:>4}초 ← {best['sermon']} "
+        gt[sh] = {**best, "short_dur": m["dur"], "views": m["views"], "title": m["title"],
+                  "multiple": multiple_of.get(sh, 0.0)}
+        print(f"{sh} {m['views']:>6}회 x{multiple_of.get(sh, 0.0):.1f} 쇼츠 {m['dur']:>4}초 ← {best['sermon']} "
               f"{best['start']:.0f}~{best['end']:.0f} ({best['span']:.0f}초, 일치 {best['coverage']:.0%}) "
               f"점프컷 {len(best['cuts'])}곳 | {m['title'][:28]}")
 

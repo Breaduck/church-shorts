@@ -27,7 +27,7 @@ try:
 except ImportError:
     pass
 
-from src.feedback import PerformanceRecord, upsert_feedback
+from src.feedback import PerformanceRecord, load_feedback, upsert_feedback
 from src.models import EXECUTION_MODEL, resolve as resolve_model, sanitize as sanitize_model
 from src.highlights import CLIPS_LOCK, load_clips_json, save_clips_json
 from src.main import analyze, reanalyze_clip_region, render_selected, render_signature
@@ -392,6 +392,8 @@ CANDIDATES_TEMPLATE = f"""
         </select>
       </label>
       <label class="perf-lbl">메모<input type="text" id="perfNotes" class="perf-in" placeholder="예: 첫 3초 훅이 약했음"></label>
+      <label class="perf-lbl">시청자 유지율 CSV <span style="opacity:.6;font-weight:400">(스튜디오 → 분석 → 참여도 → 유지율 그래프 다운로드)</span>
+        <input type="file" id="perfCsv" class="perf-in" accept=".csv,text/csv"></label>
       <button type="button" class="pill-btn" id="perfSave" style="width:100%;margin-top:10px">저장</button>
       <p class="perf-msg" id="perfMsg"></p>
       <button type="button" class="yt-modal-close" id="perfModalClose">닫기</button>
@@ -581,6 +583,8 @@ CANDIDATES_TEMPLATE = f"""
       const v = document.getElementById(id).value.trim();
       return v === '' ? null : Number(v);
     }};
+    const csvFile = document.getElementById('perfCsv').files[0];
+    const csvText = csvFile ? await csvFile.text() : '';
     const btn = document.getElementById('perfSave');
     btn.disabled = true; perfMsg.textContent = '저장 중…';
     try {{
@@ -593,11 +597,12 @@ CANDIDATES_TEMPLATE = f"""
           likes: num('perfLikes'), comments: num('perfComments'),
           rating: document.getElementById('perfRating').value,
           notes: document.getElementById('perfNotes').value,
+          retention_csv: csvText,
         }}),
       }});
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
-      perfMsg.textContent = '저장했어요 ✓ 다음 선정부터 반영돼요.';
+      perfMsg.textContent = '저장했어요 ✓ 다음 선정부터 반영돼요.' + (j.summary ? ' 이탈 분석: ' + j.summary : '');
     }} catch (e) {{
       perfMsg.textContent = '실패: ' + e.message;
     }} finally {{
@@ -1142,8 +1147,31 @@ def feedback_route(video_id: str):
         rating=(body.get("rating") or "ok").strip(),
         notes=(body.get("notes") or "").strip(),
     )
+    # 지속률 CSV(스튜디오 내보내기)가 오면 '어느 문장에서 나갔나'를 분석해 붙인다. 안 오면 예전 분석을 보존한다
+    # (수치만 고쳐 다시 저장할 때 곡선 분석이 지워지지 않게).
+    analysis_summary = ""
+    csv_text = body.get("retention_csv") or ""
+    if csv_text.strip():
+        if clip is None:
+            return jsonify({"error": "클립을 찾을 수 없어 지속률을 분석할 수 없습니다"}), 400
+        from src.retention import analyze_clip_csv, summarize
+        outro_cfg = _load_config()["render"].get("outro") or {}
+        outro_sec = float(outro_cfg.get("duration_sec", 0) or 0) if outro_cfg.get("enabled") else 0.0
+        try:
+            record.retention_analysis = analyze_clip_csv(
+                csv_text, OUTPUT_ROOT / video_id, clip, clip_index + 1, outro_sec)
+        except ValueError as exc:
+            return jsonify({"error": f"지속률 CSV를 읽지 못했어요: {exc}"}), 400
+        if record.retention_pct is None and record.retention_analysis.get("avg_pct") is not None:
+            record.retention_pct = record.retention_analysis["avg_pct"]
+        analysis_summary = summarize(record.retention_analysis)
+    else:
+        prev = next((r for r in load_feedback()
+                     if r.video_id == video_id and r.clip_index == clip_index), None)
+        if prev and prev.retention_analysis:
+            record.retention_analysis = prev.retention_analysis
     upsert_feedback(record)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "retention": record.retention_analysis, "summary": analysis_summary})
 
 
 @app.route("/video/<video_id>/clip/<int:idx>/upload", methods=["POST"])
