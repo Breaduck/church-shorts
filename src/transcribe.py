@@ -10,6 +10,8 @@ from typing import Callable, Optional
 
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 
+from src.fsutil import atomic_write_text
+
 
 @dataclass
 class Word:
@@ -158,10 +160,7 @@ def transcribe_and_save(
         on_segment=on_segment,
         cpu_threads=cpu_threads,
     )
-    output_json_path.parent.mkdir(parents=True, exist_ok=True)
-    output_json_path.write_text(
-        json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    atomic_write_text(output_json_path, json.dumps(transcript.to_json(), ensure_ascii=False, indent=2))
     return transcript
 
 

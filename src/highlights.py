@@ -28,6 +28,7 @@ from src.audio_peaks import PeakHint, format_hints_for_prompt
 from src.lyrics_bugs import clean_lyric_lines, fetch_lyrics_from_bugs, normalize_title_key
 from src.scoring import compute_scores
 from src.transcribe import Transcript
+from src.fsutil import atomic_write_text
 
 
 class QuotaExceededError(RuntimeError):
@@ -1576,14 +1577,9 @@ def save_clips_json(clips: list[Clip], path: Path) -> None:
     수동 복구가 가능하게 한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=2)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())  # 전원이 나가도 내용이 디스크에 도달했음을 보장
     if path.exists():
         try:
             shutil.copy2(path, path.with_name(path.name + ".bak"))
         except OSError:
             pass  # 백업 실패가 저장 자체를 막으면 안 된다
-    os.replace(tmp, path)
+    atomic_write_text(path, data, fsync=True)

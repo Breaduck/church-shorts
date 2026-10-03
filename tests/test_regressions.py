@@ -848,3 +848,17 @@ def test_model_output_robustness_scores_and_lists():
            {"start": 10, "end": 50, "title": "t", "hashtags": "#a #b", "core_score": "7점"}]
     clips = _validate_and_build_clips(raw, 600.0, 20, 60, 90)
     assert len(clips) == 1 and clips[0].hashtags == ["#a", "#b"] and clips[0].core_score == 7.0
+
+
+def test_atomic_write_and_corrupt_feedback_tolerated():
+    """반쯤 쓴 feedback.json 하나가 모든 선정을 멈추던 문제: 읽기는 빈 목록으로 진행, 쓰기는 원자적(임시파일 안 남김)."""
+    from src.feedback import load_feedback
+    from src.fsutil import atomic_write_text
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "feedback.json"
+        p.write_text('[{"video_id":', encoding="utf-8")
+        assert load_feedback(p) == []
+        atomic_write_text(p, "[]")
+        assert p.read_text(encoding="utf-8") == "[]"
+        assert [x.name for x in Path(d).iterdir()] == ["feedback.json"]

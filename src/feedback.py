@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from src.fsutil import atomic_write_text
+
 FEEDBACK_PATH = Path("feedback.json")
 
 # 사람이 빠르게 매기는 체감 등급.
@@ -55,9 +57,16 @@ class PerformanceRecord:
 def load_feedback(path: Path = FEEDBACK_PATH) -> list[PerformanceRecord]:
     if not path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        # 깨진 파일 하나가 모든 선정을 멈추면 안 된다(성과 피드백은 참고 자료일 뿐).
+        print(f"[feedback] {path} 읽기 실패, 피드백 없이 진행: {e}", flush=True)
+        return []
     records = []
-    for d in data:
+    for d in data if isinstance(data, list) else []:
+        if not isinstance(d, dict):
+            continue
         # 알 수 없는 키는 버리고 아는 필드만 취해 스키마 변화에 견고하게.
         known = {k: v for k, v in d.items() if k in PerformanceRecord.__dataclass_fields__}
         records.append(PerformanceRecord(**known))
@@ -65,11 +74,7 @@ def load_feedback(path: Path = FEEDBACK_PATH) -> list[PerformanceRecord]:
 
 
 def save_feedback(records: list[PerformanceRecord], path: Path = FEEDBACK_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps([asdict(r) for r in records], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(path, json.dumps([asdict(r) for r in records], ensure_ascii=False, indent=2))
 
 
 def upsert_feedback(record: PerformanceRecord, path: Path = FEEDBACK_PATH) -> None:

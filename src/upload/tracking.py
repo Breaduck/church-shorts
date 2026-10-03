@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from src.fsutil import atomic_write_text
 from src.feedback import PerformanceRecord, load_feedback, upsert_feedback
 from src.upload.youtube import fetch_video_stats
 
@@ -54,11 +55,7 @@ def load_uploads(path: Path = UPLOADS_PATH) -> list[UploadRecord]:
 
 
 def save_uploads(records: list[UploadRecord], path: Path = UPLOADS_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps([asdict(r) for r in records], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(path, json.dumps([asdict(r) for r in records], ensure_ascii=False, indent=2))
 
 
 def find_upload(video_id: str, clip_index: int, path: Path = UPLOADS_PATH) -> Optional[UploadRecord]:
@@ -169,7 +166,13 @@ def run_due_checks(now: Optional[datetime] = None, path: Path = UPLOADS_PATH) ->
         updated.append(r)
 
     if updated:
-        save_uploads(records, path)
+        # 통계 조회(네트워크)가 오래 걸리는 동안 웹에서 새 업로드가 기록됐을 수 있다. 처음 읽은
+        # 목록을 그대로 저장하면 그 레코드가 사라져 영영 추적되지 않으므로, 다시 읽어 이번에
+        # 체크한 레코드만 바꿔 끼운다.
+        by_key = {(r.video_id, r.clip_index, r.youtube_video_id): r for r in updated}
+        fresh = load_uploads(path)
+        merged = [by_key.get((r.video_id, r.clip_index, r.youtube_video_id), r) for r in fresh]
+        save_uploads(merged, path)
     return updated
 
 

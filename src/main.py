@@ -23,6 +23,7 @@ from pathlib import Path
 
 import yaml
 
+from src.fsutil import atomic_write_text
 from src.audio_peaks import detect_peak_hints
 from src.download import DownloadResult, _probe_duration_sec, download_video, find_cached, probe_video
 from src.render import _probe_display_resolution
@@ -1359,9 +1360,7 @@ def analyze(
                         "유튜브 '스크립트 표시'에서 타임스탬프 포함으로 복사하거나 SRT/VTT를 붙여넣으세요."
                     )
             sp.set_fraction(1.0, "붙여넣은 자막 사용")
-            transcript_path.write_text(
-                json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            atomic_write_text(transcript_path, json.dumps(transcript.to_json(), ensure_ascii=False, indent=2))
         else:
             if dl_local:
                 transcript = None  # 업로드 파일은 유튜브 자막이 없다 — 바로 whisper 직접 전사로
@@ -1416,9 +1415,7 @@ def analyze(
                     )
             else:
                 sp.set_fraction(1.0, "유튜브 자동 자막 사용")
-            transcript_path.write_text(
-                json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            atomic_write_text(transcript_path, json.dumps(transcript.to_json(), ensure_ascii=False, indent=2))
 
         clips_path = video_dir / "clips.json"
         h = cfg["highlights"]
@@ -2067,17 +2064,17 @@ def _precise_cache_find(
                     )
                     for s in data["segments"]
                 ]
-            except (json.JSONDecodeError, KeyError, TypeError):
-                return None
+            except (json.JSONDecodeError, KeyError, TypeError, OSError):
+                continue  # 깨진 캐시 하나가 뒤의 멀쩡한 캐시까지 가리지 않게
     return None
 
 
 def _precise_cache_save(
     cache_dir: Path, model: str, sig: str, start: float, end: float, segs: list[Segment]
 ) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{start:.2f}_{end:.2f}_{model}_{sig}.json"
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(
             {"segments": [
                 {"start": s.start, "end": s.end, "text": s.text,
@@ -2086,7 +2083,6 @@ def _precise_cache_save(
             ]},
             ensure_ascii=False,
         ),
-        encoding="utf-8",
     )
 
 

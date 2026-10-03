@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -208,6 +210,23 @@ def _rounded_mask_expr(w: int, h: int, r: int) -> str:
 _MASK_CACHE_DIR = Path("assets/cache")
 
 
+def _cache_tmp(final: Path) -> Path:
+    """공유 캐시(assets/cache) 파일을 만들 임시 경로. ffmpeg가 최종 이름에 직접 쓰면 도중에 죽었을 때
+    잘린 파일이 exists()로 통과해 계속 재사용됐다(마스크면 카드 렌더 전부 실패, 아웃트로면 조용히 누락).
+    두 영상이 동시에 렌더하면 같은 캐시를 함께 만들 수 있어 pid·스레드를 넣는다. 확장자는 유지(ffmpeg 포맷 추론)."""
+    return final.with_name(f"{final.stem}.{os.getpid()}.{threading.get_ident()}.tmp{final.suffix}")
+
+
+def _replace_cache(tmp: Path, final: Path) -> None:
+    try:
+        os.replace(tmp, final)
+    except PermissionError:
+        # Windows: 다른 렌더가 같은 캐시를 읽는 중이면 교체가 막힌다 — 그쪽 완성본을 쓰면 되므로 버린다.
+        tmp.unlink(missing_ok=True)
+        if not final.exists():
+            raise
+
+
 def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
     """둥근 모서리 마스크 이미지를 캐시해서 재사용한다.
 
@@ -221,6 +240,7 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
         return mask_path
 
     mask_expr = _rounded_mask_expr(vbw, vbh, r)
+    tmp_path = _cache_tmp(mask_path)
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", f"color=white:s={vbw}x{vbh}",
@@ -230,11 +250,13 @@ def _get_or_create_rounded_mask(vbw: int, vbh: int, r: int) -> Path:
         # 178로 떨어진다. 그러면 alphamerge 시 영상이 70%만 불투명해져 흰 배경이 비쳐
         # 화면 전체가 뿌옇게 보인다("불투명 박스 올린 것 같은" 현상). gray로 저장해야 255 유지.
         "-pix_fmt", "gray",
-        str(mask_path),
+        str(tmp_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
+        tmp_path.unlink(missing_ok=True)
         raise RuntimeError(f"둥근 모서리 마스크 생성 실패:\n{proc.stderr[-2000:]}")
+    _replace_cache(tmp_path, mask_path)
     return mask_path
 
 
@@ -282,6 +304,7 @@ def _get_or_create_outro_segment(
     if seg_path.exists() and seg_path.stat().st_mtime >= newest_src:
         return seg_path
 
+    tmp_path = _cache_tmp(seg_path)
     video_args = (
         ["-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]
         if codec == "h264_qsv"
@@ -315,7 +338,7 @@ def _get_or_create_outro_segment(
         *audio_filter,
         "-c:a", "aac", "-b:a", "192k", "-ar", str(sample_rate), "-ac", str(channels),
         "-shortest",
-        str(seg_path),
+        str(tmp_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0 and codec == "h264_qsv":
@@ -323,7 +346,9 @@ def _get_or_create_outro_segment(
         cmd = cmd[: cmd.index("-c:v")] + fallback + cmd[cmd.index("-c:a") :]
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
+        tmp_path.unlink(missing_ok=True)
         raise RuntimeError(f"아웃트로 세그먼트 생성 실패:\n{proc.stderr[-2000:]}")
+    _replace_cache(tmp_path, seg_path)
     return seg_path
 
 

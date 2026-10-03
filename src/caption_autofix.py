@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from src.fsutil import atomic_write_text
 from src.captions import strip_filler_tokens_text
 
 CACHE_NAME = "caption_fix_cache.json"
@@ -40,7 +41,7 @@ def _load_cache(video_dir: Path) -> dict:
 
 def _save_cache(video_dir: Path, cache: dict) -> None:
     try:
-        _cache_path(video_dir).write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        atomic_write_text(_cache_path(video_dir), json.dumps(cache, ensure_ascii=False, indent=1))
     except OSError:
         pass
 
