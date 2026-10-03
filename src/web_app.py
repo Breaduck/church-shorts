@@ -1414,6 +1414,36 @@ def _compute_layout(
     }
 
 
+def _caption_geometry(video_id: str, clip, cfg: dict) -> tuple[int, str, float]:
+    """(자막 크기 px, 글꼴, 한 줄 가용 폭 px) — 렌더(build_ass)와 같은 규칙. 클립의 caption_size 지정,
+    설교 배율, 업로드 찬양(원본 해상도·좌우 15% 여백)까지 반영한다. 초안 줄나눔·긴 줄 쪼개기가 함께 쓴다."""
+    from src.captions import caption_usable_width_px
+    from src.render import _probe_display_resolution
+
+    res = _probe_display_resolution(OUTPUT_ROOT / video_id / "source.mp4")
+    full_frame = _is_upload_praise(video_id, clip)
+    layout = _compute_layout(cfg, clip, res, full_frame=full_frame)
+    width = int((layout.get("resolution") or [1080, 1920])[0])
+    size = int(
+        getattr(clip, "caption_size", 0)
+        or layout.get("caption_font_size")
+        or cfg["captions"]["font_size"]
+    )
+    font = clip.caption_font or cfg["captions"]["font_family"]
+    return size, font, caption_usable_width_px(width, card_layout=not full_frame)
+
+
+def _draft_max_units(video_id: str, clip, cfg: dict, font_size: int) -> float:
+    """편집기 자막 초안의 '한 줄 폭'(전각 단위). 예전엔 (1080-104)/기본크기로 고정해, 자막 크기를 바꾼
+    클립·업로드 찬양에서 초안 줄과 실제 렌더 줄이 달랐다."""
+    try:
+        size, _font, usable = _caption_geometry(video_id, clip, cfg)
+        return max(4.0, usable / max(1, size))
+    except Exception:  # noqa: BLE001 - 원본 영상이 아직 없거나 probe 실패: 카드형 기본 폭으로
+        res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
+        return max(4.0, (res_w - 104) / max(1, font_size))
+
+
 def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict]) -> list[dict]:
     """자막 목록에서 '남들보다 유난히 긴 줄'만 앞뒤 조각으로 쪼갠다(데이터 단계).
 
@@ -1421,23 +1451,12 @@ def _split_long_caption_lines(video_id: str, clip, cfg: dict, lines: list[dict])
     각각 고칠 수 있다(실신고 2026-09-06 "쪼갰으면 스튜디오에서도 2칸으로 나와야 수정하지").
     렌더는 저장된 자막을 그대로 굽는다(WYSIWYG).
     """
-    from src.captions import caption_usable_width_px, split_outlier_lines
-    from src.render import _probe_display_resolution
+    from src.captions import split_outlier_lines
 
     if not lines:
         return lines
     try:
-        res = _probe_display_resolution(OUTPUT_ROOT / video_id / "source.mp4")
-        full_frame = _is_upload_praise(video_id, clip)
-        layout = _compute_layout(cfg, clip, res, full_frame=full_frame)
-        width = int((layout.get("resolution") or [1080, 1920])[0])
-        size = int(
-            getattr(clip, "caption_size", 0)
-            or layout.get("caption_font_size")
-            or cfg["captions"]["font_size"]
-        )
-        font = clip.caption_font or cfg["captions"]["font_family"]
-        usable = caption_usable_width_px(width, card_layout=not full_frame)
+        size, font, usable = _caption_geometry(video_id, clip, cfg)
         return split_outlier_lines(lines, font, size, usable)
     except Exception as e:  # noqa: BLE001
         print(f"[caption-split] 건너뜀({e})")
@@ -1630,10 +1649,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
     max_wpl = cfg["captions"].get("max_words_per_line", 4)
     # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
-    res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
     from src.captions import captions_cfg_for_clip
 
-    max_units = max(4.0, (res_w - 104) / max(1, captions_cfg_for_clip(cfg["captions"], clip).get("font_size", 72)))
+    max_units = _draft_max_units(video_id, clip, cfg, captions_cfg_for_clip(cfg["captions"], clip).get("font_size", 72))
     lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
     out = [
         {
@@ -2531,8 +2549,7 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
         words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]  # 점프컷 들어낸 곳 제외
         sync_off = float(captions_cfg.get("sync_offset_sec", 0.0) or 0.0)
         max_wpl = captions_cfg.get("max_words_per_line", 4)
-        res_w = (cfg.get("render", {}).get("resolution") or [1080, 1920])[0]
-        max_units = max(4.0, (res_w - 104) / max(1, captions_cfg.get("font_size", 72)))
+        max_units = _draft_max_units(video_id, clip, cfg, captions_cfg.get("font_size", 72))
         lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
         out = [
             {
