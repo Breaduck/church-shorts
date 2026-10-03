@@ -920,3 +920,15 @@ def test_overlapping_keep_ranges_are_merged():
     assert _combine_keep(60.0, 100.0, [[110, 125], [120, 130]], None) == [(10.0, 30.0)]
     c = Clip(start=110, end=130, title="t", caption="", hashtags=[], reason="", keep_ranges=[[110, 125], [120, 130]])
     assert clip_effective_duration(c) == 20.0
+
+
+def test_extract_json_array_tolerates_prose_and_bare_fence():
+    """배열 앞 산문에 '[청중 웃음]' 같은 대괄호가 있거나 펜스가 ```만이면 통째 파싱이 실패해 호출 전체가 죽었다."""
+    from src.highlights import _extract_json_array
+
+    assert _extract_json_array('S3 ← [청중 웃음] 를 보면\n```\n[{"a": 1}]\n```') == [{"a": 1}]
+    assert _extract_json_array('```json\n[{"b": 2}]\n```') == [{"b": 2}]
+    assert _extract_json_array('skip: [] 그리고 [{"c": [1, 2]}]') == [{"c": [1, 2]}]
+    assert _extract_json_array('결과 없음 []') == []
+    with pytest.raises(ValueError):
+        _extract_json_array("한도에 도달했습니다")

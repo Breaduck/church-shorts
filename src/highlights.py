@@ -401,16 +401,28 @@ def _as_str_list(v, split: bool = True) -> list[str]:
 def _extract_json_array(text: str) -> list[dict]:
     """claude -p 응답 텍스트에서 JSON 배열만 뽑아낸다."""
     fenced = re.search(r"```json\s*(\[.*?\])\s*```", text, re.DOTALL)
-    candidate = fenced.group(1) if fenced else text
-
-    if not fenced:
-        start = candidate.find("[")
-        end = candidate.rfind("]")
-        if start == -1 or end == -1 or end < start:
-            raise ValueError(f"응답에서 JSON 배열을 찾을 수 없습니다:\n{text[:500]}")
-        candidate = candidate[start : end + 1]
-
-    return json.loads(candidate)
+    if fenced:
+        return json.loads(fenced.group(1))
+    # 펜스가 없거나 ```만 있거나, 배열 앞에 전사본을 인용한 산문("← [청중 웃음]" 등)이 있으면 '첫 [ ~ 마지막 ]'
+    # 통째 파싱이 실패해 호출 전체가 죽었다 → 각 '[' 위치에서 하나씩 디코드해 처음으로 성공한 배열을 쓴다.
+    dec = json.JSONDecoder()
+    pos = text.find("[")
+    empty_seen = False
+    while pos != -1:
+        try:
+            val, end = dec.raw_decode(text, pos)
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                return val
+            empty_seen = empty_seen or val == []
+            if isinstance(val, list):
+                pos = text.find("[", end)  # 이미 디코드한 배열 안쪽 '['는 건너뛴다
+                continue
+        except json.JSONDecodeError:
+            pass
+        pos = text.find("[", pos + 1)
+    if empty_seen:
+        return []
+    raise ValueError(f"응답에서 JSON 배열을 찾을 수 없습니다:\n{text[:500]}")
 
 
 def _validate_and_build_clips(
@@ -1391,6 +1403,10 @@ def correct_sermon_captions(
             continue
         if 0 <= idx < len(corrected) and txt:
             corrected[idx] = txt
+        elif 0 <= idx < len(corrected) and "text" in item and len(corrected[idx].replace(" ", "")) <= 6:
+            # 프롬프트대로 '추임새뿐인 줄'을 ""로 돌려준 경우(예: "예~", "에에"). 예전엔 빈 값을 무시해
+            # 정규식이 못 잡은 추임새가 그대로 구워졌다. 모델 실수로 내용 있는 줄이 지워지지 않게 짧은 줄만.
+            corrected[idx] = ""
         for h in (item.get("hl") or []):
             hs = str(h).strip()
             if hs and hs.lower() not in seen:

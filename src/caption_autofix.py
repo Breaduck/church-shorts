@@ -63,7 +63,10 @@ def autofix_caption_texts(
     det = [strip_filler_tokens_text(str(t or ""), aggressive_filler) for t in texts]
     if not use_model or not any(det):
         return det, []
-    key = hashlib.sha1(json.dumps([det, context, reference], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    # 모델을 바꾸면(config auto_correct_model) 옛 모델 결과를 재사용하지 않게 키에 넣는다. 기본값("")일 땐
+    # 예전 키 그대로라 기존 캐시가 살아 있다(불필요한 재호출 없음).
+    key_parts = [det, context, reference] + ([model] if model else [])
+    key = hashlib.sha1(json.dumps(key_parts, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     cache = _load_cache(video_dir)
     hit = cache.get(key)
     if isinstance(hit, dict) and isinstance(hit.get("lines"), list) and len(hit["lines"]) == len(det):
