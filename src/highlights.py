@@ -224,7 +224,6 @@ def build_prompt(
 ) -> str:
     transcript_text = transcript.to_plain_text_with_timestamps()
     hints_text = format_hints_for_prompt(peak_hints)
-    categories_text = "\n".join(f"  - {c}" for c in categories)
     feedback_section = f"\n{feedback_block}\n" if feedback_block else ""
     # 노트북LM 등으로 '다듬어진' 텍스트로 선정할 때, 매끈함에 속아 점수를 올리는 것을 막는다.
     # (실측: 같은 설교를 자동자막→정리된 붙여넣기로 바꾸자 평균 score가 70→78로 부풀었다.

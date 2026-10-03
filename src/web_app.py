@@ -32,7 +32,7 @@ from src.feedback import PerformanceRecord, load_feedback, upsert_feedback
 from src.models import EXECUTION_MODEL, resolve as resolve_model, sanitize as sanitize_model
 from src.highlights import CLIPS_LOCK, load_clips_json, merge_ranges, save_clips_json
 from src.main import analyze, load_config, reanalyze_clip_region, render_selected, render_signature
-from src.upload.tracking import find_upload, load_uploads, record_upload, run_due_checks
+from src.upload.tracking import find_upload, record_upload, run_due_checks
 
 app = Flask(__name__)
 # 업로드 상한(예배 실황 원본도 넉넉히). 상한이 없으면 터널로 열었을 때 디스크를 채울 수 있다.
@@ -1620,10 +1620,6 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     transcript_path = OUTPUT_ROOT / video_id / "transcript.json"
     if not transcript_path.exists():
         return []
-    from src.main import (
-        _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_worst_hole,
-        json_load_transcript,
-    )
 
     # ── 구조적 핵심(2026-09-03 "편집할수록 자막이 무너진다" 근본 수정) ──
     # 편집기 초안은 "실제 렌더가 구울 것과 동일한 소스"에서 만들어야 한다. 예전엔 무조건
@@ -1725,8 +1721,6 @@ def clip_edit(video_id: str, idx: int):
     if idx < 0 or idx >= len(clips):
         return "잘못된 클립 번호입니다.", 404
     clip = clips[idx]
-
-    from src.render import _probe_resolution
 
     cfg = _load_config()
     # 회전 메타데이터 반영(세로 촬영 업로드가 가로로 계산되던 실사고 — 렌더와 동일 함수).
@@ -2300,7 +2294,6 @@ def clip_preview_info(video_id: str, idx: int):
                 save_clips_json(fresh, clips_path)
 
     from src.fonts import get_font_registry
-    from src.render import _probe_resolution
 
     cfg = _load_config()
     from src.render import _probe_display_resolution

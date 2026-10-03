@@ -1553,7 +1553,7 @@ def analyze(
         # force(새로 분석) 또는 붙여넣은 자막이 있으면 캐시를 무시하고 재선정한다.
         regenerate = force or bool(transcript_text.strip())
         if clips_path.exists() and not regenerate:
-            sp.finish(f"완료: 기존 후보 재사용")
+            sp.finish("완료: 기존 후보 재사용")
             return video_dir, load_clips_json(clips_path)
         # 찬양 모드: 곡별 구간 감지 → 시간순 후보 저장(채점/앵커링/오디오 힌트 없음) --------
         if mode == "praise":

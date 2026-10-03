@@ -17,8 +17,6 @@ API 흐름 (심사 통과 후):
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def upload_reel(video_public_url: str, caption: str) -> str:
     raise NotImplementedError(
