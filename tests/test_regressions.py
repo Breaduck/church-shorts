@@ -901,3 +901,12 @@ def test_transcript_reuse_rules_and_reselect_backup():
         assert not (d / "clips" / "short_1.mp4").exists()
         assert list(d.glob("clips.*.bak.json")) and list((d / "clips").glob("backup_*/short_1.mp4"))
         assert load_clips_json(d / "clips.json")[0].start == 100
+
+
+def test_display_text_neutralizes_ass_specials():
+    r"""자막·제목에 '{…}'·'\N'이 섞이면 ASS가 오버라이드/줄바꿈으로 먹어 글자가 사라졌다."""
+    from src.captions import _display_text
+
+    assert _display_text("{은혜}\\N입니다.\r") == "｛은혜｝＼N입니다"
+    assert _display_text(_display_text("{a}")) == "｛a｝"   # 두 번 거쳐도 그대로
+    assert _display_text("그래요?") == "그래요?"
