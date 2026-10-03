@@ -2445,7 +2445,7 @@ def render_selected(
                     ref_segments = base_segments
                     _rlog(video_dir, f"clip{idx} 편집 자막 카라오케 기준: base(캐시 없음)")
                 _run_with_progress_ticker(
-                    lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], cfg["captions"]),
+                    lambda: render_clip(video_path, ref_segments, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
                     start_pct=base, end_pct=base + step, progress=progress,
                     message=f"[{i+1}/{total}] 편집 자막으로 렌더링 중: {clip.title}",
                     est_seconds=max(15.0, (clip.end - clip.start) * 0.9),

@@ -2094,9 +2094,11 @@ def clip_truth_frame(video_id: str, idx: int):
     cfg = _load_config()
     segs = _segments_for_clip(video_id, clip, cfg, video_dir / "transcript.json")
     out = (video_dir / "clips" / f"_truth_{idx}.jpg").resolve()
+    from src.captions import captions_cfg_for_clip
     from src.render import render_truth_frame
     try:
-        render_truth_frame(source, segs, clip, cfg["render"], cfg["captions"], t, out)
+        # 렌더(main.render_selected)와 같은 설교 자막 배율을 적용해야 '실제 결과'가 진짜 결과와 같다
+        render_truth_frame(source, segs, clip, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip), t, out)
     except Exception as e:  # noqa: BLE001 - 실패 사유를 팝업에 그대로 보여준다
         traceback.print_exc()
         return jsonify({"error": str(e)[:600]}), 500
