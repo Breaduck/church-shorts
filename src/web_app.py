@@ -55,19 +55,15 @@ def _clips_ready(video_id: str, job: dict | None) -> bool:
 
     단순히 clips.json 존재만 보면, 이전에 분석했던 링크에 '새로 분석'을 걸었을 때
     옛 clips.json이 아직 디스크에 남아 있어(재선정 job이 .bak으로 옮기기 직전 찰나)
-    즉시 '완료+옛 캐시'로 오인된다. 그래서 재분석 job이 도는 중(status=analyzing)이면
-    clips.json이 '그 job 시작 시각(started) 이후'에 쓰였을 때만 완료로 인정한다.
+    즉시 '완료+옛 캐시'로 오인된다. 그래서 분석 job이 도는 중(status=analyzing)이면 job이 끝나
+    status=ready로 바꿀 때까지 완료로 보지 않는다. (예전엔 'clips.json mtime ≥ job 시작'으로 판정해,
+    재선정 중에 렌더 병합 저장·위치 저장 등 다른 쓰기가 mtime을 갱신하면 옛 후보로 '완료' 처리됐다.)
     (분석 중이 아닌 경우엔 디스크를 진실의 원천으로 삼아 캐시 재사용을 그대로 허용.)"""
     p = OUTPUT_ROOT / video_id / "clips.json"
     if not p.exists():
         return False
     if job and job.get("status") == "analyzing":
-        try:
-            # 2초 여유: 파일시스템 mtime이 초 단위로 내림돼 started보다 살짝 작아지는 경계
-            # 오차만 흡수한다. 옛 캐시는 수 분~수일 전이라 이 여유로도 절대 통과하지 못한다.
-            return p.stat().st_mtime >= float(job.get("started", 0) or 0) - 2.0
-        except OSError:
-            return False
+        return False
     return True
 
 
@@ -819,8 +815,11 @@ def _run_analyze_job(
             mode=mode,
             song_titles=song_titles,
         )
+        orig_id = video_id_holder["id"]
         video_id_holder["id"] = video_dir.name
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
+        if orig_id != video_dir.name:  # 요청 때 id와 폴더명이 다르면 그쪽 job도 끝났다고 표시(무한 '분석 중' 방지)
+            _update_job(orig_id, status="ready", message="완료", pct=100)
     except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
         vid = video_id_holder.get("id", "unknown")
         _update_job(vid, status="error", message=f"실패: {e}", pct=0)
