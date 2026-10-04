@@ -1,6 +1,8 @@
 """ffmpeg로 클립 컷 -> 9:16 변환(+Ken Burns) -> 무음 제거 -> 자막 번인까지 한 번에 처리"""
 from __future__ import annotations
 
+import copy
+import dataclasses
 import json
 import os
 import subprocess
@@ -378,6 +380,70 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
     finally:
         list_path.unlink(missing_ok=True)
         tmp_path.unlink(missing_ok=True)  # replace 성공 시 이미 없음; 실패 시 잔여물 정리
+
+
+def _prepend_teaser(
+    video_path: Path, segments: list, clip: Clip, output_path: Path,
+    render_cfg: dict, captions_cfg: dict, encoder: str,
+) -> float:
+    """clip.teaser_range(절대초)가 있으면 그 구간을 같은 설정으로 따로 렌더해 output_path 앞에 이어 붙인다.
+    반환: 붙인 티저 길이(초, 없으면 0). 같은 파이프라인·같은 인코더로 만들어 concat -c copy 조건(코덱·해상도·
+    오디오 파라미터 일치)을 맞춘다. 아웃트로·효과음·BGM·끝 여운은 티저에 넣지 않는다."""
+    tr = getattr(clip, "teaser_range", None) or []
+    if len(tr) < 2:
+        return 0.0
+    ts, te = float(tr[0]), float(tr[1])
+    if not (0.5 <= te - ts <= 15.0):
+        return 0.0
+    ovs = getattr(clip, "caption_overrides", None) or None
+    if ovs:  # 편집 자막은 절대초 — 티저 구간에 걸친 줄만 구간 안으로 잘라 넘긴다
+        ovs = [dict(o, start=max(ts, float(o["start"])), end=min(te, float(o["end"])))
+               for o in ovs if float(o["end"]) > ts + 0.05 and float(o["start"]) < te - 0.05]
+    en = getattr(clip, "caption_overrides_en", None) or None
+    if en:
+        en = [dict(o, start=max(ts, float(o["start"])), end=min(te, float(o["end"])))
+              for o in en if float(o["end"]) > ts + 0.05 and float(o["start"]) < te - 0.05]
+    t_clip = dataclasses.replace(
+        clip, start=ts, end=te, keep_ranges=[], teaser_range=[], trimmed=True,
+        caption_overrides=ovs or [], caption_overrides_en=en or [], bgm=None,
+    )
+    for attr in ("caption_text_fixer",):  # 렌더 직전에 붙이는 임시 속성(필드 아님)은 replace가 안 옮긴다
+        if hasattr(clip, attr):
+            setattr(t_clip, attr, getattr(clip, attr))
+    t_cfg = copy.deepcopy(render_cfg)
+    t_cfg.update({"_teaser_pass": True, "video_encoder": encoder, "end_pad_sec": 0.0, "end_audio_fade_sec": 0.08})
+    t_cfg["outro"] = {"enabled": False}
+    t_cfg["sfx"] = {"enabled": False}
+    t_cfg["hook_speedup"] = {"enabled": False}
+    t_out = output_path.with_name(output_path.stem + ".teaser.mp4")
+    try:
+        _render_clip(video_path, segments, t_clip, t_out, t_cfg, captions_cfg)
+        dur = _probe_duration(t_out)
+        if dur <= 0:
+            return 0.0
+        list_path = output_path.with_suffix(".tconcat.txt")
+        tmp_path = output_path.with_suffix(".withteaser.mp4")
+
+        def _q(p: Path) -> str:
+            return "'" + p.resolve().as_posix().replace("'", "'\\''") + "'"
+
+        list_path.write_text(f"file {_q(t_out)}\nfile {_q(output_path)}\n", encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+                 "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(tmp_path)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
+            if proc.returncode != 0 or not tmp_path.exists():
+                raise RuntimeError(f"티저 이어붙이기 실패:\n{proc.stderr[-2000:]}")
+            tmp_path.replace(output_path)
+        finally:
+            list_path.unlink(missing_ok=True)
+            tmp_path.unlink(missing_ok=True)
+        return dur
+    finally:
+        t_out.unlink(missing_ok=True)
+        t_out.with_suffix(".ass").unlink(missing_ok=True)
 
 
 def _apply_speed(output_path: Path, speed: float, encoder: str, fps: float) -> None:
@@ -1135,17 +1201,26 @@ def _render_clip(
             traceback.print_exc()
             playback_speed = 1.0
 
+    # 콜드 오픈 티저(나열형 교훈 컷, 2026-10-04): 본편 속 펀치 대사를 맨 앞에 한 번 더 붙인다.
+    teaser_dur = 0.0
+    if not render_cfg.get("_teaser_pass"):
+        try:
+            teaser_dur = _prepend_teaser(video_path, segments, clip, output_path, render_cfg, captions_cfg, used_encoder)
+        except Exception:  # noqa: BLE001 - 티저 실패 시 본편만 유지(로그만)
+            traceback.print_exc()
+            teaser_dur = 0.0
+
     # 효과음(선택): 본편 완성 후·아웃트로 이전에 whoosh를 합성해 믹싱한다. 도입부(0초)에
     # 하나, 무음 제거로 생긴 컷 경계마다 하나(전환음). 배속 구간이 있으면 컷 시각이 어긋날
     # 수 있어 컷 전환음은 배속이 없을 때만 넣는다. 실패해도 본 렌더는 유지(로그만).
     sfx_cfg = render_cfg.get("sfx") or {}
     if sfx_cfg.get("enabled"):
-        sfx_times = [0.0]
+        sfx_times = [0.0] + ([round(teaser_dur, 2)] if teaser_dur > 0 else [])
         if sfx_cfg.get("whoosh_at_cuts", True) and keep_segments and len(keep_segments) > 1 and not warp_active:
             acc = 0.0
             for s, e in keep_segments[:-1]:
                 acc += (e - s)
-                sfx_times.append(round(acc / playback_speed, 2))  # 배속 후 시간축 보정
+                sfx_times.append(round(teaser_dur + acc / playback_speed, 2))  # 배속 후 시간축 보정
         try:
             _add_sfx(output_path, sfx_times, sfx_cfg)
         except Exception:  # noqa: BLE001 - 효과음 실패는 치명적이지 않음

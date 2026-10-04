@@ -1781,6 +1781,9 @@ def analyze(
                     k = (c.end - c.start) / (oe - os_)
                     c.keep_ranges = [[round(c.start + (a - os_) * k, 2), round(c.start + (b - os_) * k, 2)]
                                      for a, b in c.keep_ranges]
+                if getattr(c, "teaser_range", None) and (c.start, c.end) != (os_, oe) and oe > os_:
+                    k = (c.end - c.start) / (oe - os_)
+                    c.teaser_range = [round(c.start + (float(t) - os_) * k, 2) for t in c.teaser_range[:2]]
         # 안전망: 스냅(또는 다른 후처리)이 경계를 늘려 길이 상한을 넘긴 클립을 최종적으로 제외한다.
         # _validate_and_build_clips의 상한은 스냅 '이전'에만 적용되므로, 여기서 한 번 더 막는다.
         # 점프컷(keep_ranges) 클립은 원본 구간이 아니라 실제 남는 길이로 잰다.

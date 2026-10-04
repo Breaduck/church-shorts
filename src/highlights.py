@@ -56,12 +56,18 @@ def merge_ranges(ranges) -> list[list[float]]:
 def clip_effective_duration(clip) -> float:
     """실제 재생 길이(초). 점프컷(keep_ranges)이 있으면 남길 구간의 합, 없으면 end-start."""
     kr = getattr(clip, "keep_ranges", None) or []
+    tz = 0.0
+    try:
+        t0, t1 = (getattr(clip, "teaser_range", None) or [0.0, 0.0])[:2]
+        tz = max(0.0, float(t1) - float(t0))  # 콜드 오픈 티저는 맨 앞에 한 번 더 붙는다
+    except (TypeError, ValueError):
+        pass
     if kr:
         try:
-            return sum(max(0.0, e - s) for s, e in merge_ranges(kr))
+            return sum(max(0.0, e - s) for s, e in merge_ranges(kr)) + tz
         except (TypeError, ValueError):
             pass
-    return float(clip.end) - float(clip.start)
+    return float(clip.end) - float(clip.start) + tz
 
 
 @dataclass
@@ -144,6 +150,9 @@ class Clip:
     # 비어 있으면 [start,end] 전체를 남긴다. 여러 개면 렌더가 무음 제거와 같은 방식으로 이어붙인다
     # (render._combine_keep → select/aselect 필터). start/end는 이 구간들의 바깥 경계와 일치시킨다.
     keep_ranges: list = field(default_factory=list)
+    # 콜드 오픈 티저(절대초 [start,end]): 영상 맨 앞에 미리 한 번 틀어 줄 펀치 대사. 본편 제자리에서도 다시 나온다.
+    # 나열형 교훈 컷이 만든다(sermon_cut._enum_teaser, 2026-10-04). 비어 있으면 티저 없음.
+    teaser_range: list = field(default_factory=list)
     # 후보 고유 id(저장 시 자동 부여). 편집 저장은 배열 인덱스로 찾아가는데, 편집창을 연 채 '새로 분석'으로
     # 후보 목록이 통째로 바뀌면 옛 3번의 편집이 새 3번에 덮였다 → 편집창이 연 클립의 uid를 같이 보내 대조한다.
     uid: str = ""
