@@ -1800,7 +1800,8 @@ def analyze(
         # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
         # 첫째·둘째·셋째 나열 컷은 "무조건" 넣는 컷이라 점수와 무관하게 맨 앞(2026-10-04 "안 들어간 것 같다" 신고:
         # 점수 43으로 7번째에 묻혀 있었다).
-        clips.sort(key=lambda c: (bool(getattr(c, "enum_items", 0)), c.score or 0), reverse=True)
+        clips.sort(key=lambda c: c.score or 0, reverse=True)
+        clips.sort(key=lambda c: (0, c.start) if getattr(c, "enum_items", 0) else (1, 0.0))  # 안정 정렬: 나열 편은 순서대로 맨 앞
         apply_default_sermon_speed(clips, cfg)
         _replace_clips_json(video_dir, clips)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
