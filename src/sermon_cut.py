@@ -1695,6 +1695,7 @@ def build_enumeration_cuts(
             "thesis": str(meta.get("thesis") or sentences[marks[0]].text[:40]),
             "why": f"나열형 교훈 {len(marks)}가지 전부 포함 — " + str(meta.get("why") or ""),
             "enum": True,
+            "enum_items": len(marks),
         }
         if teaser and teaser[0] in keep and teaser[1] in keep:
             cut["teaser"] = list(teaser)
@@ -1893,6 +1894,7 @@ def select_highlights_v2(
             title_candidates=_as_str_list(r.get("title_candidates"), split=False),
             keywords=_as_str_list(r.get("keywords")),
             keep_ranges=keep_abs,
+            enum_items=int(c.get("enum_items") or 0),
             teaser_range=([round(sentences[c["teaser"][0]].start, 3), round(_sentence_cut_end(sentences, c["teaser"][1]), 3)]
                           if c.get("teaser") else []),
         ))
