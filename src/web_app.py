@@ -2330,6 +2330,8 @@ def clip_preview_info(video_id: str, idx: int):
             "uid": clip.uid,
             "title": clip.title,
             "title_candidates": cands[:5],
+            # 렌더가 맨 앞에 붙이는 콜드 오픈 티저(절대초) — 미리보기도 먼저 틀어 결과와 같게.
+            "teaser_range": list(getattr(clip, "teaser_range", None) or []),
             "start": clip.start,
             "end": clip.end,
             "keep_ranges": (getattr(clip, "keep_ranges", None) or []),

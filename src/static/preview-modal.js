@@ -517,10 +517,17 @@
     renderHeadAt(segs[0].s);  // 영상 로드 전에도 파란 바를 클립 시작에 즉시 표시
 
     // ── 재생: 남긴 조각들만 순서대로 미리듣기(잘린 gap은 건너뜀) ──
+    // 콜드 오픈 티저: 렌더는 teaser_range 구간을 맨 앞에 한 번 더 붙인다. 미리보기도 처음부터 재생할 때
+    // 티저를 먼저 틀어야 결과 영상과 같다(2026-10-25 실신고 "영상 추출된 것도 다르다").
+    const teaser = (C.teaser_range && C.teaser_range.length >= 2 && C.teaser_range[1] > C.teaser_range[0])
+      ? { s: C.teaser_range[0], e: C.teaser_range[1] } : null;
+    let inTeaser = false;
     playBtn.addEventListener('click', () => {
       if (video.paused) {
         const inSeg = segs.some((sg) => video.currentTime >= sg.s - 0.05 && video.currentTime < sg.e - 0.05);
-        if (!inSeg) video.currentTime = segs[0].s;
+        const atStart = !inSeg || Math.abs(video.currentTime - segs[0].s) < 0.1;
+        if (teaser && atStart) { inTeaser = true; video.currentTime = teaser.s; }
+        else if (!inSeg) video.currentTime = segs[0].s;
         video.play(); playBtn.classList.add('hidden');
       }
     });
@@ -528,6 +535,11 @@
     video.addEventListener('timeupdate', () => {
       renderHead();
       const t = video.currentTime;
+      if (inTeaser) {
+        if (t >= teaser.s - 0.05 && t < teaser.e) return;  // 티저 재생 중
+        inTeaser = false;
+        if (!video.paused) { video.currentTime = segs[0].s; return; }  // 티저 끝 → 본편 처음부터
+      }
       for (let i = 0; i < segs.length; i++) { if (t >= segs[i].s - 0.05 && t < segs[i].e) return; }  // 아직 조각 안
       const nxt = segs.find((sg) => sg.s > t);  // gap이면 다음 조각으로 점프
       if (nxt && !video.paused) { video.currentTime = nxt.s; return; }
@@ -774,6 +786,8 @@
         '<button type="button" class="pv-cap-del" title="삭제">&times;</button>';
       row.querySelector('.pv-cap-start').value = startRel.toFixed(1);
       row.querySelector('.pv-cap-end').value = endRel.toFixed(1);
+      // 칸에는 0.1초로 반올림해 보이지만, 안 건드린 줄은 원래 정밀 시각으로 저장한다(항상 저장하므로 싱크 보존).
+      row.dataset.s = String(startRel); row.dataset.e = String(endRel);
       const textEl = row.querySelector('.pv-cap-text');
       textEl.value = text || '';
       if (chosenCaptionFont) textEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
@@ -888,8 +902,12 @@
     });
     function collectCaptions() {
       return [...capRowsBox.querySelectorAll('.pv-caprow')].map((r) => {
-        const s = parseFloat(r.querySelector('.pv-cap-start').value);
-        const en = parseFloat(r.querySelector('.pv-cap-end').value);
+        const exact = (el, raw) => {
+          const v = parseFloat(el.value), x = parseFloat(raw);
+          return (!isNaN(x) && !isNaN(v) && el.value === x.toFixed(1)) ? x : v;
+        };
+        const s = exact(r.querySelector('.pv-cap-start'), r.dataset.s);
+        const en = exact(r.querySelector('.pv-cap-end'), r.dataset.e);
         return {
           start: C.start + (isNaN(s) ? 0 : s), end: C.start + (isNaN(en) ? 0 : en),
           text: r.querySelector('.pv-cap-text').value,
@@ -1181,8 +1199,10 @@
         caption_offset_x: state.caption.x, caption_offset_y: state.caption.y,
         caption_font: chosenCaptionFont,
       };
-      // 자막은 사용자가 실제로 고쳤을 때만 확정본으로 저장(위 capsDirty 주석 참고).
-      if (capsDirty) payload.captions = collectCaptions();
+      // 화면에 보이는 자막을 항상 확정본으로 저장한다 = 본 그대로 구워진다(2026-10-25 실신고
+      // "수정한 자막이 그대로 안 들어가고 니 맘대로 들어간다"). 예전엔 고쳤다고 감지될 때만 저장해서,
+      // 그 외엔 렌더가 정밀 재전사+AI 교정으로 자막을 새로 뽑아 편집기와 다른 글자·줄바꿈이 나갔다.
+      payload.captions = collectCaptions();
       payload.caption_karaoke = capKaraoke;
       payload.caption_highlights = capHighlights;
       payload.caption_overrides_en = capOverridesEn;
