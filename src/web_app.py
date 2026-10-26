@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -350,7 +351,7 @@ CANDIDATES_TEMPLATE = f"""
     <div class="cand-video" id="candvid-{{{{ loop.index0 }}}}">
     {{% if c.rendered %}}
       <video controls src="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4"></video>
-      <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4" download>⬇ 영상 저장</a>
+      <a class="dl-link" href="/media/{{{{ video_id }}}}/{{{{ loop.index }}}}.mp4?dl=1" download>⬇ 영상 저장</a>
     {{% endif %}}
     </div>
     {{# 업로드 버튼은 카드마다 두지 않고 우측 상단 'YouTube 업로드' 하나로 통합했다
@@ -756,7 +757,7 @@ CANDIDATES_TEMPLATE = f"""
       if (!slot) return;
       var src = '/media/' + VID + '/' + (i + 1) + '.mp4?t=' + Date.now();
       slot.innerHTML = '<video controls src="' + src + '"></video>' +
-        '<a class="dl-link" href="/media/' + VID + '/' + (i + 1) + '.mp4" download>⬇ 영상 저장</a>';
+        '<a class="dl-link" href="/media/' + VID + '/' + (i + 1) + '.mp4?dl=1" download>⬇ 영상 저장</a>';
       var card = document.getElementById('cand-' + i);
       if (card) card.classList.add('rendered-done');
     }}
@@ -1259,7 +1260,24 @@ def media(video_id: str, rank: int):
     path = (OUTPUT_ROOT / video_id / "clips" / f"short_{rank}.mp4").resolve()
     if not path.exists():
         return jsonify({"error": "파일을 찾을 수 없습니다"}), 404
+    if request.args.get("dl"):
+        # '영상 저장'은 short_N.mp4 대신 우리가 정한 제목을 파일 이름으로 내려준다.
+        return send_file(path, as_attachment=True, download_name=_download_filename(video_id, rank))
     return send_file(path)
+
+
+def _download_filename(video_id: str, rank: int) -> str:
+    """clips.json의 제목 → 윈도우에서도 저장 가능한 파일명. 제목이 없으면 short_N.mp4."""
+    title = ""
+    try:
+        clips = load_clips_json(OUTPUT_ROOT / video_id / "clips.json")
+        if 1 <= rank <= len(clips):
+            title = clips[rank - 1].title or ""
+    except Exception:  # noqa: BLE001 - 제목을 못 읽어도 다운로드 자체는 되어야 함
+        pass
+    title = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" .")[:100]
+    return f"{title}.mp4" if title else f"short_{rank}.mp4"
 
 
 PREVIEW_CANVAS_WIDTH = 360  # 실제 렌더 해상도(보통 1080px 폭)를 화면에 축소해서 보여줄 너비(px)
