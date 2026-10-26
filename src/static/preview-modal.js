@@ -968,6 +968,35 @@
       });
     }
 
+    // ── 미리보기 자막 재생: 아래 자막 목록(고친 내용 그대로)을 현재 시각에 맞춰 영상 위에 띄운다 ──
+    // 예전엔 caption_preview 한 줄만 고정 표시돼, 목록에서 고친 자막이 재생 중에 안 보였다.
+    // 티저 재생 중엔 티저 자막 목록(티저 시작 기준 시각)을 쓴다.
+    function lineAt(box, rel) {
+      for (const r of box.querySelectorAll('.pv-caprow')) {
+        const s = parseFloat(r.querySelector('.pv-cap-start').value);
+        const e = parseFloat(r.querySelector('.pv-cap-end').value);
+        if (!isNaN(s) && !isNaN(e) && rel >= s && rel < e) return r.querySelector('.pv-cap-text').value;
+      }
+      return '';
+    }
+    let shownCap = null;
+    function syncCaption() {
+      const t = video.currentTime;
+      let txt = (inTeaser && teaser) ? lineAt(tzRowsBox, t - teaser.s) : lineAt(capRowsBox, t - C.start);
+      // 멈춘 상태에서 자막 없는 지점이면 위치 잡기용 예시 줄을 보여 준다(드래그할 대상이 사라지지 않게).
+      if (!txt && video.paused) txt = info.caption_preview || '';
+      if (txt === shownCap) return;
+      shownCap = txt;
+      capEl.textContent = txt;
+      capEl.style.visibility = txt ? '' : 'hidden';
+    }
+    let capRaf = 0;
+    function capLoop() { syncCaption(); capRaf = video.paused ? 0 : requestAnimationFrame(capLoop); }
+    video.addEventListener('play', () => { if (!capRaf) capRaf = requestAnimationFrame(capLoop); });
+    video.addEventListener('seeked', syncCaption);
+    capRowsBox.addEventListener('input', () => { shownCap = null; syncCaption(); });
+    tzRowsBox.addEventListener('input', () => { shownCap = null; syncCaption(); });
+
     // ── 구간 재분석: 주제는 그대로, 이 장면 시작·끝만 다시 잡아 새 후보로 추가(원본 유지) ──
     // 실제 작업은 서버 스레드에서 도니 팝업을 닫아도 계속 진행된다. 화면 아래 고정
     // 위젯(mini-prog, __startRenderWatch 옆의 pollReanalyze)이 팝업이 닫힌 뒤에도 진행률·완료를

@@ -642,10 +642,18 @@ def _fit_title_font_size(
     non_empty = [ln for ln in lines if ln.strip()] or [text]
     size = max_size
     measure = None
+    coeff = 1.0
     if font_family:
+        from src.fonts import ass_size_coeff
         from src.fonts import measure_text_width_px as measure
+        # libass는 Fontsize를 셀 높이로 보아 글자를 em 기준보다 작게(Gmarket ≈0.87배) 그린다.
+        # em 기준 폭으로 재면 실제보다 ~15% 넓게 판정해 맞는 제목까지 줄였다
+        # (팝업에서 97로 맞춘 제목이 영상엔 85로 나오던 원인).
+        coeff = ass_size_coeff(font_family)
     for ln in non_empty:
         w = measure(ln, font_family, max_size) if measure else None
+        if w is not None:
+            w *= coeff
         if w is not None and w > 0:
             if w > available_width_px:
                 size = min(size, int(available_width_px / w * max_size))

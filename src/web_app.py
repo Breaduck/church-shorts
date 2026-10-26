@@ -1403,7 +1403,7 @@ def _compute_layout(
     _title_top = max(24, int(resolution[1] * 0.06))
     title_avail_h = max(80, int(vby) - _title_top - 20)
     title_size = _fit_title_font_size(
-        clip.title or "", max_title_size, min_size=captions_cfg["font_size"],
+        clip.title or "", max_title_size, min_size=min(captions_cfg["font_size"], max_title_size),
         available_width_px=resolution[0] - 80, font_family=title_font_name,
         available_height_px=title_avail_h,
     )
