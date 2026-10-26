@@ -1197,9 +1197,91 @@
     });
     window.addEventListener('resize', applyZoom);
 
+    // ── 되돌리기(Ctrl+Z) / 다시 실행(Ctrl+Shift+Z·Ctrl+Y) ──
+    // 팝업에서 바꿀 수 있는 것 전부(구간 조각·제목·위치·크기·자막 줄·글꼴·배속·강조·영어 트랙)를
+    // 통째로 스냅숏해 둔다. 조작이 끝날 때마다(손 뗌·클릭·입력 멈춤·자막 줄 교체) 바뀌었으면 한 단계로 쌓는다.
+    function snap() {
+      return JSON.stringify({
+        segs, activeSeg, title: chosenTitle, st: state,
+        rows: [...capRowsBox.querySelectorAll('.pv-caprow')].map((r) => [
+          r.dataset.s, r.dataset.e, r.querySelector('.pv-cap-start').value,
+          r.querySelector('.pv-cap-end').value, r.querySelector('.pv-cap-text').value]),
+        speed: speedSel.value, font: chosenCaptionFont, kar: capKaraoke, hl: capHighlights, en: capOverridesEn,
+      });
+    }
+    let undoStack = [], redoStack = [], lastSnap = snap(), restoring = false, recTimer = null;
+    function record() {
+      if (recTimer) { clearTimeout(recTimer); recTimer = null; }
+      if (restoring || editing) return;   // 제목 인라인 편집 중엔 확정(blur) 후에 한 단계로
+      const s = snap();
+      if (s === lastSnap) return;
+      undoStack.push(lastSnap);
+      if (undoStack.length > 100) undoStack.shift();
+      redoStack = [];
+      lastSnap = s;
+    }
+    const recordSoon = (ms) => { if (recTimer) clearTimeout(recTimer); recTimer = setTimeout(record, ms || 0); };
+    function restore(json) {
+      const d = JSON.parse(json);
+      restoring = true;
+      segs = d.segs; activeSeg = Math.min(d.activeSeg, segs.length - 1);
+      renderSegs(); renderHead();
+      chosenTitle = d.title; setTitleText(chosenTitle);
+      candsBox.querySelectorAll('.pv-cand').forEach((x) => x.classList.toggle('sel', x.textContent === chosenTitle));
+      Object.assign(state.title, d.st.title); Object.assign(state.caption, d.st.caption);
+      applyTitleSize(); fitToWidth(titleEl, titleTxt);
+      paintBox(titleEl, 'title'); paintBox(capEl, 'caption');
+      speedSel.value = d.speed; video.playbackRate = parseFloat(d.speed) || 1;
+      if (d.font !== chosenCaptionFont) { capFontSel.value = d.font; capFontSel.dispatchEvent(new Event('change')); }
+      capKaraoke = d.kar; if (isUploadPraise) renderKaraokeBtn();
+      capHighlights = d.hl; capOverridesEn = d.en;
+      capRowsBox.innerHTML = '';
+      d.rows.forEach(([ds, de, sv, ev, tx]) => {
+        addCapRow(parseFloat(ds) || 0, parseFloat(de) || 0, tx);
+        const r = capRowsBox.lastElementChild;
+        r.dataset.s = ds; r.dataset.e = de;
+        r.querySelector('.pv-cap-start').value = sv; r.querySelector('.pv-cap-end').value = ev;
+      });
+      capsDirty = true;
+      lastSnap = json;
+      // 자막 줄 교체가 일으키는 MutationObserver 콜백(비동기)이 끝난 뒤에 기록을 다시 연다
+      setTimeout(() => { restoring = false; }, 0);
+    }
+    const flash = (msg) => {
+      const el = document.createElement('div');
+      el.textContent = msg;
+      el.style.cssText = 'position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:100000;'
+        + 'padding:9px 18px;border-radius:999px;background:#fff;color:#191f28;font-size:13px;font-weight:700;'
+        + 'box-shadow:0 4px 18px rgba(0,0,0,.18);pointer-events:none';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 900);
+    };
+    ['pointerup', 'click', 'dblclick', 'change'].forEach((ev) => back.addEventListener(ev, () => recordSoon(0), true));
+    back.addEventListener('input', () => recordSoon(600), true);   // 타자는 멈춘 뒤 한 단계로 묶는다
+    // 꼼꼼 재분석·싱크·AI 교정·가사처럼 나중에 자막 줄을 통째로 갈아끼우는 작업도 한 단계로 잡는다
+    new MutationObserver(() => recordSoon(50)).observe(capRowsBox, { childList: true });
+    titleTxt.addEventListener('blur', () => setTimeout(record, 0));
+    function onUndoKey(e) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const isZ = e.code === 'KeyZ', isY = e.code === 'KeyY';   // 한글 입력 상태에서도 동작하게 code로 본다
+      if (!isZ && !isY) return;
+      if (editing) return;   // 제목 인라인 편집 중엔 브라우저 기본 되돌리기(글자 단위)
+      e.preventDefault();
+      record();   // 아직 쌓이지 않은 마지막 조작(타자 중 등)을 먼저 한 단계로 확정
+      if (isZ && !e.shiftKey) {
+        if (!undoStack.length) { flash('더 되돌릴 게 없어요'); return; }
+        redoStack.push(lastSnap); restore(undoStack.pop()); flash('되돌림');
+      } else {
+        if (!redoStack.length) { flash('다시 실행할 게 없어요'); return; }
+        undoStack.push(lastSnap); restore(redoStack.pop()); flash('다시 실행');
+      }
+    }
+    document.addEventListener('keydown', onUndoKey, true);
+
     // ── 닫기/저장/확정 ──
     function close() {
       video.pause();
+      document.removeEventListener('keydown', onUndoKey, true);
       window.removeEventListener('resize', applyZoom);
       back.remove();
     }
