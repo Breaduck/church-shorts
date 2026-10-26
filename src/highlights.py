@@ -1434,6 +1434,95 @@ def correct_sermon_captions(
     return corrected, highlights
 
 
+def segment_sermon_captions(
+    words: list[str],
+    max_units: float,
+    context: str = "",
+    reference: str = "",
+    model: str = "",
+    thinking_tokens: int = 1024,
+    timeout_sec: int = 600,
+    gap_after: set[int] | None = None,
+) -> list[dict]:
+    """설교 자막을 '단어 목록 → 줄 묶기 + 오인식 교정'으로 한 번에 만든다(2026-10-27).
+
+    왜 줄 묶기까지 모델에: 휴리스틱(chunk_words_into_lines: 3단어 창 + 폭 상한 + 금지 사전)은 한국어 구 구조를
+    몰라 '불어넣어서 생명이 / 되었잖아요', '첫째는 죄로부터 / 구원이죠', '되는데 죄는 어떻게 / 씻나요?'처럼
+    주어·서술어, 목적어·서술어를 갈랐다("자막 줄바꿈 이게 최선이냐" 2026-10-27). 폭 상한(화면 1줄 ≈ 한글 10자)이
+    빡빡해 어차피 자를 수밖에 없는데, 어디서 자르는지는 뜻을 아는 쪽이 골라야 한다.
+
+    words: 시간 순 단어(추임새는 호출자가 이미 뺀 상태여도 됨). gap_after: 이 번호 '뒤'에 1.5초+ 쉼(점프컷 포함)이
+    있는 단어 번호들 — 그 사이를 한 줄로 묶지 않게 표시한다.
+    반환: [{"from": i, "to": j, "text": "교정된 줄"}] (from~to 포함, 빈틈·겹침 없음은 호출자가 검증)."""
+    words = [str(w or "").strip() for w in words]
+    if not words:
+        return []
+    gap_after = gap_after or set()
+    rows = []
+    for i, w in enumerate(words):
+        rows.append(f"{i} {w}")
+        if i in gap_after:
+            rows.append("   ─── (쉼: 여기를 가로질러 한 줄로 묶지 마라)")
+    listing = "\n".join(rows)
+    n = len(words)
+    max_chars = max(4, int(max_units))
+    ctx = f"\n이 클립의 주제/제목(참고): {context}\n" if context.strip() else ""
+    ref = ""
+    if reference.strip():
+        ref = (
+            "\n## 참고: 같은 구간을 다른 인식기(유튜브 자동자막)가 받아적은 텍스트\n"
+            "두 인식기가 다른 단어를 냈으면 문맥상 말이 되는 쪽을 골라라(예: whisper '세일을' vs 자동자막 '새 일을' → "
+            "'새 일을'). 둘 다 이상하면 원문 유지. 줄 구분이 없으니 단어 대조에만 써라.\n"
+            f"{reference.strip()[:2500]}\n"
+        )
+    prompt = f"""너는 한국 교회 설교 쇼츠의 자막 편집자다. 아래는 음성인식(whisper)이 설교를 받아적은 단어 목록이다
+(번호 순 = 시간 순). 이 단어들을 화면에 **한 줄씩 차례로** 뜨는 자막 줄로 묶고, 오인식을 고쳐라.
+{ctx}{ref}
+## 1) 줄 묶기 규칙 (가장 중요)
+- 한 줄 = 뜻이 한 덩어리로 읽히는 단위. 한국어 구(句) 구조를 지켜라:
+  · 꾸미는 말과 꾸밈받는 말은 같은 줄: "하나님의 아들", "이런 식으로", "우리 교회를"
+  · 주어와 서술어가 짧으면 같은 줄: "생명이 되었잖아요" (✗ "생명이 / 되었잖아요")
+  · 목적어와 서술어는 되도록 같은 줄: "은혜를 받은 거죠", "죄는 어떻게 씻나요?"
+  · 부정어·관형사·부사 뒤, 의존명사·보조용언 앞에서 끊지 마라: ✗ "안 / 됩니다", ✗ "할 / 수", ✗ "되지 / 않고"
+  · 접속부사(그래서·그런데·그러니까·그러면…)는 새 줄의 맨 앞에 둔다
+  · 문장이 끝나면(. ? !) 반드시 줄도 끝난다 — 두 문장을 한 줄에 섞지 마라
+- 폭 상한: 한 줄은 한글 {max_chars}자까지(공백·숫자·문장부호는 반 자로 센다). **절대 넘기지 마라.**
+  폭 때문에 한 구를 둘로 나눠야 하면 가장 덜 어색한 자리(조사 뒤 > 절 끝)에서 나눠라.
+- 한 단어짜리 줄은 피하라(문장 끝의 짧은 마무리 "씻나요?"나 강조는 허용). 보통 2~4어절.
+- 리듬 때문에 억지로 쪼개지도, 줄 수를 줄이려고 억지로 채우지도 마라.
+
+## 2) 오인식 교정 (각 줄 text)
+- 명백한 오인식만 고쳐라. 특히 성경 인물/지명/용어 철자(보아즈→보아스, 루시→룻, 기도원→기드온 류).
+  발음 그대로 적혀 뜻이 안 통하는 구어도 앞뒤를 읽고 고쳐라: "한글릇 물러났을"→"한 걸음 물러났을", "성리"→"승리",
+  "신나요?"→"씻나요?"(죄를 씻는 문맥), "없은 적"→"없은즉", "따라습니다"→"따라 합니다".
+- 추임새·의성어("응", "어", "음", "에", "예~")와 뜻 없는 지시어 '그'는 빼라. 범위가 추임새뿐이면 text를 ""로.
+- 단어 순서를 바꾸거나 새 말을 더하지 마라. 구어체("~거예요", "~잖아요")는 그대로. 의심되지만 확실치 않으면 원문 유지.
+
+## 3) 출력 형식
+- 각 줄은 단어 번호 범위 from~to(둘 다 포함)와 그 범위 단어들의 교정된 text.
+- 범위는 빈틈·겹침 없이 이어져야 한다: 첫 줄 from=0, 다음 줄 from=앞 줄 to+1, 마지막 줄 to={n - 1}. 단어 하나도 빠뜨리지 마라.
+
+단어 목록 (번호 단어):
+{listing}
+
+출력은 반드시 ```json ... ``` 코드블록 안의 JSON 배열만:
+[{{"from": 0, "to": 2, "text": "교정된 줄"}}, ...]"""
+    raw = _invoke_claude_json(
+        prompt, model=model, thinking_tokens=thinking_tokens,
+        timeout_sec=timeout_sec, max_clips=1,
+    )
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            a, b = int(item["from"]), int(item["to"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        out.append({"from": a, "to": b, "text": str(item.get("text", "") or "").strip()})
+    return out
+
+
 def translate_captions_to_english(
     lines: list[str],
     context: str = "",

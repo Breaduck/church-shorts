@@ -93,6 +93,157 @@ def autofix_caption_texts(
     return out, hl
 
 
+def _clip_context(clip) -> str:
+    return " / ".join(
+        s for s in (
+            str(getattr(clip, "title", "") or ""), str(getattr(clip, "core_line", "") or ""),
+            " ".join(str(k) for k in (getattr(clip, "keywords", None) or [])),
+        ) if s
+    )
+
+
+def segment_words_with_model(
+    video_dir: Path, words: list, max_units: float, max_wpl: int, context: str = "",
+    reference: str = "", model: str = "", aggressive_filler: bool = False, thinking_tokens: int = 1024,
+) -> list | None:
+    """단어(Word) 목록 → 모델이 뜻 단위로 묶고 교정한 CaptionLine 목록. 실패·검증 탈락이면 None(호출자가 휴리스틱 폴백).
+
+    검증(모델 출력은 믿지 않는다):
+      - from~to가 0..n-1을 빈틈·겹침 없이 덮어야 한다. 아니면 None.
+      - 1.5초+ 쉼(HARD_LINE_GAP, 점프컷 들어낸 자리 포함)을 가로지른 줄은 그 자리에서 가른다(원문 유지).
+      - 폭(max_units)을 넘는 줄은 휴리스틱(chunk_words_into_lines)으로 다시 쪼갠다 — 화면 1줄 규칙은 절대.
+      - 교정 text가 원문과 길이가 2배 이상 다르면(줄을 새로 씀) 원문 유지.
+    캐시: 단어 텍스트+폭+맥락 해시 → 묶음(from/to/text). 시각은 안 들어가므로 편집기 초안(절대초)과
+    렌더(클립 상대초·점프컷 리매핑)가 같은 캐시를 읽어 **미리보기 = 결과물**."""
+    from src.captions import (
+        HARD_LINE_GAP, CaptionLine, _display_text, _distribute_by_chars, _line_units, chunk_words_into_lines,
+    )
+    from src.transcribe import Word
+
+    # 추임새 토큰은 보내기 전에 걷어낸다(모델이 뺄 필요 없게 + 빈 단어 없이 번호가 매겨지게).
+    base: list = []
+    for w in words:
+        t = strip_filler_tokens_text(_display_text(w.text), aggressive_filler)
+        if t:
+            base.append(Word(start=w.start, end=w.end, text=t))
+    if not base:
+        return []
+    texts = [w.text for w in base]
+    gap_after = {i for i in range(len(base) - 1) if base[i + 1].start - base[i].end >= HARD_LINE_GAP}
+    # 키에 쉼 위치(gap_after)는 넣지 않는다: 같은 단어열이면 시간축(절대초/점프컷 리매핑/무음 보정)이 달라도
+    # 반드시 같은 줄을 돌려줘야 편집기 초안 = 렌더. 쉼을 가로지른 묶음은 아래에서 결정론적으로 가른다.
+    key_parts = ["seg", texts, round(float(max_units), 1), context, reference, model]
+    key = "seg:" + hashlib.sha1(json.dumps(key_parts, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    cache = _load_cache(video_dir)
+    groups = None
+    hit = cache.get(key)
+    if isinstance(hit, dict) and isinstance(hit.get("groups"), list):
+        groups = hit["groups"]
+    if groups is None:
+        from src.highlights import segment_sermon_captions
+        from src.models import EXECUTION_MODEL
+
+        try:
+            groups = segment_sermon_captions(
+                texts, max_units, context=context, reference=reference, model=model or EXECUTION_MODEL,
+                thinking_tokens=thinking_tokens, gap_after=gap_after,
+            )
+        except Exception as exc:  # noqa: BLE001 - 모델 실패(한도 등)는 휴리스틱 폴백
+            print(f"[caption_autofix] 모델 줄 묶기 실패 → 휴리스틱: {exc}", flush=True)
+            return None
+        groups = sorted((g for g in groups if isinstance(g, dict)), key=lambda g: int(g.get("from", -1)))
+        expect = 0
+        for g in groups:
+            if int(g.get("from", -1)) != expect or int(g.get("to", -1)) < expect:
+                print(f"[caption_autofix] 모델 줄 묶기 검증 실패(빈틈/겹침 @{expect}) → 휴리스틱", flush=True)
+                return None
+            expect = int(g["to"]) + 1
+        if expect != len(texts):
+            print(f"[caption_autofix] 모델 줄 묶기 검증 실패(끝 {expect}≠{len(texts)}) → 휴리스틱", flush=True)
+            return None
+        cache[key] = {"groups": groups, "src": texts, "context": context}
+        _save_cache(video_dir, cache)
+
+    def _emit(part: list, text: str | None) -> list:
+        """단어 조각 하나를 줄로. text(교정)가 어절 수까지 같으면 단어 시각을 그대로 쓰고, 아니면 글자 수 비례."""
+        orig = " ".join(w.text for w in part)
+        ft = strip_filler_tokens_text((text if text is not None else orig).strip(), aggressive_filler)
+        if text is not None and not ft:
+            return []
+        if not ft or not _plausible(orig, ft):
+            ft = orig
+        toks = ft.split()
+        if len(toks) == len(part):
+            ws = [Word(start=w.start, end=w.end, text=t) for w, t in zip(part, toks)]
+        else:
+            ws = _distribute_by_chars(toks, part[0].start, part[-1].end)
+        if len(ws) > 1 and _line_units(ws) > max_units:
+            return chunk_words_into_lines(ws, max_wpl, max_units=max_units)
+        return [CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws)]
+
+    lines: list = []
+    for g in groups:
+        a, b = int(g["from"]), int(g["to"])
+        part = base[a:b + 1]
+        # 쉼(점프컷)을 가로지른 묶음은 그 자리에서 가른다 — 줄 시각이 잘린 구간에 걸치면 렌더가 통째로 버린다.
+        cuts = [i for i in range(a, b) if i in gap_after]
+        if cuts:
+            s = a
+            for c in cuts:
+                lines += _emit(base[s:c + 1], None)
+                s = c + 1
+            lines += _emit(base[s:b + 1], None)
+        else:
+            lines += _emit(part, str(g.get("text", "")))
+    return _repair_bad_boundaries(lines, max_units, max_wpl)
+
+
+def _repair_bad_boundaries(lines: list, max_units: float, max_wpl: int) -> list:
+    """모델이 폭을 어림해 보수적으로 자르다 금지 경계에서 끊은 곳('그래서 영이 하나라는 / 거죠',
+    '삶의 능력이 있는 / 것입니다' 실측)을 고친다: 그런 이웃 두 줄을 합쳐 휴리스틱(금지 사전+폭)으로 다시 자른다
+    → '그래서 영이 / 하나라는 거죠', '삶의 능력이 / 있는 것입니다'. 쉼을 사이에 둔 줄은 합치지 않는다."""
+    from src.captions import HARD_LINE_GAP, _break_score, chunk_words_into_lines
+
+    i = 0
+    budget = len(lines) * 3 + 10  # 되감기 반복 상한(안전망)
+    while i < len(lines) - 1 and budget > 0:
+        budget -= 1
+        a, b = lines[i], lines[i + 1]
+        if (
+            a.words and b.words and b.words[0].start - a.words[-1].end < HARD_LINE_GAP
+            and _break_score(a.words + b.words, len(a.words), 0.45) <= -50.0
+        ):
+            merged = chunk_words_into_lines(a.words + b.words, max_wpl, max_units=max_units)
+            same = (
+                len(merged) == 2 and len(merged[0].words) == len(a.words)
+            )
+            if not same:
+                lines[i:i + 2] = merged
+                continue  # 다시 자른 결과의 경계도 한 번 더 점검
+        i += 1
+    return lines
+
+
+def make_line_builder(video_dir: Path, clip, cfg: dict, use_model: bool = True):
+    """captions.build_ass(line_builder=)에 넘길 콜러블 — 모델이 줄 묶기+교정을 한 번에. 설교 클립에만.
+    모델을 안 쓰는 상황(찬양·auto_correct 꺼짐·정밀 전사 없음)이면 None → 호출자가 휴리스틱+text_fixer 경로."""
+    caps = (cfg or {}).get("captions", {}) or {}
+    if getattr(clip, "clip_type", "") == "praise" or not use_model or not caps.get("auto_correct", True):
+        return None
+    context = _clip_context(clip)
+    aggressive = bool(caps.get("aggressive_filler", False))
+    model = str(caps.get("auto_correct_model", "") or "")
+    reference = _reference_text(Path(video_dir), clip)
+
+    def _build(words: list, max_units: float, max_wpl: int):
+        return segment_words_with_model(
+            Path(video_dir), list(words), max_units, max_wpl, context=context, reference=reference,
+            model=model, aggressive_filler=aggressive,
+        )
+
+    return _build
+
+
 def make_text_fixer(video_dir: Path, clip, cfg: dict, use_model: bool = True):
     """captions.build_ass(text_fixer=)에 넘길 콜러블. 설교 클립에만 의미가 있고 찬양(가사)은 None.
     use_model=False면 추임새 제거(결정론)만 한다."""
@@ -103,12 +254,7 @@ def make_text_fixer(video_dir: Path, clip, cfg: dict, use_model: bool = True):
         use_model = False
     if not caps.get("strip_filler", True) and not use_model:
         return None
-    context = " / ".join(
-        s for s in (
-            str(getattr(clip, "title", "") or ""), str(getattr(clip, "core_line", "") or ""),
-            " ".join(str(k) for k in (getattr(clip, "keywords", None) or [])),
-        ) if s
-    )
+    context = _clip_context(clip)
     aggressive = bool(caps.get("aggressive_filler", False))
     model = str(caps.get("auto_correct_model", "") or "")
     # 두 번째 인식기: 유튜브 자동자막(transcript.json)의 같은 구간 텍스트. whisper와 단어가 다를 때 대조용.

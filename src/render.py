@@ -443,7 +443,7 @@ def _prepend_teaser(
         clip, start=ts, end=te, keep_ranges=[], teaser_range=[], trimmed=True,
         caption_overrides=ovs or [], caption_overrides_en=en or [], bgm=None,
     )
-    for attr in ("caption_text_fixer",):  # 렌더 직전에 붙이는 임시 속성(필드 아님)은 replace가 안 옮긴다
+    for attr in ("caption_text_fixer", "caption_line_builder"):  # 렌더 직전에 붙이는 임시 속성(필드 아님)은 replace가 안 옮긴다
         if hasattr(clip, attr):
             setattr(t_clip, attr, getattr(clip, attr))
     t_cfg = copy.deepcopy(render_cfg)
@@ -960,6 +960,7 @@ def build_clip_ass(
         caption_overrides=getattr(clip, "caption_overrides", None) or None,
         # 자동 자막 교정(추임새 제거·문맥 교정): main.render_selected가 설교 클립에 임시 속성으로 붙인다(직렬화 안 됨).
         text_fixer=getattr(clip, "caption_text_fixer", None),
+        line_builder=getattr(clip, "caption_line_builder", None),
         font_style=_clip_font_style(clip),
         voice_silences=voice_silences,
         hook_speedup=hook_speedup,

@@ -774,6 +774,88 @@ def _remap_after_silence_removal(t: float, keep_segments: list[tuple[float, floa
     return cursor_new  # 마지막 유지 구간 이후
 
 
+def _is_final_word(text: str) -> bool:
+    t = (text or "").strip().rstrip('"\'”’)』」')
+    return bool(t) and t[-1] in ".?!…"
+
+
+def snap_ranges_to_words(
+    ranges: list, segments: list, tol_back: float = 1.5, real_gap: float = 0.3,
+) -> list[list[float]]:
+    """구간(절대초) 가장자리를 정밀 전사 단어 경계에 맞춘다 — 단어를 반 토막 내거나 앞 문장 꼬리·
+    다음 문장 머리를 한 글자 끼워 넣지 않게.
+
+    왜: 선정·점프컷(keep_ranges)은 유튜브 자동자막 시각으로 잘라서 정밀 단어와 0.3~0.5초 어긋난다.
+    실측 2026-10-27(Nq9ZP8NiHQ0): 시작 963.48인데 '두'는 962.90~963.56 → '번째는 성경이'로 시작,
+    끝 1100.60인데 다음 문장 '세'(1100.42~)가 걸쳐 '있는 것입니다 세', 점프컷 이음새에선
+    '뭘로'+'명의 저자가', '왕도'+'주시고'처럼 반 토막 단어가 붙어 **전사는 맞는데 자막이 틀린** 결과.
+
+    규칙(가장자리에 걸친 단어 w 기준):
+      시작: w가 문장 끝(.?!)이면 그 뒤로 민다(앞 문장 꼬리 제거). 아니면 w 시작까지 당긴다
+            (앞 단어 끝을 넘지 않게, tol_back초 이내일 때만 — 아니면 뒤로 민다).
+      끝:  w가 새 문장의 첫 단어(앞 단어가 문장 끝)거나 60% 미만만 걸쳤으면 w 앞에서 자른다.
+            아니면 w 끝까지 늘린다(다음 단어 시작을 넘지 않게).
+    점프컷 조각 사이 간격이 real_gap 미만(사용자가 자르기만 하고 지우지 않은 분할)이면 그 안쪽
+    가장자리는 건드리지 않는다. 결과는 시간 순 단조(겹침 없음)."""
+    words = sorted(
+        (w for s in (segments or []) for w in (getattr(s, "words", None) or [])
+         if (w.text or "").strip() and 0 < w.end - w.start <= 2.5),
+        key=lambda w: w.start,
+    )
+    out = [[float(a), float(b)] for a, b in (ranges or []) if float(b) > float(a)]
+    if not words or not out:
+        return out
+
+    def _overlapping(t: float) -> int | None:
+        for i, w in enumerate(words):
+            if w.start < t < w.end:
+                return i
+            if w.start >= t:
+                break
+        return None
+
+    orig = [list(r) for r in out]
+    n = len(out)
+    for k in range(n):
+        a, b = out[k]
+        if k == 0 or orig[k][0] - orig[k - 1][1] >= real_gap:
+            i = _overlapping(a)
+            if i is not None:
+                w = words[i]
+                if _is_final_word(w.text) or a - w.start > tol_back:
+                    a = min(w.end + 0.02, b - 0.5)
+                else:
+                    prev_end = words[i - 1].end if i > 0 else 0.0
+                    a = max(w.start - 0.05, prev_end, 0.0)
+        if k == n - 1 or orig[k + 1][0] - orig[k][1] >= real_gap:
+            i = _overlapping(b)
+            if i is not None:
+                w = words[i]
+                starts_sentence = i > 0 and _is_final_word(words[i - 1].text)
+                frac = (b - w.start) / max(1e-6, w.end - w.start)
+                if starts_sentence or frac < 0.6:
+                    b = max(w.start - 0.02, a + 0.5)
+                else:
+                    nxt = words[i + 1].start if i + 1 < len(words) else w.end + 1.0
+                    b = min(w.end + 0.05, nxt)
+        out[k] = [round(a, 3), round(b, 3)]
+    for k in range(1, n):
+        if out[k][0] < out[k - 1][1]:
+            out[k][0] = out[k - 1][1]
+    return [r for r in out if r[1] - r[0] > 0.1]
+
+
+def snap_clip_ranges(clip, segments: list) -> tuple[float, float, list[list[float]]]:
+    """클립의 (start, end, keep_ranges)를 정밀 단어 경계에 맞춘 값으로 돌려준다(snap_ranges_to_words).
+    렌더(main.render_selected)와 편집기 초안·팝업(web_app)이 반드시 같은 함수를 써야 미리보기=결과물."""
+    kr = [[float(a), float(b)] for a, b in (getattr(clip, "keep_ranges", None) or [])]
+    ranges = kr if len(kr) >= 2 else [[float(clip.start), float(clip.end)]]
+    snapped = snap_ranges_to_words(ranges, segments)
+    if not snapped:
+        return float(clip.start), float(clip.end), kr if len(kr) >= 2 else []
+    return snapped[0][0], snapped[-1][1], (snapped if len(snapped) > 1 else [])
+
+
 def _y_position(resolution: tuple[int, int], position: str, safe_bottom_pct: float) -> int:
     width, height = resolution
     if position == "center":
@@ -849,6 +931,7 @@ def build_ass(
     caption_offset_y: float = 0.0,
     caption_overrides: list | None = None,
     text_fixer=None,  # 줄 텍스트 목록 → 교정된 목록(1:1). 렌더 직전 추임새 제거·문맥 교정(src/caption_autofix)
+    line_builder=None,  # (단어들, max_units, max_wpl) → 줄 목록|None. 모델이 뜻 단위로 묶고 교정(src/caption_autofix)
     title_font_override: str = "",
     title_size_override: int = 0,
     title_align: str = "",
@@ -1237,26 +1320,44 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if keep_segments:
         # 점프컷으로 들어낸 문장의 단어는 버린다(리매핑하면 경계에 몰려 번쩍 뜬다).
         rel_words = [w for w in rel_words if _in_keep(w.start, w.end, keep_segments) is not None]
-        rel_words = [
-            Word(
-                start=_remap_after_silence_removal(w.start, keep_segments),
-                end=_remap_after_silence_removal(w.end, keep_segments),
-                text=w.text,
-            )
-            for w in rel_words
-        ]
-        # 리매핑 후 순간적으로 start==end가 되는(무음 구간에 걸쳐있던) 단어는 아주 살짝 늘려서
-        # 카라오케 \k 지속시간이 0이 되어 깨지는 걸 방지
-        rel_words = [
-            Word(start=w.start, end=max(w.end, w.start + 0.05), text=w.text) for w in rel_words
-        ]
     # 자막은 화면에 무조건 1줄: 사용 가능한 폭(픽셀)을 폰트 크기로 나눈 전각 단위 폭을
     # 상한으로 넘겨, 넘치는 줄은 아예 만들어지지 않게 한다(각 조각은 따로 순차 표시).
     usable_px = width - caption_margin_l - caption_margin_r - 24
     max_units = max(4.0, usable_px / max(1, caption_size))
-    lines = _clamp_lines_non_overlap(
-        chunk_words_into_lines(rel_words, max_words_per_line, max_units=max_units)
-    )
+    # 2026-10-27: 줄 묶기도 모델에 맡긴다(line_builder) — 휴리스틱(3단어+폭 상한)은 '생명이 / 되었잖아요',
+    # '첫째는 죄로부터 / 구원이죠'처럼 주어·서술어를 갈라 "이게 최선이냐" 신고. 모델 실패·한도면 None →
+    # 예전 경로(휴리스틱 + 1:1 텍스트 교정)로 그대로 폴백한다.
+    # 점프컷 리매핑 **전**(원본 시간축)에 부른다: 리매핑하면 들어낸 구간의 쉼이 사라져 편집기 초안(절대초)과
+    # 쉼 표시가 달라지고, 그러면 모델이 다른 줄을 내놓아 미리보기≠결과물이 된다(실측 2026-10-27).
+    built = None
+    if line_builder and rel_words:
+        try:
+            built = line_builder(rel_words, max_units, max_words_per_line)
+        except Exception as exc:  # noqa: BLE001 - 모델 줄 묶기 실패는 휴리스틱으로
+            print(f"[captions] 모델 줄 묶기 실패 → 휴리스틱: {exc}", flush=True)
+            built = None
+    if keep_segments:
+        def _rm(t: float) -> float:
+            return _remap_after_silence_removal(t, keep_segments)
+
+        def _rm_words(ws: list[Word]) -> list[Word]:
+            # 리매핑 후 순간적으로 start==end가 되는(무음 구간에 걸쳐있던) 단어는 아주 살짝 늘려서
+            # 카라오케 \k 지속시간이 0이 되어 깨지는 걸 방지
+            return [Word(start=_rm(w.start), end=max(_rm(w.end), _rm(w.start) + 0.05), text=w.text) for w in ws]
+
+        rel_words = _rm_words(rel_words)
+        if built is not None:
+            built = [
+                CaptionLine(start=_rm(ln.start), end=max(_rm(ln.end), _rm(ln.start) + 0.05), words=_rm_words(ln.words))
+                for ln in built
+            ]
+    if built is not None:
+        lines = _clamp_lines_non_overlap(built)
+        text_fixer = None  # 교정은 줄 묶기와 한 번에 끝났다
+    else:
+        lines = _clamp_lines_non_overlap(
+            chunk_words_into_lines(rel_words, max_words_per_line, max_units=max_units)
+        )
     # 자동 교정(2026-09-29): 줄이 확정된 뒤 텍스트만 1:1로 바꾼다(시간 유지). 바뀐 줄은 글자 수 비례로
     # 단어 시각을 다시 나누고(편집 자막 경로와 같은 방식), 추임새만 남아 빈 줄이 된 것은 뺀다.
     if text_fixer and lines:
@@ -1421,6 +1522,7 @@ def build_ass_for_clip(
     caption_offset_y: float = 0.0,
     caption_overrides: list | None = None,
     text_fixer=None,  # 줄 텍스트 목록 → 교정된 목록(1:1). 렌더 직전 추임새 제거·문맥 교정(src/caption_autofix)
+    line_builder=None,  # 모델 줄 묶기+교정(src/caption_autofix.make_line_builder). None이면 휴리스틱+text_fixer
     font_style: dict | None = None,
     voice_silences: list[tuple[float, float]] | None = None,
     hook_speedup: tuple[float, float] | None = None,
@@ -1467,6 +1569,7 @@ def build_ass_for_clip(
         caption_offset_y=caption_offset_y,
         caption_overrides=caption_overrides,
         text_fixer=text_fixer,
+        line_builder=line_builder,
         title_font_override=fs.get("title_font", ""),
         title_size_override=int(fs.get("title_size", 0) or 0),
         title_align=fs.get("title_align", ""),

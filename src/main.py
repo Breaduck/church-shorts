@@ -2759,17 +2759,31 @@ def render_selected(
                     )
                     clip.start = new_start
                 _sync_keep_ranges(clip, _snap_orig_start, _snap_orig_end)
+            # 구간 가장자리(start/end/점프컷 keep_ranges)를 정밀 단어 경계에 맞춘다 — 자동자막 시각으로 자른
+            # 경계가 단어를 반 토막 내 '번째는'(두 유실)·'있는 것입니다 세'·'뭘로 명의 저자가'가 됐다(2026-10-27).
+            # 사용자가 자른(trimmed) 클립도 같은 처리: 팝업 초안(web_app)도 같은 함수로 맞춰 보여준다.
+            if used_precise:
+                from src.captions import snap_clip_ranges
+
+                _ns, _ne, _nk = snap_clip_ranges(clip, segs)
+                _ok = [list(map(float, r)) for r in (getattr(clip, "keep_ranges", None) or [])]
+                if (_ns, _ne) != (clip.start, clip.end) or _nk != _ok:
+                    _rlog(video_dir, f"clip{idx} 단어 경계 스냅: {clip.start:.2f}~{clip.end:.2f} {_ok} -> {_ns:.2f}~{_ne:.2f} {_nk}")
+                    clip.start, clip.end, clip.keep_ranges = _ns, _ne, _nk
             out_path = video_dir / "clips" / f"short_{idx+1}.mp4"
             out_path.parent.mkdir(parents=True, exist_ok=True)
             # 자막 자동 교정(2026-09-29): 편집 자막이 없는 설교 클립은 whisper 원문이 그대로 구워졌다 — 추임새 제거 +
             # 문맥 교정(Sonnet, 캐시)을 렌더 직전 줄 텍스트에 건다. 임시 속성이라 clips.json엔 안 남는다.
             try:
-                from src.caption_autofix import make_text_fixer
+                from src.caption_autofix import make_line_builder, make_text_fixer
 
                 clip.caption_text_fixer = make_text_fixer(video_dir, clip, cfg, use_model=True)
+                # 정밀 전사일 때만 모델 줄 묶기(자동자막 단어는 시각이 엉터리라 묶어봐야 틀린다)
+                clip.caption_line_builder = make_line_builder(video_dir, clip, cfg, use_model=used_precise)
             except Exception as exc:  # noqa: BLE001 - 교정 준비 실패는 원문 렌더
                 _rlog(video_dir, f"clip{idx} 자막 자동 교정 준비 실패: {exc}")
                 clip.caption_text_fixer = None
+                clip.caption_line_builder = None
             _run_with_progress_ticker(
                 lambda: render_clip(video_path, segs, clip, out_path, cfg["render"], captions_cfg_for_clip(cfg["captions"], clip)),
                 start_pct=base + step * 0.5, end_pct=base + step, progress=progress,

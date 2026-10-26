@@ -1596,6 +1596,73 @@ def _in_clip_keep(clip, start: float, end: float, line: bool = False) -> bool:
     return fn(float(start), float(end), [(float(a), float(b)) for a, b in kr]) is not None
 
 
+def _snapped_clip(clip, segs: list, precise: bool):
+    """렌더(main.render_selected)가 정밀 단어 경계에 맞춘 구간으로 굽듯, 편집기·팝업도 같은 구간으로 본다
+    (captions.snap_clip_ranges). 정밀 전사가 아니면(자동자막 시각) 그대로. 원본 clip은 바꾸지 않는다."""
+    if not precise:
+        return clip
+    import dataclasses
+    from src.captions import snap_clip_ranges
+
+    try:
+        ns, ne, nk = snap_clip_ranges(clip, segs)
+    except Exception:  # noqa: BLE001 - 스냅 실패는 원래 구간
+        return clip
+    ok = [list(map(float, r)) for r in (getattr(clip, "keep_ranges", None) or [])]
+    if (ns, ne) == (clip.start, clip.end) and nk == ok:
+        return clip
+    return dataclasses.replace(clip, start=ns, end=ne, keep_ranges=nk)
+
+
+def _lines_from_words(video_id: str, clip, cfg: dict, words: list, captions_cfg: dict, use_model: bool) -> list[dict]:
+    """단어 목록 → 편집기 자막 줄({start,end,text} 절대초). 렌더(captions.build_ass)와 같은 순서:
+    모델 줄 묶기+교정(정밀 전사일 때) → 실패/비정밀이면 휴리스틱 줄바꿈 + 1:1 텍스트 교정(추임새 제거)."""
+    from src.caption_autofix import make_line_builder, make_text_fixer
+    from src.captions import _display_text, chunk_words_into_lines
+
+    sync_off = float(captions_cfg.get("sync_offset_sec", 0.0) or 0.0)
+    max_wpl = captions_cfg.get("max_words_per_line", 4)
+    # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
+    max_units = _draft_max_units(video_id, clip, cfg, captions_cfg.get("font_size", 72))
+    lines = None
+    try:
+        builder = make_line_builder(OUTPUT_ROOT / video_id, clip, cfg, use_model=use_model)
+        if builder and words:
+            lines = builder(words, max_units, max_wpl)
+    except Exception as exc:  # noqa: BLE001 - 모델 줄 묶기 실패는 휴리스틱
+        print(f"[captions] 초안 모델 줄 묶기 실패(휴리스틱): {exc}", flush=True)
+        lines = None
+    model_built = lines is not None
+    if lines is None:
+        lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
+    out = [
+        {
+            "start": ln.start + sync_off, "end": ln.end + sync_off,
+            "text": " ".join(_display_text(w.text) for w in ln.words),
+        }
+        for ln in lines
+    ]
+    # 각 줄 끝이 다음 줄 시작을 넘지 않게 잘라 자막이 겹쳐 뜨는 걸 막는다(싱크 안정).
+    for i in range(len(out) - 1):
+        if out[i]["end"] > out[i + 1]["start"]:
+            out[i]["end"] = max(out[i]["start"] + 0.3, out[i + 1]["start"] - 0.02)
+    if model_built:
+        return [r for r in out if r["text"].strip()]
+    # 자동 교정(2026-09-29): 렌더(build_ass text_fixer)와 같은 캐시를 읽어 편집기 초안 = 결과물. 정밀 캐시 초안일
+    # 때만 모델을 부르고(자동자막 초안은 렌더 때 어차피 바뀌므로 추임새 제거만), 실패는 원문 유지.
+    try:
+        fixer = make_text_fixer(OUTPUT_ROOT / video_id, clip, cfg, use_model=use_model)
+        if fixer and out:
+            fixed = list(fixer([r["text"] for r in out]))
+            if len(fixed) == len(out):
+                out = [
+                    {**r, "text": ft.strip()} for r, ft in zip(out, fixed) if (ft or "").strip()
+                ]
+    except Exception as exc:  # noqa: BLE001 - 교정 실패는 초안 원문 그대로
+        print(f"[captions] 초안 자동 교정 실패(원문 유지): {exc}", flush=True)
+    return out
+
+
 def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     """자막 편집기에 채워 넣을 자막 라인 목록을 만든다.
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
@@ -1650,6 +1717,9 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     # 고치면 정말 그 한 줄만 달라진다. 캐시가 없으면 예전처럼 자동자막 폴백.
     seg_report: dict = {}
     segs = _segments_for_clip(video_id, clip, cfg, transcript_path, report=seg_report)
+    precise = bool(seg_report.get("precise"))
+    # 렌더와 같은 단어 경계 스냅(점프컷 이음새의 반 토막 단어 제거) — 미리보기 = 결과물.
+    clip = _snapped_clip(clip, segs, precise)
     # 필러 제거 설정도 렌더와 동일하게(예전엔 기본값이라 렌더가 지우는 '그/막/뭐'가 초안에 남았다).
     words = _collect_words_in_range(
         segs, clip.start, clip.end,
@@ -1663,39 +1733,11 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     # 점프컷으로 들어낸 문장의 자막은 초안에서도 뺀다 — 영상엔 없는 말이 자막 목록에 그대로
     # 남아 있었다(실신고 2026-09-27). 렌더(captions.build_ass)도 같은 기준으로 버린다.
     words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]
-    sync_off = float(cfg["captions"].get("sync_offset_sec", 0.0) or 0.0)
-    max_wpl = cfg["captions"].get("max_words_per_line", 4)
-    # 렌더(build_ass)와 같은 '화면 1줄 폭' 규칙으로 잘라, 편집기에서 본 줄이 실제 자막과 일치하게.
     from src.captions import captions_cfg_for_clip
 
-    max_units = _draft_max_units(video_id, clip, cfg, captions_cfg_for_clip(cfg["captions"], clip).get("font_size", 72))
-    lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
-    out = [
-        {
-            "start": ln.start + sync_off, "end": ln.end + sync_off,
-            "text": " ".join(_display_text(w.text) for w in ln.words),
-        }
-        for ln in lines
-    ]
-    # 각 줄 끝이 다음 줄 시작을 넘지 않게 잘라 자막이 겹쳐 뜨는 걸 막는다(싱크 안정).
-    for i in range(len(out) - 1):
-        if out[i]["end"] > out[i + 1]["start"]:
-            out[i]["end"] = max(out[i]["start"] + 0.3, out[i + 1]["start"] - 0.02)
-    # 자동 교정(2026-09-29): 렌더(build_ass text_fixer)와 같은 캐시를 읽어 편집기 초안 = 결과물. 정밀 캐시 초안일
-    # 때만 모델을 부르고(자동자막 초안은 렌더 때 어차피 바뀌므로 추임새 제거만), 실패는 원문 유지.
-    try:
-        from src.caption_autofix import make_text_fixer
-
-        fixer = make_text_fixer(OUTPUT_ROOT / video_id, clip, cfg, use_model=bool(seg_report.get("precise")))
-        if fixer and out:
-            fixed = list(fixer([r["text"] for r in out]))
-            if len(fixed) == len(out):
-                out = [
-                    {**r, "text": ft.strip()} for r, ft in zip(out, fixed) if (ft or "").strip()
-                ]
-    except Exception as exc:  # noqa: BLE001 - 교정 실패는 초안 원문 그대로
-        print(f"[captions] 초안 자동 교정 실패(원문 유지): {exc}", flush=True)
-    return out
+    return _lines_from_words(
+        video_id, clip, cfg, words, captions_cfg_for_clip(cfg["captions"], clip), use_model=precise,
+    )
 
 
 def _preview_caption_text(video_id: str, clip) -> str:
@@ -2200,7 +2242,18 @@ def clip_truth_frame(video_id: str, idx: int):
     if not source.exists():
         return jsonify({"error": "원본 영상이 없습니다"}), 404
     cfg = _load_config()
-    segs = _segments_for_clip(video_id, clip, cfg, video_dir / "transcript.json")
+    _rep: dict = {}
+    segs = _segments_for_clip(video_id, clip, cfg, video_dir / "transcript.json", report=_rep)
+    # 렌더와 같은 단어 경계 스냅 + 모델 줄 묶기(정밀 전사일 때) — '실제 결과'가 진짜 결과와 같게.
+    clip = _snapped_clip(clip, segs, bool(_rep.get("precise")))
+    try:
+        from src.caption_autofix import make_line_builder, make_text_fixer
+
+        clip.caption_text_fixer = make_text_fixer(video_dir, clip, cfg, use_model=bool(_rep.get("precise")))
+        clip.caption_line_builder = make_line_builder(video_dir, clip, cfg, use_model=bool(_rep.get("precise")))
+    except Exception:  # noqa: BLE001 - 교정 준비 실패는 원문 자막
+        pass
+    t = max(clip.start, min(clip.end - 0.05, t))
     # 요청마다 다른 이름: 고정 이름이면 두 요청(탭 두 개, 팝업+스튜디오)이 서로의 ASS/이미지를 덮어썼다.
     out = (video_dir / "clips" / f"_truth_{idx}_{uuid.uuid4().hex[:8]}.jpg").resolve()
     from src.captions import captions_cfg_for_clip
@@ -2398,6 +2451,16 @@ def clip_preview_info(video_id: str, idx: int):
     # 제목 후보: 현재 제목을 맨 앞에 두고 중복 제거해 최대 5개(팝업에서 한눈에 고르게).
     cands = [clip.title] + [t for t in (clip.title_candidates or []) if t and t != clip.title]
     _tz_range, _tz_lines = _teaser_caption_lines(video_id, clip, cfg)
+    # 구간(start/end/keep_ranges)은 렌더가 실제로 굽는 '단어 경계 스냅' 값으로 보여준다 — 팝업 미리보기와
+    # 자막 초안(_caption_lines_for_clip도 같은 스냅)이 결과물과 같게. 저장은 사용자가 구간을 바꿨을 때만 간다.
+    _view = clip
+    try:
+        if tp.exists():
+            _rep: dict = {}
+            _segs = _segments_for_clip(video_id, clip, cfg, tp, report=_rep)
+            _view = _snapped_clip(clip, _segs, bool(_rep.get("precise")))
+    except Exception:  # noqa: BLE001 - 스냅 실패는 저장된 구간 그대로
+        _view = clip
     return jsonify({
         "layout": layout,
         "clip": {
@@ -2407,9 +2470,9 @@ def clip_preview_info(video_id: str, idx: int):
             # 렌더가 맨 앞에 붙이는 콜드 오픈 티저(절대초) — 미리보기도 먼저 틀어 결과와 같게.
             "teaser_range": _tz_range,  # 정밀 단어 시각에 맞춘 구간(저장 시 이 구간으로 확정)
             "teaser_captions": _tz_lines,
-            "start": clip.start,
-            "end": clip.end,
-            "keep_ranges": (getattr(clip, "keep_ranges", None) or []),
+            "start": _view.start,
+            "end": _view.end,
+            "keep_ranges": (getattr(_view, "keep_ranges", None) or []),
             "title_offset_x": clip.title_offset_x,
             "title_offset_y": clip.title_offset_y,
             "title_size": getattr(clip, "title_size", 0) or 0,
@@ -2609,6 +2672,8 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
         from src.captions import captions_cfg_for_clip
 
         captions_cfg = captions_cfg_for_clip(cfg["captions"], clip)
+        precise = segs is not base_segs
+        clip = _snapped_clip(clip, segs, precise)  # 렌더와 같은 단어 경계 스냅
         words = _collect_words_in_range(
             segs, clip.start, clip.end,
             strip_filler=captions_cfg.get("strip_filler", True),
@@ -2617,20 +2682,8 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
         # 처음 렌더와 같은 시간축(무음 보정 + 전역 오프셋)으로 초안을 만든다(_caption_lines_for_clip 주석).
         words = _voice_corrected_words(words, video_id, clip.start, clip.end)
         words = [w for w in words if _in_clip_keep(clip, w.start, w.end)]  # 점프컷 들어낸 곳 제외
-        sync_off = float(captions_cfg.get("sync_offset_sec", 0.0) or 0.0)
-        max_wpl = captions_cfg.get("max_words_per_line", 4)
-        max_units = _draft_max_units(video_id, clip, cfg, captions_cfg.get("font_size", 72))
-        lines = chunk_words_into_lines(words, max_wpl, max_units=max_units)
-        out = [
-            {
-                "start": ln.start + sync_off, "end": ln.end + sync_off,
-                "text": " ".join(_display_text(x.text) for x in ln.words),
-            }
-            for ln in lines
-        ]
-        for i in range(len(out) - 1):
-            if out[i]["end"] > out[i + 1]["start"]:
-                out[i]["end"] = max(out[i]["start"] + 0.3, out[i + 1]["start"] - 0.02)
+        # 렌더와 같은 순서(모델 줄 묶기+교정 → 폴백 휴리스틱)로 줄을 만든다 — 예전엔 재전사 초안만 휴리스틱이었다.
+        out = _lines_from_words(video_id, clip, cfg, words, captions_cfg, use_model=precise)
         if not out:
             raise RuntimeError("정밀 재전사 결과가 비었습니다 (무음 구간이거나 인식 실패)")
         _retrans_jobs[key] = {"running": False, "error": None, "lines": out}
