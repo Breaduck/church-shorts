@@ -11,9 +11,11 @@
 """
 from __future__ import annotations
 
-# 현행 세대 (2026-09 기준)
-ANALYSIS_MODEL = "claude-opus-5"      # 하이라이트/찬양 선정 — 판단 품질 우선
-EXECUTION_MODEL = "claude-sonnet-5"   # 자막 교정·영어 번역·가사 정리 — 지시 수행, 속도/비용 우선
+# 현행 세대 (2026-10-27 기준). 사용자 결정(2026-10-27): "만드는 거랑 싹 다 오푸스 5.5" —
+# 분석/선정뿐 아니라 자막 줄 묶기·교정·번역·가사·제목·채점(예전 Sonnet 자리)도 전부 Opus 5.5.
+# EXECUTION_MODEL 이름은 호출부 호환용으로 남겨 두고 같은 모델을 가리킨다.
+ANALYSIS_MODEL = "claude-opus-5-5"    # 하이라이트/찬양 선정 — 판단 품질 우선
+EXECUTION_MODEL = "claude-opus-5-5"   # 자막 줄 묶기·교정·영어 번역·가사 정리·제목·채점
 PREMIUM_MODEL = "claude-fable-5-1"    # 가장 비싸고 강한 모델. 사용자가 명시적으로 고를 때만.
 
 # UI가 모델을 지정해 보낼 때 허용할 값. 여기 없는 값은 무시하고 config 기본값을 쓴다
@@ -21,6 +23,7 @@ PREMIUM_MODEL = "claude-fable-5-1"    # 가장 비싸고 강한 모델. 사용�
 # 직전 세대도 남겨둔다: 예전 clips.json/북마크한 요청이 그대로 들어와도 거부되지 않게.
 ALLOWED_MODELS = frozenset({
     ANALYSIS_MODEL, EXECUTION_MODEL, PREMIUM_MODEL,
+    "claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-5",
     "claude-opus-4-8", "claude-sonnet-4-5", "claude-fable-5",  # 직전 세대(하위호환)
 })
 

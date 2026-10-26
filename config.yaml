@@ -89,7 +89,7 @@ highlights:
   # 검증(핵심 문장 포함·미완 끝 확장·구조 표지 제거·길이) → 실제 대사 채점(score_model, Sonnet).
   # "v1" = 예전 단일 프롬프트(highlights.build_prompt). v2가 예외로 실패하면 자동으로 v1 폴백.
   engine: "v2"
-  score_model: "sonnet"          # v2 2차 채점 패스 모델(판단은 1차가 끝냈으므로 빠른 모델)
+  score_model: "opus"            # v2 2차 채점 패스 모델(2026-10-27 사용자 결정: 전부 Opus 5.5)
   score_thinking_tokens: 1024
   # 선정 시 '생각(thinking)' 토큰 상한 = 대기시간에 직결(실측: thinking 1k ≈ 20~30초).
   # 2048로 깎았더니 "제목이 밋밋하고 인사이트가 없다"는 품질 불만이 실제로 터짐(2026-09-02).
@@ -281,7 +281,7 @@ captions:
   # ("한글릇"→"한 걸음", "성리"→"승리", 추임새 제거). 결과는 output/<id>/caption_fix_cache.json에 캐시돼 같은 초안엔
   # 재호출 없음. 편집기 초안도 같은 캐시를 읽어 미리보기=결과물. 끄면 추임새 제거(결정론)만 남는다.
   auto_correct: true
-  auto_correct_model: ""        # 비우면 실행 모델(Sonnet). 분석 모델(opus)로 올릴 필요 없음.
+  auto_correct_model: ""        # 비우면 실행 모델(src/models.py EXECUTION_MODEL = 현재 Opus 5.5)
   position: "bottom"            # "bottom" | "center" (card 레이아웃에서는 무시되고 영상 박스 아래 캡션 영역에 고정)
   # 자막 전역 싱크 오프셋(초). 유튜브 자동자막 단어 시각은 전반적으로 0.2~0.5초 이른
   # '상시 리드'가 있는데 무음 교정(긴 쉼만 잡음)으로는 안 잡힌다 → 표시 시각을 통째로
