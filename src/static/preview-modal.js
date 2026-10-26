@@ -161,11 +161,15 @@
   .pv-caprows.selmode .pv-cap-sel { display: block; }
   .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
   .pv-caprow { display: flex; gap: 6px; align-items: center; }
-  .pv-cap-tz { flex: 0 0 auto; padding: 3px 8px; font-size: 11px; font-weight: 700; color: #1b64da;
-    background: #fff; border-radius: 999px; box-shadow: 0 1px 4px rgba(0,0,0,.12); white-space: nowrap; }
-  .pv-caprow:not(.tz) .pv-cap-tz { display: none; }
-  .pv-tznote { margin: 0 0 8px; padding: 8px 12px; font-size: 12.5px; line-height: 1.45; color: #1b64da;
-    background: #f0f6ff; border-radius: 12px; }
+  .pv-tzsec { margin: 0 0 12px; padding: 10px 12px; background: #f0f6ff; border-radius: 14px; }
+  .pv-tzsec[hidden] { display: none; }
+  .pv-tzhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; color: #1b64da; }
+  .pv-tzhead b { font-size: 13px; }
+  .pv-tzplay, .pv-tzadd { flex: 0 0 auto; padding: 5px 12px; font-size: 12px; font-weight: 700; font-family: inherit;
+    border: none; background: #fff; color: #1b64da; border-radius: 999px; cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,.14); }
+  .pv-tzplay { margin-left: auto; }
+  .pv-tzrows { display: flex; flex-direction: column; gap: 6px; }
   /* input[type=number]/[type=text]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가
      필요해 .pv-caprow input.pv-cap-*로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
   .pv-caprow input.pv-cap-start, .pv-caprow input.pv-cap-end {
@@ -289,7 +293,12 @@
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
       '    </div>' +
-      '    <div class="pv-tznote" hidden></div>' +
+      '    <div class="pv-tzsec" hidden>' +
+      '      <div class="pv-tzhead"><b>맨 앞 티저 자막</b><span class="pv-tzlen"></span>' +
+      '        <button type="button" class="pv-tzplay" title="맨 앞 티저 구간만 재생">▶ 티저 재생</button>' +
+      '        <button type="button" class="pv-tzadd">+ 줄</button></div>' +
+      '      <div class="pv-tzrows"></div>' +
+      '    </div>' +
       '    <div class="pv-caprows"></div>' +
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
@@ -527,7 +536,7 @@
     // 티저를 먼저 틀어야 결과 영상과 같다(2026-10-25 실신고 "영상 추출된 것도 다르다").
     const teaser = (C.teaser_range && C.teaser_range.length >= 2 && C.teaser_range[1] > C.teaser_range[0])
       ? { s: C.teaser_range[0], e: C.teaser_range[1] } : null;
-    let inTeaser = false;
+    let inTeaser = false, teaserOnly = false;
     playBtn.addEventListener('click', () => {
       if (video.paused) {
         const inSeg = segs.some((sg) => video.currentTime >= sg.s - 0.05 && video.currentTime < sg.e - 0.05);
@@ -544,6 +553,7 @@
       if (inTeaser) {
         if (t >= teaser.s - 0.05 && t < teaser.e) return;  // 티저 재생 중
         inTeaser = false;
+        if (teaserOnly) { teaserOnly = false; video.pause(); video.currentTime = teaser.s; playBtn.classList.remove('hidden'); return; }
         if (!video.paused) { video.currentTime = segs[0].s; return; }  // 티저 끝 → 본편 처음부터
       }
       for (let i = 0; i < segs.length; i++) { if (t >= segs[i].s - 0.05 && t < segs[i].e) return; }  // 아직 조각 안
@@ -781,7 +791,7 @@
         el.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
       });
     });
-    function addCapRow(startRel, endRel, text) {
+    function addCapRow(startRel, endRel, text, box) {
       const row = document.createElement('div');
       row.className = 'pv-caprow';
       row.innerHTML =
@@ -798,15 +808,43 @@
       const textEl = row.querySelector('.pv-cap-text');
       textEl.value = text || '';
       if (chosenCaptionFont) textEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
-      // 콜드 오픈 티저는 별도 자막이 아니라 본편 속 같은 줄을 맨 앞에 한 번 더 트는 것 — 그 줄에 표시만 한다.
-      if (teaser && C.start + endRel > teaser.s + 0.05 && C.start + startRel < teaser.e - 0.05) row.classList.add('tz');
-      capRowsBox.appendChild(row);
+      (box || capRowsBox).appendChild(row);
     }
+    // ── 맨 앞 콜드 오픈 티저 자막: 본편과 따로 고친다(시각은 티저 시작 기준 0초~). 2026-10-26 실신고
+    // "죄는 어떻게 사함받아요?가 '어떻게 사함받아요? 몸이'로 나온다" — 본편 줄을 경계에서 자르던 방식 폐기.
+    const tzRowsBox = $('.pv-tzrows');
     if (teaser) {
-      const tzNote = $('.pv-tznote');
-      tzNote.textContent = '맨 앞 콜드 오픈(티저 ' + (teaser.e - teaser.s).toFixed(1) + '초)은 본편 속 대사를 한 번 더 트는 것이라 '
-        + '자막도 따로 없고, 아래 ‘맨 앞에도’ 표시된 줄이 그대로 쓰입니다. 그 줄을 고치면 티저와 본편이 함께 바뀝니다.';
-      tzNote.hidden = false;
+      $('.pv-tzsec').hidden = false;
+      capSec.classList.remove('hidden');   // 티저 자막이 있다는 걸 바로 보이게
+      $('.pv-tzlen').textContent = '영상 맨 앞 ' + (teaser.e - teaser.s).toFixed(1) + '초';
+      (info.teaser_captions || []).forEach((c) => addCapRow(c.start - teaser.s, c.end - teaser.s, c.text, tzRowsBox));
+      $('.pv-tzadd').addEventListener('click', () => {
+        const rows = tzRowsBox.querySelectorAll('.pv-caprow');
+        const s0 = rows.length ? (parseFloat(rows[rows.length - 1].querySelector('.pv-cap-end').value) || 0) : 0;
+        addCapRow(s0, Math.min(teaser.e - teaser.s, s0 + 2), '', tzRowsBox);
+      });
+      $('.pv-tzplay').addEventListener('click', () => {
+        inTeaser = true; teaserOnly = true;
+        video.currentTime = teaser.s; video.play(); playBtn.classList.add('hidden');
+      });
+      tzRowsBox.addEventListener('click', (e) => {
+        if (e.target.classList.contains('pv-cap-del')) e.target.closest('.pv-caprow').remove();
+      });
+    }
+    function collectTeaserCaptions() {
+      if (!teaser) return [];
+      return [...tzRowsBox.querySelectorAll('.pv-caprow')].map((r) => {
+        const exact = (el, raw) => {
+          const v = parseFloat(el.value), x = parseFloat(raw);
+          return (!isNaN(x) && !isNaN(v) && el.value === x.toFixed(1)) ? x : v;
+        };
+        const s0 = exact(r.querySelector('.pv-cap-start'), r.dataset.s);
+        const e0 = exact(r.querySelector('.pv-cap-end'), r.dataset.e);
+        return {
+          start: teaser.s + (isNaN(s0) ? 0 : s0), end: teaser.s + (isNaN(e0) ? 0 : e0),
+          text: r.querySelector('.pv-cap-text').value,
+        };
+      }).filter((c) => c.text.trim());
     }
 
     // ── 자막 줄 선택 모드: 체크박스로 여러 줄 골라 병합(최대 4개)·삭제 ──
@@ -1200,12 +1238,13 @@
     // ── 되돌리기(Ctrl+Z) / 다시 실행(Ctrl+Shift+Z·Ctrl+Y) ──
     // 팝업에서 바꿀 수 있는 것 전부(구간 조각·제목·위치·크기·자막 줄·글꼴·배속·강조·영어 트랙)를
     // 통째로 스냅숏해 둔다. 조작이 끝날 때마다(손 뗌·클릭·입력 멈춤·자막 줄 교체) 바뀌었으면 한 단계로 쌓는다.
+    const rowsOf = (box) => [...box.querySelectorAll('.pv-caprow')].map((r) => [
+      r.dataset.s, r.dataset.e, r.querySelector('.pv-cap-start').value,
+      r.querySelector('.pv-cap-end').value, r.querySelector('.pv-cap-text').value]);
     function snap() {
       return JSON.stringify({
         segs, activeSeg, title: chosenTitle, st: state,
-        rows: [...capRowsBox.querySelectorAll('.pv-caprow')].map((r) => [
-          r.dataset.s, r.dataset.e, r.querySelector('.pv-cap-start').value,
-          r.querySelector('.pv-cap-end').value, r.querySelector('.pv-cap-text').value]),
+        rows: rowsOf(capRowsBox), tz: rowsOf(tzRowsBox),
         speed: speedSel.value, font: chosenCaptionFont, kar: capKaraoke, hl: capHighlights, en: capOverridesEn,
       });
     }
@@ -1235,12 +1274,14 @@
       if (d.font !== chosenCaptionFont) { capFontSel.value = d.font; capFontSel.dispatchEvent(new Event('change')); }
       capKaraoke = d.kar; if (isUploadPraise) renderKaraokeBtn();
       capHighlights = d.hl; capOverridesEn = d.en;
-      capRowsBox.innerHTML = '';
-      d.rows.forEach(([ds, de, sv, ev, tx]) => {
-        addCapRow(parseFloat(ds) || 0, parseFloat(de) || 0, tx);
-        const r = capRowsBox.lastElementChild;
-        r.dataset.s = ds; r.dataset.e = de;
-        r.querySelector('.pv-cap-start').value = sv; r.querySelector('.pv-cap-end').value = ev;
+      [[capRowsBox, d.rows], [tzRowsBox, d.tz]].forEach(([box, rows]) => {
+        box.innerHTML = '';
+        rows.forEach(([ds, de, sv, ev, tx]) => {
+          addCapRow(parseFloat(ds) || 0, parseFloat(de) || 0, tx, box);
+          const r = box.lastElementChild;
+          r.dataset.s = ds; r.dataset.e = de;
+          r.querySelector('.pv-cap-start').value = sv; r.querySelector('.pv-cap-end').value = ev;
+        });
       });
       capsDirty = true;
       lastSnap = json;
@@ -1260,6 +1301,7 @@
     back.addEventListener('input', () => recordSoon(600), true);   // 타자는 멈춘 뒤 한 단계로 묶는다
     // 꼼꼼 재분석·싱크·AI 교정·가사처럼 나중에 자막 줄을 통째로 갈아끼우는 작업도 한 단계로 잡는다
     new MutationObserver(() => recordSoon(50)).observe(capRowsBox, { childList: true });
+    new MutationObserver(() => recordSoon(50)).observe(tzRowsBox, { childList: true });
     titleTxt.addEventListener('blur', () => setTimeout(record, 0));
     function onUndoKey(e) {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -1303,6 +1345,7 @@
       payload.caption_karaoke = capKaraoke;
       payload.caption_highlights = capHighlights;
       payload.caption_overrides_en = capOverridesEn;
+      if (teaser) { payload.teaser_range = [teaser.s, teaser.e]; payload.teaser_captions = collectTeaserCaptions(); }
       payload.playback_speed = parseFloat(speedSel.value) || 1;
       const outS = segs[0].s, outE = segs[segs.length - 1].e;
       // 저장된 조각(keep_ranges)과 비교한다 — 예전엔 조각이 2개 이상이면 무조건 '바뀜'이라 선정이 만든

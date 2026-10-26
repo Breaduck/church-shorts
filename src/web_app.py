@@ -1918,6 +1918,30 @@ def _save_clip_position_locked(clips_path: Path, idx: int):
                 "track": max(0, int(_num(t.get("track")))),
             })
         clip.free_texts = sorted(_ft, key=lambda o: (o["track"], o["start"]))
+    # 맨 앞 콜드 오픈 티저: 팝업이 정밀 단어 시각에 맞춘 구간(원래 구간 ±2초 안, 0.5~15초만 받음).
+    if "teaser_range" in body and getattr(clip, "teaser_range", None):
+        try:
+            _a, _b = (float(x) for x in (body.get("teaser_range") or [])[:2])
+            _oa, _ob = (float(x) for x in clip.teaser_range[:2])
+            if 0.5 <= _b - _a <= 15.0 and abs(_a - _oa) <= 2.0 and abs(_b - _ob) <= 2.0:
+                clip.teaser_range = [round(_a, 3), round(_b, 3)]
+        except (TypeError, ValueError):
+            pass
+    # 맨 앞 콜드 오픈 티저 전용 자막(절대초). 티저 구간 밖으로 나간 부분은 잘라 둔다.
+    if "teaser_captions" in body:
+        _tr = getattr(clip, "teaser_range", None) or []
+        _tc = []
+        if len(_tr) >= 2:
+            _ts, _te = float(_tr[0]), float(_tr[1])
+            for c in (body.get("teaser_captions") or []):
+                try:
+                    a, b = max(_ts, float(c["start"])), min(_te, float(c["end"]))
+                except (TypeError, ValueError, KeyError):
+                    continue
+                txt = str(c.get("text", "")).strip()
+                if txt and b - a > 0.05:
+                    _tc.append({"start": round(a, 3), "end": round(b, 3), "text": txt})
+        clip.teaser_captions = sorted(_tc, key=lambda o: o["start"])
     # 영어 자막 트랙(번역). 한국어는 그대로 두고 별도 저장 → 렌더 옵션으로 전환.
     if "caption_overrides_en" in body:
         clip.caption_overrides_en = sorted(
@@ -2273,6 +2297,34 @@ def audio_peaks(video_id: str):
     return jsonify(data)
 
 
+def _teaser_caption_lines(video_id: str, clip, cfg: dict) -> tuple[list, list[dict]]:
+    """만들기 팝업 '맨 앞 티저 자막' 초안 → (티저 구간, 자막 줄들) 둘 다 절대초.
+    저장된 게 있으면 그대로. 없으면 구간을 정밀 전사 단어 시각에 맞추고(render.snap_teaser_range)
+    그 구간만의 단어로 새로 짠다 — 본편 줄을 경계에서 자르면 앞 단어가 빠지고 뒷 단어가 섞였다(2026-10-26)."""
+    tr = list(getattr(clip, "teaser_range", None) or [])
+    if len(tr) < 2:
+        return [], []
+    if getattr(clip, "teaser_captions", None):
+        return tr, [dict(o) for o in clip.teaser_captions]
+    import dataclasses
+    from src.render import snap_teaser_range
+    try:
+        tp = OUTPUT_ROOT / video_id / "transcript.json"
+        if tp.exists():
+            _rep: dict = {}
+            _segs = _segments_for_clip(video_id, clip, cfg, tp, report=_rep)
+            if _rep.get("precise"):  # 자동자막(롤링) 단어 시각은 엉터리라 맞추면 오히려 틀어진다
+                tr = list(snap_teaser_range(float(tr[0]), float(tr[1]), _segs))
+        t_clip = dataclasses.replace(
+            clip, start=float(tr[0]), end=float(tr[1]), keep_ranges=[], teaser_range=[],
+            caption_overrides=[], teaser_captions=[],
+        )
+        return tr, _caption_lines_for_clip(video_id, t_clip, cfg)
+    except Exception:  # noqa: BLE001 - 초안 실패 시 빈 칸(사용자가 직접 입력)
+        traceback.print_exc()
+        return tr, []
+
+
 @app.route("/video/<video_id>/clip/<int:idx>/preview_info")
 def clip_preview_info(video_id: str, idx: int):
     """'만들기 전 확인' 팝업이 쓰는 클립·레이아웃 정보 JSON (편집 페이지와 같은 계산을 재사용)."""
@@ -2324,6 +2376,7 @@ def clip_preview_info(video_id: str, idx: int):
 
     # 제목 후보: 현재 제목을 맨 앞에 두고 중복 제거해 최대 5개(팝업에서 한눈에 고르게).
     cands = [clip.title] + [t for t in (clip.title_candidates or []) if t and t != clip.title]
+    _tz_range, _tz_lines = _teaser_caption_lines(video_id, clip, cfg)
     return jsonify({
         "layout": layout,
         "clip": {
@@ -2331,7 +2384,8 @@ def clip_preview_info(video_id: str, idx: int):
             "title": clip.title,
             "title_candidates": cands[:5],
             # 렌더가 맨 앞에 붙이는 콜드 오픈 티저(절대초) — 미리보기도 먼저 틀어 결과와 같게.
-            "teaser_range": list(getattr(clip, "teaser_range", None) or []),
+            "teaser_range": _tz_range,  # 정밀 단어 시각에 맞춘 구간(저장 시 이 구간으로 확정)
+            "teaser_captions": _tz_lines,
             "start": clip.start,
             "end": clip.end,
             "keep_ranges": (getattr(clip, "keep_ranges", None) or []),

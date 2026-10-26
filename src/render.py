@@ -382,6 +382,37 @@ def _append_outro(output_path: Path, outro_path: Path) -> None:
         tmp_path.unlink(missing_ok=True)  # replace 성공 시 이미 없음; 실패 시 잔여물 정리
 
 
+def snap_teaser_range(ts: float, te: float, segments: list) -> tuple[float, float]:
+    """티저 구간을 실제 단어 시각(정밀 전사)에 맞춘다. 선정은 유튜브 자동자막 문장 경계로 티저를 잡아서
+    0.3~0.5초씩 어긋났다 — 실측 2026-10-26: [449.44, 452.04]인데 실제 "죄를 어떻게 사함받아요?"는
+    449.09~451.14 → 첫 단어 '죄를'이 잘리고 다음 문장 '몸이'가 섞였다.
+    시작: 구간에 걸친 첫 단어의 시작까지 당긴다. 끝: 원래 끝 근처(+1초 이내)의 마지막 문장부호 단어 끝."""
+    words = sorted(
+        (w for s in (segments or []) for w in (getattr(s, "words", None) or [])
+         if w.end > ts - 2.0 and w.start < te + 2.0 and w.end - w.start <= 1.6),  # 롤링 자동자막의 몇 초짜리 가짜 단어 제외
+        key=lambda w: w.start,
+    )
+    inside = [w for w in words if w.end > ts + 0.05 and w.start < te - 0.05]
+    if not inside:
+        return ts, te
+    first = inside[0]
+    prev = [w for w in words if w.end <= first.start + 0.01]
+    ns = min(ts, first.start - 0.05)
+    if prev:
+        ns = max(ns, prev[-1].end)
+    ends = [w for w in words if w.start >= first.start and w.end <= te + 1.0
+            and (w.text or "").strip()[-1:] in ".?!" and w.end - ns >= 1.0]
+    if ends:
+        last = ends[-1]
+        nxt = [w for w in words if w.start >= last.end - 0.01 and w is not last]
+        ne = last.end + 0.15
+        if nxt:
+            ne = min(ne, nxt[0].start)
+    else:
+        ne = te
+    return (round(ns, 3), round(ne, 3)) if 0.5 <= ne - ns <= 15.0 else (ts, te)
+
+
 def _prepend_teaser(
     video_path: Path, segments: list, clip: Clip, output_path: Path,
     render_cfg: dict, captions_cfg: dict, encoder: str,
@@ -395,8 +426,13 @@ def _prepend_teaser(
     ts, te = float(tr[0]), float(tr[1])
     if not (0.5 <= te - ts <= 15.0):
         return 0.0
-    ovs = getattr(clip, "caption_overrides", None) or None
-    if ovs:  # 편집 자막은 절대초 — 티저 구간에 걸친 줄만 구간 안으로 잘라 넘긴다
+    # 티저 자막: 팝업 '맨 앞 티저 자막'에서 확정한 것을 그대로 쓴다. 없으면 편집 자막을 잘라 쓰지 않고
+    # 전사 단어로 구간을 새로 짠다 — 본편 줄을 경계에서 자르면 줄 전체 글자가 남아 "어떻게 사함받아요? 몸이"처럼
+    # 앞 단어가 빠지고 뒷 단어가 섞였다(2026-10-26 실신고).
+    ovs = getattr(clip, "teaser_captions", None) or None
+    if not ovs:  # 팝업에서 확정 안 한 티저: 구간을 실제 단어 시각에 맞춘다(팝업에서 확정했으면 이미 맞춘 구간이 저장됨)
+        ts, te = snap_teaser_range(ts, te, segments)
+    if ovs:  # 절대초 — 혹시 구간 밖으로 나간 줄은 구간 안으로 잘라 넘긴다
         ovs = [dict(o, start=max(ts, float(o["start"])), end=min(te, float(o["end"])))
                for o in ovs if float(o["end"]) > ts + 0.05 and float(o["start"]) < te - 0.05]
     en = getattr(clip, "caption_overrides_en", None) or None

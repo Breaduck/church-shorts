@@ -153,6 +153,9 @@ class Clip:
     # 콜드 오픈 티저(절대초 [start,end]): 영상 맨 앞에 미리 한 번 틀어 줄 펀치 대사. 본편 제자리에서도 다시 나온다.
     # 나열형 교훈 컷이 만든다(sermon_cut._enum_teaser, 2026-10-04). 비어 있으면 티저 없음.
     teaser_range: list = field(default_factory=list)
+    # 티저 전용 자막({start,end,text}, 절대초·teaser_range 안). 만들기 팝업의 '맨 앞 티저 자막'에서 따로 고친다
+    # (2026-10-26 "맨 앞 자막도 수정할 수 있게"). 비어 있으면 렌더가 본편 자막을 티저 구간으로 잘라 쓴다.
+    teaser_captions: list = field(default_factory=list)
     # 첫째·둘째·셋째 나열형 교훈 컷: 나열의 항목 수(2~5)와 이 컷이 몇 번째 항목인지(1~). 아니면 0.
     # 항목마다 쇼츠 한 편(2026-10-04). 후보 카드 표시와 맨 앞 정렬에 쓴다.
     enum_items: int = 0
