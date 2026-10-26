@@ -1684,9 +1684,10 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
         # 비언어 표기([한숨]·[웃음]…)도 렌더가 걷어내므로 여기서도 같이 걷어낸다 —
         # 이미 저장된 caption_overrides에 박혀 있는 경우까지 덮는다(2026-09-23).
         # 추임새 토큰("응." "어")도 렌더(_lines_from_overrides)와 같이 걷어낸다(2026-09-29).
-        cleaned = strip_filler_tokens_text(
-            _clean_word_text(text), bool(cfg["captions"].get("aggressive_filler", False)),
-        )
+        # 저장된 줄은 사람이 확정한 글자다 — 렌더(_lines_from_overrides)처럼 순수 추임새만 걷고 '그'·'막' 같은
+        # 공격적 제거는 하지 않는다. 예전엔 여기서만 공격적으로 지워 사용자가 넣은 '그 코에'가 팝업에선 '코에'로
+        # 보였고, 다시 저장하면 영구히 사라졌다(2026-10-27).
+        cleaned = strip_filler_tokens_text(_clean_word_text(text))
         return " ".join(_display_text(w) for w in cleaned.split())
 
     if getattr(clip, "caption_overrides", None):
@@ -2389,6 +2390,17 @@ def _teaser_caption_lines(video_id: str, clip, cfg: dict) -> tuple[list, list[di
             _segs = _segments_for_clip(video_id, clip, cfg, tp, report=_rep)
             if _rep.get("precise"):  # 자동자막(롤링) 단어 시각은 엉터리라 맞추면 오히려 틀어진다
                 tr = list(snap_teaser_range(float(tr[0]), float(tr[1]), _segs))
+        # 1순위: 본편 자막(확정본 또는 모델 교정 초안) 중 티저 구간에 든 줄을 그대로 쓴다 — 티저만 따로 짜면
+        # 교정 없이 '주시고 코에 / 하나님의 생기를'처럼 본편과 다른 틀린 글자가 나왔다(2026-10-27 실신고).
+        # 구간이 단어 경계에 맞춰져 있으므로 줄 중간점이 구간 안인 줄만 고르면 앞뒤 문장이 섞이지 않는다.
+        ts, te = float(tr[0]), float(tr[1])
+        body = [r for r in _caption_lines_for_clip(video_id, clip, cfg)
+                if ts <= (float(r["start"]) + float(r["end"])) / 2 <= te]
+        if body:
+            return tr, [
+                {"start": round(max(ts, float(r["start"])), 3), "end": round(min(te, float(r["end"])), 3), "text": r["text"]}
+                for r in body if min(te, float(r["end"])) - max(ts, float(r["start"])) > 0.05
+            ]
         t_clip = dataclasses.replace(
             clip, start=float(tr[0]), end=float(tr[1]), keep_ranges=[], teaser_range=[],
             caption_overrides=[], teaser_captions=[],

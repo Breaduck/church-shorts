@@ -389,7 +389,9 @@ def snap_teaser_range(ts: float, te: float, segments: list) -> tuple[float, floa
     시작: 구간에 걸친 첫 단어의 시작까지 당긴다. 끝: 원래 끝 근처(+1초 이내)의 마지막 문장부호 단어 끝."""
     words = sorted(
         (w for s in (segments or []) for w in (getattr(s, "words", None) or [])
-         if w.end > ts - 2.0 and w.start < te + 2.0 and w.end - w.start <= 1.6),  # 롤링 자동자막의 몇 초짜리 가짜 단어 제외
+         # 롤링 자동자막의 몇 초짜리 가짜 단어 제외. 1.6이었을 때 쉼을 삼킨 정밀 단어('사람을' 1.72초)까지 빠져
+         # 티저가 그 단어 중간에서 시작했다(2026-10-27 "주시고 코에"로 시작하는 티저 신고) → 2.5.
+         if w.end > ts - 2.0 and w.start < te + 2.0 and w.end - w.start <= 2.5),
         key=lambda w: w.start,
     )
     inside = [w for w in words if w.end > ts + 0.05 and w.start < te - 0.05]
