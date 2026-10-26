@@ -161,6 +161,11 @@
   .pv-caprows.selmode .pv-cap-sel { display: block; }
   .pv-caprows { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; padding: 2px; }
   .pv-caprow { display: flex; gap: 6px; align-items: center; }
+  .pv-cap-tz { flex: 0 0 auto; padding: 3px 8px; font-size: 11px; font-weight: 700; color: #1b64da;
+    background: #fff; border-radius: 999px; box-shadow: 0 1px 4px rgba(0,0,0,.12); white-space: nowrap; }
+  .pv-caprow:not(.tz) .pv-cap-tz { display: none; }
+  .pv-tznote { margin: 0 0 8px; padding: 8px 12px; font-size: 12.5px; line-height: 1.45; color: #1b64da;
+    background: #f0f6ff; border-radius: 12px; }
   /* input[type=number]/[type=text]의 전역 width:100%(BASE_STYLE)보다 상위 명시도가
      필요해 .pv-caprow input.pv-cap-*로 부모+태그+클래스 조합을 쓴다(단일 클래스는 짐). */
   .pv-caprow input.pv-cap-start, .pv-caprow input.pv-cap-end {
@@ -284,6 +289,7 @@
       '      <button type="button" class="pv-capsel-merge" hidden>병합</button>' +
       '      <button type="button" class="pv-capsel-del" hidden>삭제</button>' +
       '    </div>' +
+      '    <div class="pv-tznote" hidden></div>' +
       '    <div class="pv-caprows"></div>' +
       '    <button type="button" class="pv-capadd">+ 자막 줄 추가</button>' +
       '  </div>' +
@@ -783,6 +789,7 @@
         '<input type="number" class="pv-cap-start" step="0.1">' +
         '<input type="number" class="pv-cap-end" step="0.1">' +
         '<input type="text" class="pv-cap-text">' +
+        '<span class="pv-cap-tz" title="이 줄은 영상 맨 앞 콜드 오픈(티저)에도 한 번 더 나옵니다. 여기서 고치면 티저·본편 둘 다 바뀝니다">맨 앞에도</span>' +
         '<button type="button" class="pv-cap-del" title="삭제">&times;</button>';
       row.querySelector('.pv-cap-start').value = startRel.toFixed(1);
       row.querySelector('.pv-cap-end').value = endRel.toFixed(1);
@@ -791,7 +798,15 @@
       const textEl = row.querySelector('.pv-cap-text');
       textEl.value = text || '';
       if (chosenCaptionFont) textEl.style.fontFamily = "'" + chosenCaptionFont + "', sans-serif";
+      // 콜드 오픈 티저는 별도 자막이 아니라 본편 속 같은 줄을 맨 앞에 한 번 더 트는 것 — 그 줄에 표시만 한다.
+      if (teaser && C.start + endRel > teaser.s + 0.05 && C.start + startRel < teaser.e - 0.05) row.classList.add('tz');
       capRowsBox.appendChild(row);
+    }
+    if (teaser) {
+      const tzNote = $('.pv-tznote');
+      tzNote.textContent = '맨 앞 콜드 오픈(티저 ' + (teaser.e - teaser.s).toFixed(1) + '초)은 본편 속 대사를 한 번 더 트는 것이라 '
+        + '자막도 따로 없고, 아래 ‘맨 앞에도’ 표시된 줄이 그대로 쓰입니다. 그 줄을 고치면 티저와 본편이 함께 바뀝니다.';
+      tzNote.hidden = false;
     }
 
     // ── 자막 줄 선택 모드: 체크박스로 여러 줄 골라 병합(최대 4개)·삭제 ──
