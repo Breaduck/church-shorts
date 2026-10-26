@@ -799,7 +799,6 @@
         '<input type="number" class="pv-cap-start" step="0.1">' +
         '<input type="number" class="pv-cap-end" step="0.1">' +
         '<input type="text" class="pv-cap-text">' +
-        '<span class="pv-cap-tz" title="이 줄은 영상 맨 앞 콜드 오픈(티저)에도 한 번 더 나옵니다. 여기서 고치면 티저·본편 둘 다 바뀝니다">맨 앞에도</span>' +
         '<button type="button" class="pv-cap-del" title="삭제">&times;</button>';
       row.querySelector('.pv-cap-start').value = startRel.toFixed(1);
       row.querySelector('.pv-cap-end').value = endRel.toFixed(1);

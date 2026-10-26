@@ -1583,14 +1583,17 @@ def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path, re
     return segs
 
 
-def _in_clip_keep(clip, start: float, end: float) -> bool:
-    """점프컷(keep_ranges, 절대초) 클립에서 [start,end]가 남기는 구간에 있는가. 점프컷이 아니면 항상 True."""
+def _in_clip_keep(clip, start: float, end: float, line: bool = False) -> bool:
+    """점프컷(keep_ranges, 절대초) 클립에서 [start,end]가 남기는 구간에 있는가. 점프컷이 아니면 항상 True.
+    line=True면 자막 '줄' 판정(렌더 _apply_keep_to_lines와 같은 너그러운 규칙) — 목록에서 빠진 줄은
+    팝업이 다시 저장하는 순간 영구 삭제되므로 렌더보다 엄격하면 안 된다."""
     kr = getattr(clip, "keep_ranges", None) or []
     if len(kr) < 2:
         return True
-    from src.captions import _in_keep
+    from src.captions import _in_keep, _line_keep_seg
 
-    return _in_keep(float(start), float(end), [(float(a), float(b)) for a, b in kr]) is not None
+    fn = _line_keep_seg if line else _in_keep
+    return fn(float(start), float(end), [(float(a), float(b)) for a, b in kr]) is not None
 
 
 def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
@@ -1630,7 +1633,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
             for o in clip.caption_overrides
         ]
         # 통째로 비언어 표기였던 줄은 빈 줄이 되므로 목록에서 뺀다(빈 자막 칸이 남지 않게).
-        rows = [r for r in rows if r["text"].strip() and _in_clip_keep(clip, r["start"], r["end"])]
+        rows = [r for r in rows if r["text"].strip() and _in_clip_keep(clip, r["start"], r["end"], line=True)]
         return _split_long_caption_lines(
             video_id, clip, cfg, sorted(rows, key=lambda r: r["start"]),
         )

@@ -330,6 +330,9 @@ def _line_units(words: list[Word]) -> float:
     return sum(_char_units(c) for c in text)
 
 
+HARD_LINE_GAP = 1.5  # 이 이상 쉬면 한 줄로 묶지 않는다(chunk_words_into_lines)
+
+
 def chunk_words_into_lines(
     words: list[Word], max_words_per_line: int, max_gap: float = 0.45,
     max_units: float | None = None,
@@ -359,6 +362,11 @@ def chunk_words_into_lines(
             # 화면 폭 초과 줄은 후보 자체가 아니다 (단, 한 단어는 쪼갤 수 없어 허용).
             if max_units is not None and j - i > 1 and _line_units(words[i:j]) > max_units:
                 break  # 단어를 더 붙일수록 더 넘치므로 이후 j도 전부 불가
+            # 1.5초 넘는 쉼(점프컷으로 들어낸 구간 포함)은 무조건 줄을 끊는다. 금지 경계(-100)가
+            # 이걸 이기면 '뭘로 | (잘린 4.5초) | 40여 명의 저자가'가 한 줄로 묶여 줄 시각이 잘린
+            # 구간에 걸쳤고, 교정이 '뭘로'를 지우자 줄 전체가 렌더에서 버려졌다(2026-10-27 실신고).
+            if j - i > 1 and words[j - 1].start - words[j - 2].end >= HARD_LINE_GAP:
+                break
             if j >= n:
                 score = 100.0  # 마지막 단어까지 담으면 그대로 끝
             else:
@@ -716,11 +724,27 @@ def _in_keep(start: float, end: float, keep_segments: list[tuple[float, float]])
     return None
 
 
+def _line_keep_seg(start: float, end: float, keep_segments) -> tuple[float, float] | None:
+    """자막 '줄'용 판정: 단어용 _in_keep(절반 이상 겹침)보다 너그럽다. 가장 많이 겹치는 남김 구간을
+    고르고, 그 겹침이 0.3초 이상이면 살린다. (2026-10-27 실신고 "40여 명의 저자가가 사라졌다" —
+    줄 시각이 잘린 구간까지 늘어나 있으면(6.5초 중 실제 말은 뒤 1.4초) 절반 규칙에 걸려 통째로 버려졌고,
+    팝업도 같은 규칙으로 목록에서 빼서 다시 저장하는 순간 영구 삭제됐다.)"""
+    seg = _in_keep(start, end, keep_segments)
+    if seg is not None:
+        return seg
+    best, best_ov = None, 0.0
+    for a, b in keep_segments:
+        ov = min(end, b) - max(start, a)
+        if ov > best_ov:
+            best, best_ov = (a, b), ov
+    return best if best_ov >= 0.3 else None
+
+
 def _apply_keep_to_lines(lines: list[CaptionLine], keep_segments) -> list[CaptionLine]:
     """편집 자막(원본 시각 기준 줄)을 점프컷 타임라인으로: 들어낸 곳의 줄은 버리고, 남은 줄은 새 시각으로."""
     out: list[CaptionLine] = []
     for ln in lines:
-        seg = _in_keep(ln.start, ln.end, keep_segments)
+        seg = _line_keep_seg(ln.start, ln.end, keep_segments)
         if seg is None:
             continue
         s0 = _remap_after_silence_removal(max(ln.start, seg[0]), keep_segments)
