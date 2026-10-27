@@ -306,6 +306,9 @@ def build_thesis_cut_prompt(
 ## 절대 제외
 - 정치·특정 국가/민족/정당/정권/이념/전쟁을 다루거나 미화하는 구간, "역사적·국가적 사건 = 하나님의 직접 개입/섭리"
   비약(예: 소련 대사가 배탈로 회의에 빠져 대한민국이 살았다 → 섭리). 개인의 영적 진리가 아니면 제외.
+- **편향된 주장**: 성별·세대·지역 등 집단을 일반화하거나("여자들은 ~해야", "남자들은 원래"), 사회 변화를 기독교·성경
+  공로로 돌리는 대목(예: "여성 인권이 신장된 건 성경 때문 → 여성들은 남자보다 배나 감사해야"). 듣는 사람 절반이
+  불편하고 사실 논쟁으로 번진다(사용자 지시). 실화가 구체적이어도 착지가 이런 주장이면 제외.
 - **남을 비판·경계·폭로하는 대목**: 이단·사이비·타종교·타교단·다른 목회자/기도원/특정 집단·직군을 두고 "저들은
   가짜다/조심하라/그 유래는 이렇다"고 말하는 구간 전부(예: 이단 교주의 창시 일화, "○○ 사람들 조심하세요",
   "그거 점쟁이지 뭐예요"). 이야기가 아무리 구체적이고 흥미로워도 시청자에게 남는 감정이 '남 욕·경계'라 공유되지
@@ -1089,6 +1092,57 @@ def drop_bible_story_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[
     return kept, log
 
 
+# 집단(성별·세대·지역 등)을 일반화하거나 사회 변화를 "성경/기독교 덕분"으로 돌리는 편향된 주장의 표지
+# (2026-10-27 사용자: "여자가 학교 가게 된 가장 큰 이유 — 이런 편향된 주장은 앞으로는 싣지 마". 해당 컷은
+# "여성 인권이 신장된 건 성경 때문 → 우리나라 여성들은 남자보다 배나 감사해야"). 프롬프트 금지만으로는 모델이
+# "그 시절 어머니 세대가 멈춘다"며 뽑아 올리므로 이단·인물 필터와 같은 방식으로 결정론적으로 거른다.
+# '여자가/남자가'는 이야기 속 인물("한 여자가 찾아왔어요")에도 쓰이므로 표지에서 뺐다.
+_BIASED_RE = re.compile(
+    r"(?<![가-힣])(여성|남성|여자들|남자들|신여성|남녀|가부장|인권|여성\s*상위|남존\s*여비|"
+    r"기독교\s*(덕분|때문)|성경\s*때문에\s*그런|선교사들?\s*(덕분|때문|이\s*세운)|개화)"
+)
+_BIASED_MIN_SENTENCES = 2
+
+
+def biased_claim_reason(cut: dict, sentences: list[Sentence]) -> str:
+    """컷이 집단 일반화·사회 변화의 종교 공로화 주장이면 근거 문자열을, 아니면 빈 문자열을 돌려준다.
+    판정은 polemic_reason과 같다: 핵심 문장·scene/thesis에 표지가 있거나, 남는 본문 2문장 이상에 표지."""
+    try:
+        core = sentences[int(cut["core"])].text
+        runs = kept_runs(int(cut["start"]), int(cut["end"]), [tuple(s) for s in (cut.get("skip") or [])])
+        body = [s for a, b in runs for s in sentences[a: b + 1]]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return ""
+    m = _BIASED_RE.search(core)
+    if m:
+        return f"핵심 문장에 '{m.group(1)}'"
+    for key in ("scene", "thesis"):
+        m = _BIASED_RE.search(str(cut.get(key) or ""))
+        if m:
+            return f"{key}에 '{m.group(1)}'"
+    hits = [s for s in body if _BIASED_RE.search(s.text)]
+    if len(hits) >= _BIASED_MIN_SENTENCES:
+        words = sorted({_BIASED_RE.search(s.text).group(1) for s in hits})
+        return f"본문 {len(hits)}문장에 {'/'.join(words)}"
+    return ""
+
+
+def drop_biased_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[list[dict], list[str]]:
+    """편향된 주장 컷을 제외한다. 남는 후보가 1개 이하면 제외 대신 맨 뒤로(점수 상한 30)."""
+    kept, dropped, log = [], [], []
+    for c in cuts:
+        why = biased_claim_reason(c, sentences)
+        if why:
+            dropped.append({**c, "biased": why})
+            log.append(f"S{c['start']}~S{c['end']} 편향된 주장 제외 ({why})")
+        else:
+            kept.append(c)
+    if len(kept) < 2 and dropped:
+        log.append(f"남는 후보 {len(kept)}개 → 제외 대신 뒤로 보냄")
+        kept = kept + dropped
+    return kept, log
+
+
 def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: float = 0.3) -> list[dict]:
     """겹치는 컷은 앞(강한) 것만 남긴다.
 
@@ -1339,7 +1393,7 @@ def _build_enum_prompt(
 - 문장을 한 줄씩 띄엄띄엄 뽑기(목차 낭독이 된다). 구간은 편당 최대 5개.
 - 성경 인물 줄거리(인물 이름이 나오는 서사, 본문 낭독, 시대 배경)는 **통째로** 건너뛰고 적용 대목을 잡아라.
   단 "이 사람이 누굽니까? 군인 아닙니다. 평범한 가정주부입니다"처럼 이름 없이도 통하는 반문은 장면으로 쓸 수 있다.
-- 이단·타종교·점쟁이·특정 집단 비판 대목, 정치·국가·전쟁 이야기.
+- 이단·타종교·점쟁이·특정 집단 비판 대목, 정치·국가·전쟁 이야기, 성별·집단 일반화·"성경 덕분에 사회가 바뀌었다" 주장.
 - 이음새: 각 구간의 마지막 문장은 끝난 문장이고, 구간 첫 문장이 잘려나간 대상을 가리키는 "그 ○○/이 ○○"로
   시작하면 안 된다(대상이 나오는 앞 문장부터 시작).
 
@@ -1890,6 +1944,9 @@ def select_highlights_v2(
     fixed, bible_log = drop_bible_story_cuts(fixed, sentences)
     for m in bible_log:
         print(f"[v2] 인물 이야기 필터: {m}", flush=True)
+    fixed, biased_log = drop_biased_cuts(fixed, sentences)
+    for m in biased_log:
+        print(f"[v2] 편향 주장 필터: {m}", flush=True)
     fixed = dedupe_cuts(fixed, sentences)
     # 나열형 교훈(첫째·둘째·셋째)은 무조건 한 컷(위 4-1). 일반 검증·필터·중복제거를 거치지 않고 맨 앞에 둔다.
     enum_logs: list[dict] = []
@@ -1923,7 +1980,7 @@ def select_highlights_v2(
             dbg = {
                 "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
                 "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log, "polemic_log": polemic_log,
-                "bible_log": bible_log, "enum_log": enum_logs,
+                "bible_log": bible_log, "biased_log": biased_log, "enum_log": enum_logs,
                 "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end,
                                 "keep_ranges": cut_keep_ranges(c, sentences),
                                 "eff_sec": _eff_dur(sentences, c["start"], c["end"], _skips_of(c))}
@@ -1978,7 +2035,7 @@ def select_highlights_v2(
             computed = compute_scores({"core_score": 1, "hook": 1, "retention": 1, "emotion": 1,
                                        "relatability": 1, "payoff": 1, "quotability": 1})
             print(f"[v2] 클립 {i} 채점 결과 없음 — 최하위로 보냄", flush=True)
-        if c.get("polemic") or c.get("bible_story"):
+        if c.get("polemic") or c.get("bible_story") or c.get("biased"):
             # 후보 부족으로 살려 둔 타자 비판/성경 인물 이야기 컷: 점수 상한을 걸어 항상 맨 아래
             computed["score"] = min(int(computed["score"]), 30)
         # 점프컷: 남길 구간(절대초). 첫 구간의 시작은 말버릇 트림을 반영한다. 한 구간뿐이면 빈 목록(=전체 사용).
