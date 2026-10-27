@@ -578,6 +578,83 @@ def _content_stems(text: str) -> set[str]:
     return out
 
 
+# 결론 접속어 — 이 말로 시작하는 문장은 바로 앞 내용을 근거로 삼는다. 그 근거를 점프컷으로 들어내면
+# 결론이 허공에서 튀어나온다(2026-10-27 실신고 Nq9ZP8NiHQ0 둘째 편: "그래서 하나님의 감동은 지금도 **기도하는**
+# 사람에게 임한다"의 '기도'가 처음 나오는 "그래서 우리가 성경 읽을 때 기도하는 거예요"(S225~227) 26초를 들어냄 →
+# "너무 띄어버려서 의미 이해가 안 간다"). 2026-09-22에 접속어 시작 자체는 금지하지 않기로 했으므로 시작은 허용하되,
+# 결론 문장의 **새 내용어가 잘린 구간에서 처음 나오면** 그 문장부터 되살린다(지시대상 보존 규칙의 내용어 확장).
+_CONCLUSION_START = re.compile(
+    r"^(?:>>\s*)?(그래서|그러므로|그러니까|그니까|따라서|그렇기\s*때문에|결국|마찬가지로|그래야|그러면|그럼)(\s|,)")
+_BRIDGE_LOOKBACK = 5            # 결론 문장 앞 잘린 구간에서 근거 문장을 찾는 최대 문장 수
+_BRIDGE_MAX_SEC = 18.0          # 되살리는 근거 구간의 최대 길이
+_ENDING_STEM = re.compile(r"(입니다|습니다|합니다|됩니다|거예요|거죠|니다|세요|어요|아요|것이|것을|것도|거야|겁니다)$")
+
+
+def _restore_bridges(
+    keep: set[int], sentences: list[Sentence], hard_cap_sec: float, log: list[str],
+) -> tuple[set[int], set[int]]:
+    """점프컷 뒤 첫 문장이 결론 접속어로 시작하고, 그 문장의 내용어가 남은 앞 내용엔 없고 잘린 구간에 있으면
+    그 근거 문장부터 결론 직전까지 되살린다(길이 상한 hard_cap_sec 안에서). (새 keep, 되살린 문장들)."""
+    keep = set(keep)
+    restored: set[int] = set()
+
+    def _total(ids: set[int]) -> float:
+        s = sorted(ids)
+        tot, a = 0.0, None
+        for k, i in enumerate(s):
+            a = i if a is None else a
+            if k + 1 == len(s) or s[k + 1] != i + 1:
+                tot += sentences[i].end - sentences[a].start; a = None
+        return tot
+
+    runs = _runs_of(keep)
+    for k in range(1, len(runs)):
+        a = runs[k][0]
+        pb = runs[k - 1][1]
+        if a - pb <= 1:
+            continue
+        head = sentences[a].text.strip()
+        if not _CONCLUSION_START.match(head):
+            continue
+        kept_before = " ".join(sentences[i].text for i in sorted(keep) if i < a)
+        # 서술 어미 덩어리("것입니다", "거예요")는 내용어가 아니다 — 이걸로 매칭하면 아무 문장이나 근거가 된다(실측 S227).
+        missing = {t for t in _content_stems(head) if t not in kept_before and not _ENDING_STEM.search(t)}
+        if not missing:
+            continue
+        found = None
+        for j in range(a - 1, max(pb, a - 1 - _BRIDGE_LOOKBACK), -1):
+            if _FILLER_ONLY.match(sentences[j].text.strip()):
+                continue
+            hit = sorted(t for t in missing if t in sentences[j].text)
+            if hit:
+                found = (j, hit)
+                break
+        if found is None:
+            continue
+        j, hit = found
+        span = set(range(j, a))
+        add_sec = sentences[a - 1].end - sentences[j].start
+        if add_sec > _BRIDGE_MAX_SEC or _total(keep | span) > hard_cap_sec:
+            log.append(f"S{a} 결론('{head[:12]}…')의 근거 S{j}({hit[:2]}) 되살리면 {add_sec:.0f}초/총 {_total(keep | span):.0f}초 — 포기")
+            continue
+        keep |= span
+        restored |= span
+        log.append(f"S{a} 결론('{head[:12]}…')의 근거어 {hit[:2]}가 잘린 S{j}에 있음 → S{j}~S{a - 1} 되살림(+{add_sec:.0f}초)")
+    return keep, restored
+
+
+def _restore_bridges_in_skips(
+    skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int, hard_cap_sec: float, log: list[str],
+) -> list[tuple[int, int]]:
+    """(start,end,skip) 표현용 래퍼 — 일반 컷 검증(verify_and_fix)에서 쓴다."""
+    if not skips:
+        return skips
+    keep = {i for a, b in kept_runs(start, end, skips) for i in range(a, b + 1)}
+    keep, _ = _restore_bridges(keep, sentences, hard_cap_sec, log)
+    ids = sorted(keep)
+    return _merge_ranges([(a + 1, b - 1) for a, b in zip(ids, ids[1:]) if b > a + 1])
+
+
 def _restore_costly_skips(
     raw: dict, skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int,
     max_sec: float, hard_max_sec: float, log: list[str],
@@ -796,6 +873,7 @@ def verify_and_fix(
             log.append(f"start S{start} 약한 훅(연도/나열/장문) → S{best}"); start = best
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
     skips = _restore_costly_skips(raw, skips, sentences, start, end, max_sec, hard_max_sec, log)
+    skips = _restore_bridges_in_skips(skips, sentences, start, end, hard_max_sec, log)
     # 하한은 config min_duration_sec 그대로 적용한다(예전 0.8배 여유는 30초대 반쪽 후보를 통과시켰다 —
     # 2026-09-22 정답지 A/B: 하한을 엄격히 해도 적중 6/7·커버 70% 유지, 40초 미만 후보만 2개→1개로 줄었다).
     if dur(start, end) < min_sec:
@@ -1538,6 +1616,17 @@ def _fit_enum_keep(
 
 _ENUM_TEASER_MIN_SEC = 2.0
 _ENUM_TEASER_MAX_SEC = 9.0
+# 티저가 '훅'인 신호: 질문 / 1인칭 고백 / 청중에게 직접 말 걸기 / 반전·부정 펀치. 이 중 하나도 없는 서술문
+# ("사람을 지으시고 그 코에 생기를 불어넣어서 생명이 되었잖아요")은 맨 앞에 틀어 봐야 궁금하지 않고, 25초 뒤에
+# 같은 장면이 또 나와 정지 화면처럼 보인다(2026-10-27 "맨 앞 스틸컷 불필요").
+_TEASER_HOOK_RE = re.compile(
+    r"(\?$|(?:^|\s)(?:나는|내가|나도|나한테|저는|제가|저도|나의|내\s)|여러분|당신|너희|"
+    r"(?:아닙니다|아니에요|아니죠|안\s*됩니다|못\s*합니다|없습니다|없어요|않습니다|않아요)[.!]?$|"
+    r"(?:^|\s)(?:왜|어떻게|무엇|뭐가|누가)\s)")
+
+
+def _is_hook_line(text: str) -> bool:
+    return bool(_TEASER_HOOK_RE.search((text or "").strip()))
 
 
 def _enum_teaser(ids: set[int], sentences: list[Sentence], log: list[str]) -> tuple[int, int] | None:
@@ -1563,6 +1652,8 @@ def _enum_teaser(ids: set[int], sentences: list[Sentence], log: list[str]) -> tu
         why = "성경 인물 이름·비판 대목"
     elif _is_incomplete(last) and not last.endswith("?"):
         why = "안 끝난 문장"
+    elif not any(_is_hook_line(t) for t in texts):
+        why = "훅이 아닌 서술문(질문·고백·말 걸기·반전 없음)"
     if why:
         log.append(f"티저 S{a}~S{b} 거부: {why}")
         return None
@@ -1696,6 +1787,9 @@ def build_enumeration_cuts(
             tease_keep = set(range(teaser[0], teaser[1] + 1)) if teaser else set()
             keep = _fit_enum_keep(keep, [m], sentences, body_budget, ilog,
                                   extra_protected={core} | key_ids | (landing_ids & keep) | tease_keep, punches=punches)
+            # 예산을 맞춘 **뒤**에 결론의 근거를 되살린다(예산 전에 하면 _fit_enum_keep이 도로 덜어낸다). 그래서 편이
+            # 예산(58초)을 넘을 수 있지만 상한(hard_max_sec) 안이다 — 뜻이 통하는 쪽이 짧은 쪽보다 낫다(2026-10-27).
+            keep, _bridged = _restore_bridges(keep, sentences, hard_max_sec, ilog)
             keep = _enum_trim_tail(keep, [m], punches | landing_ids, sentences, ilog)
             ids = sorted(keep)
             if not ids:
