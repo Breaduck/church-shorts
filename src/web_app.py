@@ -1260,10 +1260,12 @@ def media(video_id: str, rank: int):
     path = (OUTPUT_ROOT / video_id / "clips" / f"short_{rank}.mp4").resolve()
     if not path.exists():
         return jsonify({"error": "파일을 찾을 수 없습니다"}), 404
+    # 파일 이름은 두 경로 모두 쇼츠 제목으로: '영상 저장' 링크(dl=1, attachment)뿐 아니라 플레이어 ⋮ 메뉴의
+    # '다운로드'(src 그대로, inline)로 받아도 short_N.mp4가 아니라 제목으로 저장된다(2026-10-27 "아직도 안 해놨네").
+    name = _download_filename(video_id, rank)
     if request.args.get("dl"):
-        # '영상 저장'은 short_N.mp4 대신 우리가 정한 제목을 파일 이름으로 내려준다.
-        return send_file(path, as_attachment=True, download_name=_download_filename(video_id, rank))
-    return send_file(path)
+        return send_file(path, as_attachment=True, download_name=name)
+    return send_file(path, download_name=name, conditional=True)
 
 
 def _download_filename(video_id: str, rank: int) -> str:
@@ -1276,6 +1278,7 @@ def _download_filename(video_id: str, rank: int) -> str:
     except Exception:  # noqa: BLE001 - 제목을 못 읽어도 다운로드 자체는 되어야 함
         pass
     title = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", title)
+    title = title.replace("‘", "").replace("’", "").replace("“", "").replace("”", "").replace("'", "")
     title = re.sub(r"\s+", " ", title).strip(" .")[:100]
     return f"{title}.mp4" if title else f"short_{rank}.mp4"
 
