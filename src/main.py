@@ -2132,6 +2132,58 @@ def _precise_worst_hole(
     return worst
 
 
+def _precise_hole_spans(
+    base_segments: list[Segment], segs: list[Segment], a: float, b: float, min_len: float = 5.0
+) -> list[tuple[float, float]]:
+    """_precise_worst_hole과 같은 기준으로 min_len초 이상인 구멍의 (시작, 끝) 목록."""
+    base_ts = sorted(w.start for s in base_segments for w in s.words if a <= w.start <= b)
+    precise_ts = sorted(w.start for s in segs for w in s.words if a - 3 <= w.start <= b + 3)
+    if not base_ts:
+        return []
+    import bisect
+
+    spans: list[tuple[float, float]] = []
+    run: list[float] | None = None
+    for t in base_ts + [None]:  # None = 끝 표지(열린 구멍 닫기)
+        hole = False
+        if t is not None:
+            i = bisect.bisect_left(precise_ts, t)
+            near = min(
+                (abs(precise_ts[j] - t) for j in (i - 1, i) if 0 <= j < len(precise_ts)),
+                default=1e9,
+            )
+            hole = near > 2.5
+        if hole:
+            run = [run[0], t] if run else [t, t]
+        else:
+            if run and run[1] - run[0] >= min_len:
+                spans.append((run[0], run[1]))
+            run = None
+    return spans
+
+
+def _splice_hole_words(
+    segs: list[Segment], patch: list[Segment], ha: float, hb: float
+) -> list[Segment]:
+    """구멍 [ha, hb] 안에 정밀 단어가 없던 segs에 구멍 구간만 따로 전사한 patch를 끼워 넣는다.
+
+    whisper가 긴 창(100초+)에서 타임스탬프를 건너뛰며 앞 20여 초를 통째로 빼먹는 사고가
+    배치/순차/VAD끔 모두에서 똑같이 재현됐다(실측 Nq9ZP8NiHQ0 clip4: 335~361초 실종).
+    같은 구간을 짧은 창으로 다시 돌리면 정확히 나온다 — 그 결과에서 기존 segs 단어와
+    겹치지 않는 부분만 가져와 합친다."""
+    have = sorted((w.start, w.end) for s in segs for w in s.words)
+    first_after = min((st for st, _ in have if st > hb), default=1e9)
+    last_before = max((en for _, en in have if en < ha), default=-1e9)
+    add: list[Segment] = []
+    for s in patch:
+        ws = [w for w in s.words if w.start >= last_before - 0.05 and w.end <= first_after + 0.05]
+        if not ws:
+            continue
+        add.append(Segment(start=ws[0].start, end=ws[-1].end,
+                           text=" " + " ".join(w.text for w in ws), words=ws))
+    return sorted(list(segs) + add, key=lambda s: s.start)
+
+
 def _apply_corrections(segs: list[Segment], corrections: dict) -> None:
     """전사 오인식 확정 교정(config captions.corrections). 성경 용어처럼 절대 틀리면
     안 되는 단어의 최종 안전망 — hotwords 편향으로도 새는 반복 오탈자만 치환한다."""
@@ -2693,6 +2745,26 @@ def render_selected(
                 # 단어 수(35%)만이 아니라 '구멍'도 본다: 재시도까지 다 해도 5초+ 구간이 통째로 빈
                 # 정밀 결과는 단어 수 검사를 통과해도 그대로 구우면 그 구간 자막이 실종된다
                 # (실측: base 54단어 vs precise 32단어=59%로 통과했지만 16초 구멍 → 자막 공백 렌더).
+                # 긴 창에서 whisper가 통째로 건너뛴 구간은 그 구간만 짧은 창으로 다시 전사해 메운다.
+                if segs:
+                    for ha, hb in _precise_hole_spans(base_segments, segs, clip.start, clip.end):
+                        try:
+                            patch = transcribe_clip_precise(
+                                video_path, max(0.0, ha - 1.0), hb + 3.0,
+                                model_size=precise_model,
+                                device=w["device"], compute_type=w["compute_type"],
+                                language=w["language"], vad_filter=vad_default,
+                                initial_prompt=w.get("initial_prompt"),
+                                hotwords=hotwords,
+                                cpu_threads=int(w.get("cpu_threads", 0)),
+                                batched=False,
+                            )
+                            before = _count_words(segs, clip.start, clip.end)
+                            segs = _splice_hole_words(segs, patch, ha, hb)
+                            precise_n = _count_words(segs, clip.start, clip.end)
+                            _rlog(video_dir, f"clip{idx} 구멍 {ha:.1f}~{hb:.1f} 부분 재전사: {before}→{precise_n}단어")
+                        except Exception as e:  # noqa: BLE001 - 실패 시 아래 폴백
+                            _rlog(video_dir, f"clip{idx} 구멍 부분 재전사 예외: {type(e).__name__}: {e}")
                 final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
                 if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
                     progress(
