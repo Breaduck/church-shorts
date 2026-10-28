@@ -1374,23 +1374,27 @@ def _build_enum_prompt(
 너는 설교 요약자가 아니라 **쇼츠 편집자**다. 목표는 끝까지 보게 만드는 리듬이다.
 
 ## 재료 범위
-항목 k 편은 ★항목k 문장부터 ★항목(k+1) 바로 앞 문장까지에서만 고른다(마지막 항목은 입력 끝까지, 1번 항목은 그 앞
-도입부의 질문·문제 제기도 써도 된다). 한 항목이 짧으면 그 안의 부연을 더 살려 30초 이상을 채운다.
+항목 k 편은 ★항목k 문장부터 ★항목(k+1) 바로 앞 문장까지에서만 고른다(마지막 항목은 입력 끝까지, 1번 항목은 ★표지
+**바로 앞에 붙은** 같은 화제의 질문·문제 제기만 써도 된다). 한 항목이 짧으면 그 안의 부연을 더 살려 30초 이상을 채운다.
 
-## 한 편의 편집 설계도
-1) teaser(콜드 오픈, 강력 권장): 그 편 맨 앞에 **미리 한 번 틀어 줄** 1~2문장(연속, 3~8초). 그 항목에서 가장 "어, 내
-   얘기다" 싶은 대사·자기고백·찌르는 한 줄. 본편 제자리에서도 한 번 더 나온다(티저 → 본편에서 회수). 그 자체로
-   뜻이 통해야 한다: "그/이 ○○"·접속어·순서 표지로 시작하거나 성경 인물 이름이 든 문장은 안 된다. 없으면 null.
-   ("두 번째는~"으로 영상이 시작하면 독립 영상으로 어색하니, 2번째 이후 편은 특히 티저를 찾아라.)
-2) ★표지 문장(항목 이름). 이름이 없으면("둘째로요.") 바로 뒤 이름 문장까지. 이름 뒤 부연 문장은 뺀다.
-3) 장면 블록 1~3개(각각 연속 2~6문장): 추상 설명이 아니라 **장면** — 청중에게 던지는 질문과 답, "나는 ~해" 같은
-   대사 재연, 일상 예시, 반문("이 사람이 누굽니까? 군인 아닙니다."). 정의·해설·반복은 날린다.
+## 한 편의 편집 설계도 — 구간은 편당 **최대 3개**(표지 / 본 블록 / 착지)
+1) teaser(콜드 오픈, 선택): 그 편 맨 앞에 **미리 한 번 틀어 줄** 1~2문장(연속, 3~8초). 그 항목에서 가장 "어, 내
+   얘기다" 싶은 질문·대사·자기고백. 본편 제자리에서도 한 번 더 나온다. 그 자체로 뜻이 통하는 훅이어야 한다:
+   서술·해설 문장, "그/이 ○○"·접속어·순서 표지로 시작하거나 성경 인물 이름이 든 문장은 안 된다. 애매하면 null.
+2) ★표지 문장(항목 이름). 이름이 없으면("둘째로요.") 바로 뒤 이름 문장까지. 이름 뒤 해설이 장면으로 바로 이어지면
+   표지와 본 블록을 **한 구간으로 붙여라**.
+3) 본 블록 **하나**(연속 20~40초, 5~12문장): 그 항목에서 가장 살아 있는 **장면 한 덩어리** — 청중에게 던지는 질문과
+   답, "나는 ~해" 같은 대사 재연, 일상 예시, 반문. 블록 **안에서는 자르지 마라**: 앞 문장이 뒤 문장의 전제("무엇을
+   듣느냐?" → "학교에서 선생님에게서 뭘 들으면…")인 경우가 많아 중간을 들어내면 뜻이 끊긴다.
    punch = 그 편에서 가장 센 문장. 블록은 펀치에서 끝낸다(펀치 뒤 부연은 자른다).
-4) landing(선택, 1~2문장): 그 항목을 묶는 착지 — 결단·뒤집는 한 줄(축복 공식은 쓰지 마라). **영상의 마지막 문장은 landing이거나
-   punch여야 한다.** 해설·광고·기도 인도로 끝내지 마라.
+4) landing(선택, 연속 1~5문장): 그 항목을 묶는 착지 — 결단·뒤집는 한 줄, 또는 "이렇게 물어보십시오. ~? ~? ~?"
+   같은 질문 목록이면 **목록 끝까지**(축복 공식은 쓰지 마라). **영상의 마지막 문장은 landing이거나 punch여야 한다.**
+   본 블록과 착지 사이가 짧으면(1~2문장) 건너뛰지 말고 이어 붙여라.
 
 ## 금지
-- 문장을 한 줄씩 띄엄띄엄 뽑기(목차 낭독이 된다). 구간은 편당 최대 5개.
+- 점프를 많이 뛰는 것. 한두 문장짜리 조각을 여기저기서 뽑아 잇기(목차 낭독이 되고 뜻이 뚝뚝 끊긴다). 건너뛰는 건
+  성경 낭독·인물 줄거리·딴 예화처럼 **통째로 덜어낼 수 있는 덩어리**뿐이다.
+- 표지 앞의 딴 화제(앞 항목의 예화·도입부의 다른 이야기)로 영상을 여는 것.
 - 성경 인물 줄거리(인물 이름이 나오는 서사, 본문 낭독, 시대 배경)는 **통째로** 건너뛰고 적용 대목을 잡아라.
   단 "이 사람이 누굽니까? 군인 아닙니다. 평범한 가정주부입니다"처럼 이름 없이도 통하는 반문은 장면으로 쓸 수 있다.
 - 이단·타종교·점쟁이·특정 집단 비판 대목, 정치·국가·전쟁 이야기, 성별·집단 일반화·"성경 덕분에 사회가 바뀌었다" 주장.
@@ -1528,8 +1532,72 @@ def _enum_fix_seams(
     return keep
 
 
+# 2026-10-28 실신고 "첫째·둘째·셋째 교훈 왜 이리 점프컷을 많이 뛰냐, 의미가 뚝뚝 끊긴다". 실측(ZxqNWy2N6FY):
+# 모델이 항목마다 한두 문장짜리 조각 4개를 3~7분 범위에 흩뿌렸다(첫째 편 S38-39|S43|S52-53|S78, 둘째 편 4조각 = 원본의
+# 11%). 1편은 표지 앞 딴 화제(담배 얘기 "왜 그렇게 살아요?")로 열었고, "학교에서 선생님에게서 뭘 들으면"은 바로 앞
+# "무엇을 듣느냐"를 들어내 뜻이 안 통했다. 결정론 단계엔 조각 수 상한도, 짧은 틈 메우기도 없었다 → _enum_consolidate.
+_ENUM_MAX_PIECES = 3            # 편당 조각 상한(표지 / 본 블록 / 착지)
+_ENUM_SMALL_GAP_SENTENCES = 2   # 이 이하 문장만 건너뛰는 틈은 메운다(그 정도 점프는 얻는 것 없이 문맥만 끊는다)
+_ENUM_SMALL_GAP_SEC = 10.0
+
+
+def _enum_consolidate(
+    keep_ids: set[int], mark: int, sentences: list[Sentence], log: list[str],
+    anchors: set[int] | None = None, max_pieces: int = _ENUM_MAX_PIECES,
+) -> set[int]:
+    """나열 편 한 개의 조각을 '표지 / 본 블록 / 착지' 수준으로 정리한다(2026-10-28).
+      · 표지 앞 조각은 표지와 붙어 있을 때만 남긴다 — 떨어진 앞 조각은 대개 앞 화제(예화·이전 항목)다.
+      · 2문장·10초 이하의 틈은 메운다.
+      · 조각이 max_pieces를 넘으면 표지·앵커(펀치·착지)가 없는 조각부터, 짧은 것부터 버린다. 다 앵커면 가장 싼 틈을 메운다."""
+    keep = set(keep_ids)
+    anchors = set(anchors or ())
+    runs = _runs_of(keep)
+    mrun = next(((a, b) for a, b in runs if a <= mark <= b), None)
+    for a, b in runs:
+        if b < mark and mrun and a < mrun[0]:
+            if b + 1 != mrun[0]:
+                keep.difference_update(range(a, b + 1))
+                log.append(f"표지 앞 떨어진 조각 S{a}~S{b} 버림(앞 화제로 열지 않게)")
+    for _ in range(20):
+        runs = _runs_of(keep)
+        changed = False
+        for (a1, b1), (a2, b2) in zip(runs, runs[1:]):
+            n_gap = a2 - b1 - 1
+            sec = sentences[a2].start - sentences[b1].end
+            if n_gap <= _ENUM_SMALL_GAP_SENTENCES and sec <= _ENUM_SMALL_GAP_SEC:
+                keep.update(range(b1 + 1, a2)); changed = True
+                log.append(f"짧은 틈 S{b1 + 1}~S{a2 - 1}({n_gap}문장) 메움")
+                break
+        if changed:
+            continue
+        if len(runs) <= max_pieces:
+            break
+
+        def _dur(r: tuple[int, int]) -> float:
+            return sentences[r[1]].end - sentences[r[0]].start
+
+        free = [r for r in runs if not (r[0] <= mark <= r[1]) and not any(r[0] <= i <= r[1] for i in anchors)]
+        if free:
+            a, b = min(free, key=_dur)
+            keep.difference_update(range(a, b + 1))
+            log.append(f"조각 {len(runs)}개 > {max_pieces} → 앵커 없는 조각 S{a}~S{b}({_dur((a, b)):.0f}초) 버림")
+        else:
+            (b1, a2) = min(((r1[1], r2[0]) for r1, r2 in zip(runs, runs[1:])),
+                           key=lambda g: sentences[g[1]].start - sentences[g[0]].end)
+            keep.update(range(b1 + 1, a2))
+            log.append(f"조각 {len(runs)}개 > {max_pieces}, 전부 앵커 → 가장 짧은 틈 S{b1 + 1}~S{a2 - 1} 메움")
+    return keep
+
+
 _ENUM_FILL_SLACK_SEC = 4.0      # 예산에 이만큼도 못 미치면 블록을 늘려 채운다
-_ENUM_BLOCK_MAX_SEC = 26.0      # 블록 하나가 이보다 길어지게는 안 늘린다(항목 간 균형)
+# 2026-10-28: 모델이 고른 편이 이미 이만큼이면 채우지 않는다. 남는 예산을 억지로 채우면 블록이 새 예화 첫 문장("몇 년
+# 전에 위암 수술을 받은 친구 목사를…")이나 앞 인물 이야기 꼬리("히브리서를 그렇게 많이 읽고 갔다고…")까지 번졌다.
+_ENUM_FILL_TRIGGER_SEC = 32.0
+# 새 예화·일화를 여는 문장 — 블록 끝에 붙이면 이야기가 시작만 하고 다음 점프로 끊긴다
+_ANECDOTE_START = re.compile(
+    r"^(?:>>\s*)?(?:몇\s*(?:년|달|주|일)\s*전|지난\s*(?:주|해|달|번|주간)|얼마\s*전|예전에|옛날에|한\s*번은|어느\s*날|"
+    r"[가-힣A-Za-z]+(?:와|과)\s*그의\s*(?:친구|아내|가족))")
+_ENUM_BLOCK_MAX_SEC = 40.0      # 블록 하나가 이보다 길어지게는 안 늘린다(2026-10-28: 26→40, 본 블록 하나 20~40초 설계)
 _ENUM_FILL_CAP = 4              # 블록당 최대 늘리는 문장 수
 
 
@@ -1554,7 +1622,7 @@ def _enum_fill_budget(
     def _item(i: int) -> int:
         return sum(1 for m in marks if m <= i)
 
-    if _total() >= budget - _ENUM_FILL_SLACK_SEC:
+    if _total() >= min(budget - _ENUM_FILL_SLACK_SEC, _ENUM_FILL_TRIGGER_SEC):
         return keep
     progressed = True
     while progressed:
@@ -1596,6 +1664,10 @@ def _enum_fill_budget(
                 continue
             t = sentences[nxt].text.strip()
             if _FILLER_ONLY.match(t) or _enum_number(t) != 0 or _STRUCT_START.match(t):
+                continue
+            # 착지 뒤에 이어지는 성경 인물 이야기("창세기 39장을 보면 요셉이…")로 늘려 예산을 써 버리면, 끝 다듬기가
+            # 그걸 도로 걷어내 정작 본 블록은 못 늘린다(2026-10-28 첫째 편 42초)
+            if _BIBLE_NAME_RE.search(t) or _POLEMIC_RE.search(t) or _ANECDOTE_START.match(t):
                 continue
             if _total() + (sentences[nxt].end - sentences[b].end) > budget:
                 continue
@@ -1839,16 +1911,28 @@ def build_enumeration_cuts(
             if teaser:
                 keep_ids.update(range(teaser[0], teaser[1] + 1))  # 티저는 본편 제자리에서 한 번 더 나와야 회수된다
             keep = _enum_fix_seams(keep_ids, [m], sentences, ra, rb, ilog, punches=punches, landing=landing_ids)
+            tease_keep = set(range(teaser[0], teaser[1] + 1)) if teaser else set()
+            keep = _enum_consolidate(keep, m, sentences, ilog, anchors=punches | landing_ids | tease_keep)
             punches &= keep
+            landing_ids &= keep
+            if core not in keep:
+                core = next(iter(punches), m)
             keep = _enum_fill_budget(keep, [m], sentences, rb, body_budget, ilog, lo=ra, punches=punches)
             key = _content_stems(" ".join(str(it.get(x) or "") for x in ("thesis", "why")))
             key_ids = {i for i in keep if key and sum(1 for t in key if t in sentences[i].text) >= 2}
-            tease_keep = set(range(teaser[0], teaser[1] + 1)) if teaser else set()
+            # 착지는 이음새 보정으로 늘어난 부분까지 통째로 보호한다 — "이렇게 물어보십시오. ~옳은가?"에서 뒤따르는
+            # 질문 목록을 예산 때문에 덜어내 첫 질문에서 끊겼다(2026-10-28 둘째 편).
+            landing_run: set[int] = set()
+            if landing_ids:
+                lr = next(((a, b) for a, b in _runs_of(keep) if a <= max(landing_ids) <= b), None)
+                if lr:
+                    landing_run = set(range(min(landing_ids), lr[1] + 1)) & keep
             keep = _fit_enum_keep(keep, [m], sentences, body_budget, ilog,
-                                  extra_protected={core} | key_ids | (landing_ids & keep) | tease_keep, punches=punches)
+                                  extra_protected={core} | key_ids | landing_run | tease_keep, punches=punches)
             # 예산을 맞춘 **뒤**에 결론의 근거를 되살린다(예산 전에 하면 _fit_enum_keep이 도로 덜어낸다). 그래서 편이
             # 예산(58초)을 넘을 수 있지만 상한(hard_max_sec) 안이다 — 뜻이 통하는 쪽이 짧은 쪽보다 낫다(2026-10-27).
             keep, _bridged = _restore_bridges(keep, sentences, hard_max_sec, ilog)
+            keep = _enum_consolidate(keep, m, sentences, ilog, anchors=punches | landing_ids | tease_keep)
             keep = _enum_trim_tail(keep, [m], punches | landing_ids, sentences, ilog)
             ids = sorted(keep)
             if not ids:
