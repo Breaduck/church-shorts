@@ -2108,39 +2108,41 @@ def _precise_worst_hole(
     base_ts = sorted(
         w.start for s in base_segments for w in s.words if a <= w.start <= b
     )
-    precise_ts = sorted(w.start for s in segs for w in s.words if a - 3 <= w.start <= b + 3)
     if not base_ts:
         return 0.0
-    if not precise_ts:
+    if not _precise_word_ts(segs, a, b):
         return b - a
-    import bisect
+    return max((hb - ha for ha, hb in _precise_hole_spans(base_segments, segs, a, b, 0.0)), default=0.0)
 
-    worst = 0.0
-    run_start: float | None = None
-    for t in base_ts:
-        i = bisect.bisect_left(precise_ts, t)
-        near = min(
-            (abs(precise_ts[j] - t) for j in (i - 1, i) if 0 <= j < len(precise_ts)),
-            default=1e9,
-        )
-        if near > 2.5:  # 이 base 단어 주변에 정밀 단어가 없다 = 구멍
-            if run_start is None:
-                run_start = t
-            worst = max(worst, t - run_start)
-        else:
-            run_start = None
-    return worst
+
+def _precise_word_ts(segs: list[Segment], a: float, b: float) -> list[float]:
+    """구멍 판정용 정밀 단어 시각. 2.5초 넘게 늘어난 단어는 whisper가 건너뛴 구간을 한 단어로
+    덮은 흔적이라(실측 ZxqNWy2N6FY: '외에' 273.6~282.3 — 그 사이 핵심 문장 통째 실종) 없는 셈 친다."""
+    return sorted(
+        w.start for s in segs for w in s.words
+        if a - 3 <= w.start <= b + 3 and (w.end - w.start) <= 2.5
+    )
 
 
 def _precise_hole_spans(
     base_segments: list[Segment], segs: list[Segment], a: float, b: float, min_len: float = 5.0
 ) -> list[tuple[float, float]]:
-    """_precise_worst_hole과 같은 기준으로 min_len초 이상인 구멍의 (시작, 끝) 목록."""
+    """base 단어 주변 ±2.5초에 정밀 단어가 없는 연속 구간(구멍)들 중 min_len초 이상의 (시작, 끝).
+
+    구멍 길이는 양옆의 살아 있는 정밀 단어 사이(앞 단어 ~ 뒤 단어)로 잰다. base 단어 시각끼리만
+    재면 ±2.5초 창이 양끝을 깎아 9초 구멍이 4초로 보여 5초 기준을 빠져나갔다(실측 ZxqNWy2N6FY)."""
     base_ts = sorted(w.start for s in base_segments for w in s.words if a <= w.start <= b)
-    precise_ts = sorted(w.start for s in segs for w in s.words if a - 3 <= w.start <= b + 3)
+    precise_ts = _precise_word_ts(segs, a, b)
     if not base_ts:
         return []
     import bisect
+
+    def _span(r0: float, r1: float) -> tuple[float, float]:
+        i = bisect.bisect_left(precise_ts, r0)
+        j = bisect.bisect_right(precise_ts, r1)
+        lo = precise_ts[i - 1] if i > 0 else a
+        hi = precise_ts[j] if j < len(precise_ts) else b
+        return (max(a, min(lo, r0)), min(b, max(hi, r1)))
 
     spans: list[tuple[float, float]] = []
     run: list[float] | None = None
@@ -2156,8 +2158,10 @@ def _precise_hole_spans(
         if hole:
             run = [run[0], t] if run else [t, t]
         else:
-            if run and run[1] - run[0] >= min_len:
-                spans.append((run[0], run[1]))
+            if run:
+                ha, hb = _span(run[0], run[1])
+                if hb - ha >= min_len:
+                    spans.append((ha, hb))
             run = None
     return spans
 
@@ -2170,10 +2174,29 @@ def _splice_hole_words(
     whisper가 긴 창(100초+)에서 타임스탬프를 건너뛰며 앞 20여 초를 통째로 빼먹는 사고가
     배치/순차/VAD끔 모두에서 똑같이 재현됐다(실측 Nq9ZP8NiHQ0 clip4: 335~361초 실종).
     같은 구간을 짧은 창으로 다시 돌리면 정확히 나온다 — 그 결과에서 기존 segs 단어와
-    겹치지 않는 부분만 가져와 합친다."""
+    겹치지 않는 부분만 가져와 합친다.
+
+    구멍을 한 단어로 길게 덮은 늘어진 단어(2.5초+)와 그 바로 앞에 붙은 조각은 버린다
+    (실측: '그'+'외에'(8.7초)가 핵심 문장 자리를 차지 — 재전사로 제자리에 다시 들어온다)."""
+    stretched = [w for s in segs for w in s.words
+                 if (w.end - w.start) > 2.5 and w.end > ha and w.start < hb]
+    drop = {id(w) for w in stretched}
+    for s in segs:
+        for w in s.words:
+            if any(abs(x.start - w.end) <= 0.3 and w.start >= ha - 0.05 for x in stretched):
+                drop.add(id(w))
+    if drop:
+        kept: list[Segment] = []
+        for s in segs:
+            ws = [w for w in s.words if id(w) not in drop]
+            if ws:
+                kept.append(Segment(start=ws[0].start, end=ws[-1].end,
+                                    text=" " + " ".join(w.text for w in ws), words=ws))
+        segs = kept
     have = sorted((w.start, w.end) for s in segs for w in s.words)
-    first_after = min((st for st, _ in have if st > hb), default=1e9)
-    last_before = max((en for _, en in have if en < ha), default=-1e9)
+    # 구멍 경계(ha/hb)는 양옆에 살아 있는 정밀 단어의 시작 시각이다(_precise_hole_spans).
+    last_before = max((en for st, en in have if st <= ha + 0.05), default=-1e9)
+    first_after = min((st for st, _ in have if st >= hb - 0.05 and st > last_before), default=1e9)
     add: list[Segment] = []
     for s in patch:
         ws = [w for w in s.words if w.start >= last_before - 0.05 and w.end <= first_after + 0.05]

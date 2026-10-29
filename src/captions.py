@@ -72,12 +72,30 @@ def _is_filler(text: str, aggressive: bool = False) -> bool:
     return t in (_FILLER_WORDS_AGGRESSIVE if aggressive else _FILLER_WORDS)
 
 
+# 공격적 모드에서도 '그' 뒤에 이 말이 오면 지시어(그 외에·그 때·그 사람)라 남긴다 — 지우면 뜻이
+# 깨진다(실측 2026-10-29: "그 외에 많은 것을" → "외에 많은 것을").
+_DEMONSTRATIVE_NEXT = ("외", "때", "사람", "날", "후", "뒤", "다음", "동안", "자리", "이후", "이전", "당시", "순간")
+
+
+def _filler_mask(toks: list[str], aggressive: bool) -> list[bool]:
+    """토큰별 추임새 여부. 공격적 모드의 '그'는 다음 토큰을 보고 지시어면 남긴다."""
+    out = []
+    for i, t in enumerate(toks):
+        f = _is_filler(t, aggressive)
+        if f and aggressive and t.strip().strip(_FILLER_TRAIL) == "그" and i + 1 < len(toks):
+            nxt = toks[i + 1].strip()
+            if nxt.startswith(_DEMONSTRATIVE_NEXT):
+                f = False
+        out.append(f)
+    return out
+
+
 def strip_filler_tokens_text(text: str, aggressive: bool = False) -> str:
     """줄 텍스트(편집기 저장본·교정 결과처럼 단어 시각이 없는 문자열)에서 추임새 토큰을 걷어낸다.
     단어 단위 경로(_collect_words_in_range)와 같은 판단을 줄 단위에도 적용해, 저장된 자막에 박힌
     "응. 어"도 렌더·편집기 양쪽에서 사라지게 한다. 전부 추임새면 빈 문자열."""
-    toks = [t for t in (text or "").split() if not _is_filler(t, aggressive)]
-    return " ".join(toks).strip()
+    toks = (text or "").split()
+    return " ".join(t for t, f in zip(toks, _filler_mask(toks, aggressive)) if not f).strip()
 
 
 def _collect_words_in_range(
@@ -114,7 +132,8 @@ def _collect_words_in_range(
     # 뜻 없는 추임새(음·어·에…) 제거. 자막은 전사 기록이 아니라 읽기 보조물이라, 군더더기를
     # 걷어내면 훨씬 정갈하다. 오디오는 그대로라 남은 단어들의 카라오케 타이밍은 영향 없다.
     if strip_filler:
-        deduped = [w for w in deduped if not _is_filler(w.text, aggressive_filler)]
+        mask = _filler_mask([w.text for w in deduped], aggressive_filler)
+        deduped = [w for w, f in zip(deduped, mask) if not f]
     return deduped
 
 
