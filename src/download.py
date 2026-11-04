@@ -171,7 +171,12 @@ def download_video(
         # yt-dlp 기본 정렬은 "코덱 효율" 위주라 저비트레이트 AV1을 고비트레이트 H264보다
         # 우선시할 때가 있다 (예: 515kbps AV1을 1592kbps H264보다 선호) — 실제로는 훨씬
         # 흐릿하게 나오므로, 해상도 다음으로 비트레이트(tbr)를 명시적으로 우선시한다.
-        "format_sort": ["res", "tbr"],
+        # 단, 비트레이트만 보면 HLS(m3u8, 수백 개 조각을 순차 요청)가 같은 화질 https 단일
+        # 스트림보다 tbr이 높아 선택돼 다운로드가 수십 분 걸렸다(2026-11-05 실측: 311 HLS
+        # 414MB vs 298 https 200MB, 같은 720p H264). 그래서 비트레이트보다 프로토콜(https)을 먼저 본다.
+        "format_sort": ["res", "proto", "tbr"],
+        # 그래도 HLS로 가는 경우(https 없는 영상) 조각을 병렬로 받아 순차 요청 지연을 줄인다.
+        "concurrent_fragment_downloads": 8,
         "outtmpl": str(target.with_suffix("")) + ".%(ext)s",
         "merge_output_format": "mp4",
         # 조각 다운로드가 네트워크 문제로 끊겨 병합이 안 되는 걸 줄인다(이번 크래시의 근본 원인).
@@ -254,7 +259,9 @@ def download_video_hd(
     try:
         with yt_dlp.YoutubeDL({
             "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-            "format_sort": ["res", "tbr"],  # 해상도 → 비트레이트 우선(저비트레이트 AV1 회피)
+            # 해상도 → https 우선(HLS 조각 순차 다운로드 회피) → 비트레이트(저비트레이트 AV1 회피)
+            "format_sort": ["res", "proto", "tbr"],
+            "concurrent_fragment_downloads": 8,
             "outtmpl": str(target.with_suffix("")) + ".%(ext)s",
             "merge_output_format": "mp4",
             "retries": 5,
