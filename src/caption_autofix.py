@@ -22,6 +22,7 @@ from src.fsutil import atomic_write_text
 from src.captions import strip_filler_tokens_text
 
 CACHE_NAME = "caption_fix_cache.json"
+PROMPT_VERSION = "haeyo-v1"
 
 
 def _cache_path(video_dir: Path) -> Path:
@@ -65,7 +66,8 @@ def autofix_caption_texts(
         return det, []
     # 모델을 바꾸면(config auto_correct_model) 옛 모델 결과를 재사용하지 않게 키에 넣는다. 기본값("")일 땐
     # 예전 키 그대로라 기존 캐시가 살아 있다(불필요한 재호출 없음).
-    key_parts = [det, context, reference] + ([model] if model else [])
+    # PROMPT_VERSION: 교정 규칙이 바뀌면(2026-11-05 반말→해요체) 옛 규칙의 캐시를 재사용하지 않게 한다.
+    key_parts = [det, context, reference] + ([model] if model else []) + [PROMPT_VERSION]
     key = hashlib.sha1(json.dumps(key_parts, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     cache = _load_cache(video_dir)
     hit = cache.get(key)
