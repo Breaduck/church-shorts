@@ -297,9 +297,24 @@ def _break_score(words: list[Word], j: int, max_gap: float) -> float:
     """words[j-1]과 words[j] 사이에서 줄을 끊는 것의 자연스러움 점수.
     문장 끝 > 절 끝 > 뚜렷한 쉼 > 무표정 경계 > 조사 뒤 순이며, 부정어/관형사 뒤와
     의존명사·보조용언 앞은 금지(-100)한다."""
-    prev = words[j - 1].text.strip()
+    score = _break_score_text(words[j - 1].text, words[j].text)
+    if score <= -100.0 or score >= 10.0:
+        return score
+    gap = words[j].start - words[j - 1].end
+    if gap >= max_gap:
+        score += 5.0
+    elif gap >= 0.25:
+        score += 2.0
+    return score
+
+
+def _break_score_text(prev_text: str, next_text: str) -> float:
+    """텍스트만으로 보는 줄 끊기 점수(시각 정보 없음). 한 줄이 화면 폭을 넘어 2줄로 내릴 때의 분할점 선택에도 쓴다 —
+    예전 분할점은 '두 줄 폭이 가장 고른 곳'만 봐서 "기도하는 대로 다 / 되면 망한다고요?", "감사할 / 수 있는"처럼
+    의존명사·부사 사이를 갈랐다(2026-11-06 실신고 "한 번에 뽑으면 줄 넘김이 부자연스러운 게 아직도 안 고쳐짐")."""
+    prev = prev_text.strip()
     prev_bare = prev.strip(".,!?…·")
-    nxt = words[j].text.strip()
+    nxt = next_text.strip()
     nxt_bare = nxt.strip(".,!?…·")
     # 문장이 끝난 지점은 금지 규칙보다 우선한다: '…가시는 거.'처럼 의존명사로 끝나는
     # 문장 뒤에서 못 끊으면 다음 문장('우리는 무지합니다')이 같은 줄에 섞인다(실측).
@@ -322,11 +337,6 @@ def _break_score(words: list[Word], j: int, max_gap: float) -> float:
         score -= 2.0  # 목적어와 서술어 사이 — 되도록 붙여둔다
     elif prev_bare.endswith("의"):
         score -= 4.0  # 관형격 조사 뒤는 거의 항상 어색
-    gap = words[j].start - words[j - 1].end
-    if gap >= max_gap:
-        score += 5.0
-    elif gap >= 0.25:
-        score += 2.0
     return score
 
 
@@ -617,19 +627,29 @@ def _make_wrap_planner(font_name: str, usable_px: float):
         return measure_text_width_px(text, font_name, size) or 0.0
 
     def _best_split(word_texts: list[str], size: int, k: int) -> tuple[list[int], float]:
-        """단어 경계에서 k줄로 나눌 때 '가장 긴 줄'이 최소가 되는 분할."""
+        """단어 경계에서 k줄로 나눌 때: 폭에 **들어가는** 분할 중 말의 경계(_break_score_text)가 가장 자연스러운 것.
+        들어가는 분할이 없으면 '가장 긴 줄'이 최소인 분할(= 크기를 줄일 때의 기준)."""
         n = len(word_texts)
         if k <= 1:
             return [], _w(" ".join(word_texts), size)
-        best: tuple[list[int], float] | None = None
+        best_fit: tuple[float, float, list[int]] | None = None   # (경계 점수 합, -widest, cuts)
+        best_any: tuple[list[int], float] | None = None
         for cuts in combinations(range(1, n), k - 1):
             bounds = [0, *cuts, n]
             widest = max(
                 _w(" ".join(word_texts[bounds[i]:bounds[i + 1]]), size) for i in range(k)
             )
-            if best is None or widest < best[1]:
-                best = (list(cuts), widest)
-        return best if best else ([], _w(" ".join(word_texts), size))
+            if best_any is None or widest < best_any[1]:
+                best_any = (list(cuts), widest)
+            if widest <= usable_px:
+                nat = sum(_break_score_text(word_texts[c - 1], word_texts[c]) for c in cuts)
+                # 금지 경계(-100)는 폭이 맞아도 피한다. 점수가 같으면 줄 폭이 고른 쪽.
+                cand = (nat, -widest, list(cuts))
+                if best_fit is None or cand[:2] > best_fit[:2]:
+                    best_fit = cand
+        if best_fit is not None and best_fit[0] > -100.0:
+            return best_fit[2], -best_fit[1]
+        return best_any if best_any else ([], _w(" ".join(word_texts), size))
 
     def plan(word_texts: list[str], size: int) -> tuple[list[int], int]:
         key = (" ".join(word_texts), size)

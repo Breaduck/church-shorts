@@ -1707,6 +1707,9 @@ def analyze(
                     debug_path=video_dir / "selection_debug.json",
                     # 점프컷 전 원본 구간 상한(2026-09-21): 긴 이야기를 중간 들어내기로 살리기 위해 hard_max보다 넓다
                     max_span_sec=float(h.get("max_span_sec", 180)),
+                    # 2차 정밀 패스(2026-11-06): 컷마다 앞뒤 문장만 다시 보고 시작·끝·이음새 확인(호출 1회 추가)
+                    refine_pass=bool(h.get("refine_pass", True)),
+                    refine_thinking_tokens=int(h.get("refine_thinking_tokens", 4096)),
                 )
             except QuotaExceededError:
                 # 한도 소진은 폴백 대상이 아니다. v1을 또 부르면 확정 실패할 CLI 호출을

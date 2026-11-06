@@ -40,7 +40,16 @@ class Sentence:
 
 
 _NOISE_TOKEN = re.compile(r"^\[[^\]]*\]$|^>>$|^>>\S*$")  # [노래] [음악] [한숨] >> 등
-_REACTION_TOKEN = re.compile(r"^\[(웃음|박수|환호|웃음소리|박수 소리)\]$")
+# [노래]·[음악]도 반응으로 남긴다(2026-11-06 실측 1jRnbkxEOgI: 설교자가 "찬송가 64장, 한번 눌러 보세요" → 피아노 반주
+# 25초 → "박수 박수"가 이 설교에서 제일 재미있는 순간인데, 전사에 글자가 없으니 모델이 '늘어지는 구간'으로 보고 skip).
+_REACTION_TOKEN = re.compile(r"^\[(웃음|박수|환호|웃음소리|박수 소리|노래|음악|연주)\]$")
+# 말이 끊긴 공백(초). 이 이상 비었고 바로 뒤에 박수·웃음·노래가 오면 '전사에 안 찍힌 공연·행동 순간'이다.
+_PERFORMANCE_GAP_SEC = 6.0
+_PERFORMANCE_FOLLOW_RE = re.compile(r"(박수|웃음|노래|연주|할렐루야)")
+# 문장이 될 수 없는 꼬리(주어·목적어 조사로 끝남). 자동자막이 "베토벤은" 뒤에서 1.2초 쉬면 gap 규칙이 여기서 문장을
+# 갈라 "인생 후반부에 청력을 잃었어요"처럼 주어 없는 문장이 생기고, 그 문장이 훅이 되면 "누구 얘기지?"가 된다.
+_FRAGMENT_TAIL = re.compile(r"(은|는|이|가|께서|을|를|의|에게|한테)$")
+_FRAGMENT_MAX_GAP_SEC = 4.0
 _TERMINAL_PUNCT = re.compile(r"[.?!。]$")
 # 마침표 없이도 문장이 끝났다고 볼 수 있는 종결어미(단어 끝). 자동자막은 마침표가 대체로 있지만
 # 빠지는 곳이 있어, 긴 문장(12초/25단어 초과)에서만 이 규칙으로 보조 분할한다.
@@ -111,7 +120,11 @@ def build_sentences(transcript: Transcript) -> list[Sentence]:
         if cur:
             gap = ws - cur[-1][1]
             if gap >= _GAP_SPLIT_SEC:
-                _flush()
+                last = re.sub(r"[.,!?]+$", "", cur[-1][2])
+                # 조사로 끝난 조각("베토벤은", "그 말씀을")은 아직 문장이 아니다 — 짧은 쉼이면 이어 붙인다.
+                if not (_FRAGMENT_TAIL.search(last) and len(last) >= 2 and gap < _FRAGMENT_MAX_GAP_SEC
+                        and not _TERMINAL_PUNCT.search(cur[-1][2])):
+                    _flush()
         cur.append((ws, we, wt))
         if _TERMINAL_PUNCT.search(wt):
             _flush()
@@ -166,11 +179,63 @@ def _fmt_ts(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+# 사람들이 실제로 묻는 생활 질문의 표지어(2026-11-06). 해설 블록 사이에 묻힌 "부모가 자식을 버리지 않잖아요…
+# 머리가 크니까 말을 안 들어서 그렇지 기도를 많이 해야"(16:07~17:23)를 모델이 '본문 해설'로 묶어 버린 실측 →
+# 문장 목록에 표식을 붙여 1단계에서 반드시 검토하게 한다. 표식은 힌트일 뿐 선정은 여전히 모델이 한다.
+_UNIVERSAL_TOPICS: list[tuple[str, re.Pattern]] = [
+    ("자녀", re.compile(r"(자녀|자식|아들|딸|아이들|애들|부모|엄마|아빠)")),
+    ("부부", re.compile(r"(남편|아내|부부|이혼|결혼|신혼)")),
+    ("돈", re.compile(r"(가난|돈이|돈을|돈도|빚|월급|사업|망했|부자)")),
+    ("건강", re.compile(r"(병들|병이|아프|아팠|암에|건강|수술|우울|불안)")),
+    ("직장", re.compile(r"(직장|회사|사장|상사|실직|퇴직)")),
+    ("기도", re.compile(r"(기도해도|기도했는데|응답|기도가 안)")),
+    ("외로움", re.compile(r"(외로|혼자|고독|버림)")),
+]
+_UNIVERSAL_MAX_MARKS = 40
+
+
+def performance_gaps(sentences: list[Sentence]) -> set[int]:
+    """'전사에 안 찍힌 공연·행동 순간' 직후 문장 번호 집합: 앞 문장과 _PERFORMANCE_GAP_SEC 이상 비었고,
+    그 문장(또는 바로 앞 문장)에 박수·웃음·노래 반응/표현이 있는 곳. 이 공백은 컷 안에 있으면 절대 들어내지 않는다."""
+    out: set[int] = set()
+    for pos in range(1, len(sentences)):  # 부분 목록(정밀 패스 창)에도 쓰이므로 위치가 아니라 문장 번호(idx)로 돌려준다
+        cur, prev = sentences[pos], sentences[pos - 1]
+        gap = cur.start - prev.end
+        if gap < _PERFORMANCE_GAP_SEC:
+            continue
+        around = f"{cur.reaction} {cur.text} {prev.reaction}"
+        if _PERFORMANCE_FOLLOW_RE.search(around):
+            out.add(cur.idx)
+    return out
+
+
+def _universal_marks(sentences: list[Sentence]) -> dict[int, str]:
+    marks: dict[int, str] = {}
+    for s in sentences:
+        hits = [name for name, rx in _UNIVERSAL_TOPICS if rx.search(s.text)]
+        if hits:
+            marks[s.idx] = "·".join(hits[:2])
+    if len(marks) > _UNIVERSAL_MAX_MARKS:
+        # 너무 많으면 표식이 잡음이 된다 — 두 주제 이상 겹친 문장만 남긴다.
+        marks = {k: v for k, v in marks.items() if "·" in v}
+    return marks
+
+
 def format_sentences(sentences: list[Sentence]) -> str:
-    return "\n".join(
-        f"S{s.idx} [{_fmt_ts(s.start)}] {s.text}" + (f"  ← [청중 {s.reaction}]" if s.reaction else "")
-        for s in sentences
-    )
+    gaps = performance_gaps(sentences)
+    marks = _universal_marks(sentences)
+    lines: list[str] = []
+    for pos, s in enumerate(sentences):
+        if s.idx in gaps and pos > 0:
+            gap = s.start - sentences[pos - 1].end
+            lines.append(f"   ⏸ [말 없음 {gap:.0f}초 — 전사에 안 찍힌 연주·노래·행동 순간. 바로 뒤 반응이 증거. 절대 skip 금지]")
+        tail = ""
+        if s.reaction:
+            tail += f"  ← [청중 {s.reaction}]"
+        if s.idx in marks:
+            tail += f"  ← [보편: {marks[s.idx]}]"
+        lines.append(f"S{s.idx} [{_fmt_ts(s.start)}] {s.text}{tail}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +302,9 @@ def build_thesis_cut_prompt(
 ## 1단계 — 쇼츠 요소 지도
 설교 전체를 읽고 아래 다섯 요소가 있는 대목을 **빠짐없이** 나열하라. 다섯 요소는 동등하다 — 재미만 찾지 마라.
 - **재미**: 유머·자학·흉내·대사 재연(전사에 [웃음]이 있으면 그 직전 문장들이 핵심).
+  전사본의 `⏸ [말 없음 N초 …]` 줄은 설교자가 **피아노를 치거나 노래하거나 몸으로 뭔가 한 순간**이다(글자가 없을 뿐
+  영상엔 다 있다). 바로 뒤에 "박수"·[웃음]·[노래]가 오면 그 공백과 앞뒤 문장이 그 컷의 하이라이트다 — 컷 안에 넣고
+  skip으로 절대 들어내지 마라(실측: "찬송가 64장, 한번 눌러 보세요" → 피아노 25초 → "박수 박수"를 통째로 들어냈다).
 - **감동**: 실화·간증·희생·눈물겨운 헌신, 구체 숫자·고유명사·대사가 있는 이야기("식권밖에 없어요", "보증금 가져왔어요").
 - **뜨끔**: 시청자 자신의 삶을 정면으로 찌르는 직격·질문("인생의 연조가 저절로 깊어지는 건 아니지 않습니까?").
 - **교훈(통찰)**: 뻔한 권면이 아니라 **관점을 뒤집는 한마디**("딱 맞아떨어진다고 다 하나님의 뜻은 아닙니다", "교회를
@@ -253,15 +321,22 @@ def build_thesis_cut_prompt(
   성경 인물이나 남의 간증보다 설교자 자신의 '나도 그렇다'가 훨씬 세다.
 - **사람들이 실제로 묻는 질문에 답하는 대목**: 기도가 안 나올 때·응답 없는 기도·불안·자녀가 말을 안 들을 때·부부·
   교회에 실망했을 때·착한 사람의 고난. 설교자가 그 질문을 입에 올리고 답하면, 그 질문 문장이 훅이다.
+  전사본에 `[보편: 자녀]`처럼 표식이 붙은 문장은 **본문 해설 사이에 묻혀 있어도 반드시 후보로 검토**하라. 해설 블록
+  전체가 아니라 생활 적용 문장들만 떼어 컷으로 잡는다(실측 누락: 거듭남 해설 한가운데의 "부모가 자식을 버리지
+  않잖아요… 머리가 크니까 자식들이 말을 안 들어서 그렇지, 기도를 많이 해야… 육의 생명을 줬으니 영적 생명도 줘야").
 
 ## 2단계 — 대목마다 컷 잡기 (문장 번호로)
 - core: 착지하는 명제 문장 번호(없으면 펀치라인). 반드시 start~end 안에 있어야 한다.
 - start = **훅 문장**: 시청자가 첫 3초에 듣는 문장이다. 상황 제시·대사의 첫 줄·질문·직격·반전 예고·**설교자의 고백**("저도 ~가
   안 돼요")·**시청자 호명**("~한 분들 잘 들으세요") 중 하나여야 한다. 옳은 명제 선언("~입니다")으로 시작하는 건 마지막 수단이다.
-  **훅으로 금지**: 연도·날짜·지명·인명 나열("2006년 12월에 성전 부지를 매입하고…", "복음을 들고 태평양을 건너 대서양을
-  건너…"), 인물·배경 소개("○○가 ~했는데"), "오늘 본문은", 30단어 넘는 긴 문장, 앞 문맥을 전제하는 "그래서/이것도/둘째,"
-  시작. 그런 문장이 설정에 필요해 보여도 **그 뒤의 첫 구체 문장으로 옮겨라** — 예: "2006년 12월에…" 대신 바로 뒤의
-  "전도하면 될 거라고 생각했어요."가 훅이다. 설정이 조금 빠져도 훅이 사는 쪽이 낫다.
+  **훅으로 금지**: 연도·지명·인명이 **셋 이상 나열**되는 문장("2006년 12월에 성전 부지를 매입하고 2008년에…", "복음을 들고
+  태평양을 건너 대서양을 건너…"), "오늘 본문은", 30단어 넘는 긴 문장, 앞 문맥을 전제하는 "그래서/이것도/둘째," 시작.
+  그런 문장은 **그 뒤의 첫 구체 문장으로 옮겨라** — 예: "2006년 12월에…" 대신 바로 뒤의 "전도하면 될 거라고 생각했어요."
+  **단, 주어를 세우는 한 문장은 금지가 아니라 필수다.** 질문·반전 훅이 가리키는 사람·사물("베토벤", "그 말씀", "18년 전에 산
+  땅")이 바로 앞 문장에서 소개되면 **그 문장부터** 시작하라. 실측 실패: "천재 음악가 베토벤은 청력을 잃었어요 → 음악가가 귀가
+  안 들린다는 건 얼마나 절망적입니까?"에서 뒤 질문만 떼어 누구 얘기인지 모르는 훅이 됐고, "18년 전 제가 이 교회 땅을 사
+  놓고…"를 빼고 "그래서 그 말씀을 붙들고"로 시작해 무슨 말씀인지 모르는 훅이 됐다. "18년 전", "시편 18편"은 나열이 아니라
+  설정이다. 설정이 길면(3문장 이상) 뒤쪽 구체 문장으로 옮기되 주어 문장 하나는 남겨라.
 - end: 명제가 **착지**하는 가장 힘 있는 문장 — 펀치라인·명제 재선언·반전의 한마디·인용할 만한 한 줄("~줄로 믿습니다"는
   그 안에 명제가 들어 있을 때만). **"축복합니다/축원합니다/~되시기를/아멘" 같은 축복 공식은 끝으로 고르지 말고 그 앞 문장에서
   끊어라**(2026-10 실측: 좋아요 상위 9개 중 축복으로 끝난 것 0개, 축복 끝은 하위 채널에만).
@@ -287,6 +362,9 @@ def build_thesis_cut_prompt(
        시대 배경)다 — 시청자는 성경을 모르는 일반 대중이라 그 세부는 남의 옛날이야기다(사용자 지시). 인물이 한 문장
        근거로만 스치는 건 두되, 행적을 따라가는 여러 문장은 통째로 들어내고 그 뒤의 적용·대사·착지를 남겨라.
        반대로 **핵심(core)과 그 착지, 반전 대사는 절대 skip 안에 넣지 마라** — 실측에서 핵심을 건너뛴 컷이 나왔다.
+   (7) **`⏸ [말 없음 …]` 공백과 그 앞뒤 문장은 절대 skip 안에 넣지 마라**(연주·노래·행동 순간, 위 '재미' 참조).
+   (8) 들어낸 뒤 남는 문장들을 **처음부터 끝까지 이어 읽어 보라**. 한 군데라도 "뭐가?/누가?/왜 갑자기?"가 생기면 그 skip은
+       버려라. 사용자 기준: 재미없는 부분이 날아가는 건 괜찮지만 **내용이 끊기는 건 절대 안 된다.**
   각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는 뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초
   이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다. {hard_max_sec:.0f}초 이내 컷에도 늘어지는 구간이 있으면 빼서
   밀도를 올려라 — 단 위 5개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
@@ -401,7 +479,11 @@ def _is_weak_hook(text: str) -> bool:
         return False  # 짧은 질문은 훅이 된다
     if _WEAK_HOOK_YEAR.match(t):
         return True
-    if len(re.findall(r"\d+", t)) >= _WEAK_HOOK_MIN_DIGIT_GROUPS:
+    # 성경 장·절·편("시편 18편 19절")과 "18년 전"은 나열이 아니라 이야기의 설정이다 — 숫자 나열로 세지 않는다
+    # (2026-11-06 실측: "그때 하나님께서 제게 주신 시편 18편 19절 말씀에 넓은 곳으로 인도하셨다"가 약한 훅으로 밀려
+    # "그래서 그 말씀을 붙들고…"에서 시작 → 무슨 말씀인지 모르는 훅).
+    digits = re.findall(r"\d+(?!\s*(?:편|장|절|년\s*전|년\s*만|년\s*동안|살|명|번째))", t)
+    if len(digits) >= _WEAK_HOOK_MIN_DIGIT_GROUPS:
         return True
     return False
 
@@ -534,9 +616,14 @@ def _sanitize_skips(
     """자연스럽지 않은 skip은 버린다(위 규칙). 앞쪽 skip부터 차례로 확정하며, '남은 내용'은 그때까지
     확정된 skip을 뺀 텍스트로 계산한다 — 그래야 지시어의 대상이 실제로 남아 있는지 정확히 본다."""
     out: list[tuple[int, int]] = []
+    gaps = performance_gaps(sentences)
     for a, b in _clip_skips(skips, start, end):
         if a <= core <= b:
             log.append(f"skip S{a}~S{b} 핵심 문장 포함 → 무시"); continue
+        # 공연·행동 순간(말 없는 공백 + 뒤따르는 박수·웃음)은 그 공백 양쪽 문장을 들어내면 사라진다 → 그런 skip은 버린다.
+        hit = [g for g in gaps if a <= g <= b + 1 and start < g <= end]
+        if hit:
+            log.append(f"skip S{a}~S{b} 공연·반응 순간(S{hit[0]} 앞 공백) 포함 → 무시"); continue
         kept_before = " ".join(
             s.text for i0, i1 in kept_runs(start, a - 1, out) for s in sentences[i0: i1 + 1]
         )
@@ -560,9 +647,45 @@ def kept_runs(start: int, end: int, skips: list[tuple[int, int]]) -> list[tuple[
     return runs
 
 
+# 공연·행동 순간(말 없는 공백)은 통째로 남기면 23초짜리 피아노가 되고 통째로 빼면 하이라이트가 사라진다 →
+# 앞 8초(연주가 시작되는 걸 보여줌) + 반응 직전 2초만 남긴다. 길이 계산(_eff_dur)과 절대초 구간(cut_keep_ranges)이
+# 같은 규칙을 써야 검증 길이와 렌더 길이가 맞는다.
+_PERF_KEEP_HEAD_SEC = 8.0
+_PERF_KEEP_TAIL_SEC = 2.0
+_perf_gap_cache: dict[tuple[int, int], set[int]] = {}
+
+
+def _perf_gaps_cached(sentences: list[Sentence]) -> set[int]:
+    key = (id(sentences), len(sentences))
+    g = _perf_gap_cache.get(key)
+    if g is None:
+        g = performance_gaps(sentences)
+        if len(_perf_gap_cache) > 8:
+            _perf_gap_cache.clear()
+        _perf_gap_cache[key] = g
+    return g
+
+
+def _run_abs_ranges(sentences: list[Sentence], a: int, b: int, e_override: float | None = None) -> list[list[float]]:
+    """남는 문장 구간 a~b를 절대초 범위 목록으로. 안에 긴 공연 공백이 있으면 앞 8초+끝 2초만 남기고 가운데를 비운다."""
+    s0, e0 = float(sentences[a].start), float(sentences[b].end if e_override is None else e_override)
+    out: list[list[float]] = []
+    cur = s0
+    for g in sorted(_perf_gaps_cached(sentences)):
+        if not (a < g <= b):
+            continue
+        g_start, g_end = float(sentences[g - 1].end), float(sentences[g].start)
+        if g_end - g_start <= _PERF_KEEP_HEAD_SEC + _PERF_KEEP_TAIL_SEC + 2.0:
+            continue
+        out.append([cur, g_start + _PERF_KEEP_HEAD_SEC])
+        cur = g_end - _PERF_KEEP_TAIL_SEC
+    out.append([cur, e0])
+    return [r for r in out if r[1] - r[0] > 0.1]
+
+
 def _eff_dur(sentences: list[Sentence], start: int, end: int, skips: list[tuple[int, int]]) -> float:
-    """skip을 들어낸 뒤 실제 남는 길이(초)."""
-    return sum(sentences[b].end - sentences[a].start for a, b in kept_runs(start, end, skips))
+    """skip을 들어낸 뒤 실제 남는 길이(초). 공연 공백은 앞 8초+끝 2초만 센다(_run_abs_ranges와 동일)."""
+    return sum(r[1] - r[0] for a, b in kept_runs(start, end, skips) for r in _run_abs_ranges(sentences, a, b))
 
 
 # 들어내면 안 되는 skip 되살리기(2026-09-27 실신고 "재밌는 부분·핵심을 잘랐다", 1GM 실측).
@@ -722,6 +845,58 @@ def _restore_costly_skips(
     return _merge_ranges(cur)
 
 
+_SUBJECT_LOOKBACK = 2
+_SUBJECT_LOOKBACK_SEC = 15.0
+_SUBJECT_PREV_MAX_WORDS = 22
+
+
+def _recover_subject_start(
+    raw: dict, sentences: list[Sentence], start: int, end: int, hard_max_sec: float, max_span_sec: float,
+    skips: list[tuple[int, int]],
+) -> int | None:
+    """훅 문장이 가리키는 대상(scene/why/thesis에 적힌 고유명사·지시어의 명사)이 바로 앞 문장에서 처음 나오면 그 문장 번호."""
+    if start <= 0:
+        return None
+    head = sentences[start].text
+    wanted: set[str] = set()
+    m = _DEMONSTRATIVE_REF.match(head.strip())
+    if m and not _DEMONSTRATIVE_IDIOM.match(head.strip()):
+        noun = _PARTICLE_TAIL.sub("", m.group(2))
+        if len(noun) >= 2:
+            wanted.add(noun)
+    meta = " ".join(str(raw.get(k) or "") for k in ("scene", "why", "thesis"))
+    head_stems = _content_stems(head)
+    body_stems = _content_stems(" ".join(s.text for s in sentences[start + 1: end + 1]))
+    for stem in _content_stems(meta):
+        # 설정에 적힌 구체어(인명·지명·사물) 중 훅 문장엔 없지만 컷 본문엔 나오는 것 — 이 컷이 '그것'에 대한 이야기라는 뜻
+        if stem not in head_stems and stem in body_stems and len(stem) >= 2 and not stem.isdigit():
+            wanted.add(stem)
+    if not wanted:
+        return None
+    for k in range(1, _SUBJECT_LOOKBACK + 1):
+        j = start - k
+        if j < 0:
+            break
+        sj = sentences[j]
+        if sentences[start].start - sj.start > _SUBJECT_LOOKBACK_SEC:
+            break
+        if (
+            _starts_with_structure_marker(sj.text) or _STRONG_LANDING.search(sj.text)
+            or _FILLER_ONLY.match(sj.text.strip()) or re.fullmatch(r"(>>\s*)?아멘[.!]?", sj.text.strip())
+            or len(sj.text.split()) > _SUBJECT_PREV_MAX_WORDS or _is_weak_hook(sj.text)
+        ):
+            break
+        stems_j = _content_stems(sj.text)
+        # 지시어의 명사는 부분 일치("말씀" ⊂ "말씀에"), 설정 구체어는 어간 일치
+        hit = [w for w in wanted if w in stems_j or any(w in s for s in stems_j)]
+        if not hit:
+            continue
+        if _eff_dur(sentences, j, end, skips) > hard_max_sec or sentences[end].end - sj.start > max_span_sec:
+            break
+        return j
+    return None
+
+
 def verify_and_fix(
     raw: dict,
     sentences: list[Sentence],
@@ -879,6 +1054,16 @@ def verify_and_fix(
                 best = j
         if best is not None:
             log.append(f"start S{start} 약한 훅(연도/나열/장문) → S{best}"); start = best
+    # (9) 훅이 가리키는 대상이 바로 앞 문장에 있으면 그 문장부터 시작한다(2026-11-06 실측 두 건).
+    #     · "청력을 잃은 음악가가 귀가 안 들린다는 건 얼마나 절망적입니까?"(질문이라 훅으로 뽑힘) — 누구 얘기인지는
+    #       바로 앞 "천재 음악가 베토벤은 인생 후반부에 청력을 잃었어요"에 있다. 모델이 scene에 '베토벤'을 적어 놓고도
+    #       '인물 소개 시작 금지' 규칙 때문에 그 문장을 뺐다.
+    #     · "그래서 그 말씀을 붙들고…" — '그 말씀'이 무엇인지는 앞 문장("…시편 18편 19절 말씀에 넓은 곳으로…")에 있다.
+    #     이음새의 '지시대상 보존' 규칙을 컷의 시작에도 적용한다: 앞 1~2문장(15초) 안에 그 대상이 처음 나오고, 그 문장이
+    #     착지·구조 표지·추임새가 아니면 거기서 시작한다. 길이 상한 안에서만.
+    moved_to = _recover_subject_start(raw, sentences, start, end, hard_max_sec, max_span_sec, skips)
+    if moved_to is not None and moved_to != start:
+        log.append(f"start S{start} → S{moved_to} (훅의 대상이 앞 문장에 있음)"); start = moved_to
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
     skips = _restore_costly_skips(raw, skips, sentences, start, end, max_sec, hard_max_sec, log)
     skips = _restore_bridges_in_skips(skips, sentences, start, end, hard_max_sec, log)
@@ -892,6 +1077,103 @@ def verify_and_fix(
         return None, log + [f"skip 재검사 후 길이 {dur(start,end):.0f}초 > 상한 {hard_max_sec:.0f}초 → 탈락"]
     fixed = dict(raw); fixed.update({"core": core, "start": start, "end": end, "skip": [list(s) for s in skips]})
     return fixed, log
+
+
+_REFINE_BEFORE = 6   # 컷 앞으로 보여줄 문장 수
+_REFINE_AFTER = 4    # 컷 뒤로 보여줄 문장 수
+
+
+def build_refine_prompt(cuts: list[dict], sentences: list[Sentence], hard_max_sec: float) -> str:
+    """2차 정밀 패스 프롬프트: 컷 하나씩, 그 주변 전사본만 보고 경계·이음새를 다시 본다.
+
+    왜(2026-11-06 사용자): "같은 Opus인데 하나씩 짚어 주면 잘하고 한 번에 뽑으면 왜 못하냐." 1차 패스는 300문장 + 규칙
+    3천 단어를 한 번에 읽고 8개를 한꺼번에 내놓는다 — 사람이 하나씩 할 때처럼 '이 컷만' 앞뒤를 읽고 확인하는 단계가
+    없었다. 이 패스는 그 확인 단계다: 컷마다 ±몇 문장만 보여주고 (1) 첫 문장이 누구·무엇 얘기인지 세우는가 (2) 끝이
+    착지하는가 (3) 이음새마다 가리키는 대상이 남아 있는가 (4) 들어낸 뒤 이어 읽어도 말이 되는가만 묻는다."""
+    blocks: list[str] = []
+    for i, c in enumerate(cuts):
+        s, e = int(c["start"]), int(c["end"])
+        lo, hi = max(0, s - _REFINE_BEFORE), min(len(sentences) - 1, e + _REFINE_AFTER)
+        win = format_sentences(sentences[lo: hi + 1])
+        skips = ", ".join(f"S{a}~S{b}" for a, b in _skips_of(c)) or "없음"
+        blocks.append(
+            f"### 컷 {i}\n- 장면: {c.get('scene','')}\n- 명제: {c.get('thesis','')}\n- 현재 start=S{s}, end=S{e}, core=S{c['core']}, "
+            f"skip={skips}, 남는 길이={_eff_dur(sentences, s, e, _skips_of(c)):.0f}초\n{win}"
+        )
+    return f"""너는 교회 쇼츠 편집자다. 1차로 고른 컷들을 **하나씩** 다시 본다 — 전체 설교가 아니라 그 컷의 앞뒤 전사본만 보고,
+사람이 영상 하나를 만들 때 하듯 시작·끝·이음새를 확인한다. 컷의 소재·명제는 바꾸지 않는다(그건 1차가 정했다).
+
+컷마다 아래를 순서대로 확인하고 필요한 곳만 고쳐라:
+1. **시작(start)**: 첫 문장만 듣고 "누구/무엇 얘기인지" 아는가? 모르는데 바로 앞 문장(1~2개)이 그걸 세우면 start를 거기로
+   옮겨라("천재 음악가 베토벤은 청력을 잃었어요" 없이 "음악가가 귀가 안 들린다는 건…"만 있으면 안 된다). 반대로 첫 문장이
+   앞 화제의 꼬리·추임새·"그래서"뿐인 짧은 전환이면 다음 문장으로 옮겨라. 주어·설정 문장은 '소개'라서 빼는 게 아니다.
+2. **끝(end)**: 마지막 문장이 명제의 착지(펀치라인·결론)인가? 중간에서 끊겼으면 결론 문장까지 늘리고, 착지 뒤에 "자 그러면/
+   다음으로/새 이야기"가 붙었으면 착지에서 끊어라. 축복 공식("~되시기를", "축원합니다")으로 끝내지 마라.
+3. **이음새(skip)**: 들어낸 자리마다 (a) 앞 문장이 말을 마쳤는가 (b) 뒤 문장이 가리키는 대상("그 사장님", "그 말씀")이 남은
+   내용에 있는가 (c) 명제의 근거·반전·대사·`⏸` 공연 순간을 들어내지 않았는가. 하나라도 걸리면 그 skip을 버려라.
+4. **이어 읽기**: 남는 문장을 처음부터 끝까지 이어 읽어 "뭐가?/누가?/왜 갑자기?"가 한 군데라도 생기면 skip을 되돌려라.
+   재미없는 해설이 8초 넘게 이어지고 그걸 빼도 위 (a)(b)(c)가 전부 괜찮을 때만 새 skip을 추가해도 된다. 길이는 {hard_max_sec:.0f}초 이내.
+start·end·core·skip은 전부 **아래 창에 보이는 S번호**로만 적는다. core는 start~end 안에 있어야 한다. 고칠 게 없으면 그대로 적어라.
+
+{chr(10).join(blocks)}
+
+## 출력 형식
+다른 설명 없이 JSON 배열만(```json 코드블록). 각 원소: {{"index": 컷 번호, "start": S번호(정수), "end": 정수, "core": 정수,
+"skip": [[a,b],…] 또는 [], "note": "고친 이유 한 줄(없으면 빈 문자열)"}}"""
+
+
+def refine_cuts(
+    cuts: list[dict], sentences: list[Sentence], *, model: str, thinking_tokens: int, min_sec: float, max_sec: float,
+    hard_max_sec: float, max_span_sec: float, timeout_sec: int = 600, on_progress=None,
+) -> tuple[list[dict], list[dict]]:
+    """2차 정밀 패스(한 번의 호출). 모델 답은 verify_and_fix를 다시 통과한 것만 받아들이고, 실패하면 원래 컷을 유지한다."""
+    if not cuts:
+        return cuts, []
+    logs: list[dict] = []
+    try:
+        raw = _invoke_claude_json(
+            build_refine_prompt(cuts, sentences, hard_max_sec), model=model, thinking_tokens=thinking_tokens,
+            timeout_sec=timeout_sec, on_progress=on_progress, max_clips=len(cuts),
+        )
+    except QuotaExceededError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 정밀 패스 실패는 1차 결과로 간다
+        print(f"[v2] 정밀 패스 실패(1차 컷 유지): {exc}", flush=True)
+        return cuts, [{"error": str(exc)}]
+    by_idx: dict[int, dict] = {}
+    for r in raw:
+        try:
+            by_idx[int(r.get("index"))] = r
+        except (TypeError, ValueError, AttributeError):
+            continue
+    out: list[dict] = []
+    for i, c in enumerate(cuts):
+        r = by_idx.get(i)
+        if not r:
+            out.append(c); continue
+        cand = dict(c)
+        for k in ("start", "end", "core"):
+            if r.get(k) is not None:
+                cand[k] = r[k]
+        cand["skip"] = r.get("skip", c.get("skip"))
+        try:
+            same = (int(cand["start"]), int(cand["end"]), int(cand["core"]), _skips_of(cand)) == \
+                   (int(c["start"]), int(c["end"]), int(c["core"]), _skips_of(c))
+        except (TypeError, ValueError):
+            same = True
+        if same:
+            out.append(c); logs.append({"index": i, "changed": False, "note": r.get("note", "")}); continue
+        fixed, vlog = verify_and_fix(cand, sentences, min_sec, max_sec, hard_max_sec, max_span_sec=max_span_sec)
+        # core가 1차와 다른 문장으로 옮겨졌으면(소재 변경) 받지 않는다 — 이 패스는 경계만 고친다.
+        if fixed is None or int(fixed["core"]) != int(c["core"]) and abs(int(fixed["core"]) - int(c["core"])) > 2:
+            out.append(c)
+            logs.append({"index": i, "changed": False, "rejected": vlog or ["core 이동"], "note": r.get("note", "")})
+            continue
+        out.append(fixed)
+        logs.append({"index": i, "changed": True, "from": [c["start"], c["end"], _skips_of(c)],
+                     "to": [fixed["start"], fixed["end"], _skips_of(fixed)], "verify": vlog, "note": r.get("note", "")})
+        print(f"[v2] 정밀 패스 컷{i}: S{c['start']}~S{c['end']} → S{fixed['start']}~S{fixed['end']} ({r.get('note','')})", flush=True)
+    return out, logs
 
 
 def merge_adjacent_cuts(
@@ -1235,13 +1517,12 @@ def cut_keep_ranges(cut: dict, sentences: list[Sentence]) -> list[list[float]]:
     out: list[list[float]] = []
     runs = kept_runs(int(cut["start"]), int(cut["end"]), _skips_of(cut))
     for k, (a, b) in enumerate(runs):
-        s0, e0 = float(sentences[a].start), float(sentences[b].end)
-        if k + 1 < len(runs):
-            e0 = _sentence_cut_end(sentences, b)
-        if out and s0 < out[-1][1] + 0.05:
-            s0 = out[-1][1] + 0.05
-        if e0 - s0 > 0.1:
-            out.append([round(s0, 3), round(e0, 3)])
+        e_over = _sentence_cut_end(sentences, b) if k + 1 < len(runs) else None
+        for s0, e0 in _run_abs_ranges(sentences, a, b, e_over):  # 공연 공백은 앞 8초+끝 2초만(가운데 비움)
+            if out and s0 < out[-1][1] + 0.05:
+                s0 = out[-1][1] + 0.05
+            if e0 - s0 > 0.1:
+                out.append([round(s0, 3), round(e0, 3)])
     return out
 
 
@@ -1981,6 +2262,8 @@ def select_highlights_v2(
     on_progress=None,
     debug_path=None,
     max_span_sec: float = 180.0,
+    refine_pass: bool = True,
+    refine_thinking_tokens: int = 4096,
 ) -> list[Clip]:
     """max_span_sec: 점프컷(skip)을 들어내기 전 원본 구간의 상한. 남는 길이는 hard_max_duration_sec 이내여야 한다.
     debug_path가 있으면 1차 원시 컷·검증 로그·병합 결과를 JSON으로 남긴다(선정 품질 불만이
@@ -2022,6 +2305,18 @@ def select_highlights_v2(
     fixed, merge_log = merge_adjacent_cuts(fixed, sentences, hard_max_duration_sec)
     for m in merge_log:
         print(f"[v2] 병합: {m}", flush=True)
+    # --- 2차 정밀 패스: 컷 하나씩 앞뒤만 다시 보고 시작·끝·이음새를 확인(사람이 하나씩 만들 때 하는 그 단계)
+    refine_log: list[dict] = []
+    if refine_pass and fixed:
+        if on_progress:
+            on_progress(0.60, "컷마다 앞뒤를 다시 읽고 경계를 다듬는 중...")
+        fixed, refine_log = refine_cuts(
+            fixed, sentences, model=model, thinking_tokens=refine_thinking_tokens,
+            min_sec=min_duration_sec, max_sec=max_duration_sec, hard_max_sec=hard_max_duration_sec,
+            max_span_sec=max_span_sec, on_progress=_prog(0.60, 0.70),
+        )
+        fixed, merge_log2 = merge_adjacent_cuts(fixed, sentences, hard_max_duration_sec)
+        merge_log = merge_log + merge_log2
     fixed, polemic_log = drop_polemic_cuts(fixed, sentences)
     for m in polemic_log:
         print(f"[v2] 주제 필터: {m}", flush=True)
@@ -2064,7 +2359,7 @@ def select_highlights_v2(
             dbg = {
                 "sentences": [{"idx": s.idx, "start": s.start, "end": s.end, "text": s.text} for s in sentences],
                 "raw_cuts": raw_cuts, "verify": verify_logs, "merge_log": merge_log, "polemic_log": polemic_log,
-                "bible_log": bible_log, "biased_log": biased_log, "enum_log": enum_logs,
+                "bible_log": bible_log, "biased_log": biased_log, "enum_log": enum_logs, "refine_log": refine_log,
                 "final_cuts": [{**c, "start_sec": sentences[c["start"]].start, "end_sec": sentences[c["end"]].end,
                                 "keep_ranges": cut_keep_ranges(c, sentences),
                                 "eff_sec": _eff_dur(sentences, c["start"], c["end"], _skips_of(c))}
