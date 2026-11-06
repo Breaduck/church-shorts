@@ -1271,9 +1271,10 @@ function updateOverlay() {
   const want = parseFloat($('pSize').value) || (L.caption_font_size || 72);
   const usable = capUsablePx() * SC;
   // 렌더(captions.py)와 동일 규칙: 클립 전체가 하나의 크기 + 사용자가 고른 크기가 우선.
-  // 한 줄에 안 들어가면 2줄로 내리고, 2줄로도 넘칠 때만 줄인다.
+  // 한 줄에 안 들어가면 2줄로 내리지 않고 시간 순서대로 이어 뜨는 1줄 조각으로 나눈다
+  // (렌더 _split_overwide_lines와 같은 규칙 — 자막은 무조건 1줄, 사용자 요구 2026-11-07).
   const koPx = uniformFontPx(caps, want * kc * SC, usable);
-  setWrapped(koEl, caps[i].text, koPx, usable);
+  setPiece(koEl, caps[i], koPx, usable, v.currentTime);
   ov.style.fontSize = koPx + 'px';
   koEl.style.color = capTextColor || '';
   // 패턴(B/U/I)·획·글로우·불투명도 — CSS로 근사한다(font-weight/style/decoration은 정확히
@@ -1388,6 +1389,51 @@ function setWrapped(el, text, fontPx, usable) {
     if (i > 0) el.appendChild(document.createElement('br'));
     el.appendChild(document.createTextNode(toks.slice(bounds[i], bounds[i + 1]).join(' ')));
   }
+}
+// 폭을 넘는 줄은 조각 중 지금 시각에 해당하는 것 하나만 보인다(조각 시간은 글자 수 비례 —
+// 렌더의 편집 자막 단어 시각도 글자 수 비례로 나눈 것이라 같은 자리에서 넘어간다).
+const BR = {{ break_rules|tojson }};
+const _strip = s => String(s || '').trim().replace(/^[.,!?…·]+|[.,!?…·]+$/g, '');
+// captions._break_score_text 이식(규칙 목록은 서버에서 그대로 받는다).
+function breakScore(prev, next) {
+  const p = String(prev || '').trim(), pb = _strip(p), nb = _strip(next);
+  if (p && '.?!…'.includes(p[p.length - 1])) return 12;
+  if (BR.sentEnd.some(e => pb.endsWith(e))) return 10;
+  if (BR.noAfter.includes(pb)) return -100;
+  if (BR.noBeforeExact.includes(nb) || BR.noBeforePrefix.some(e => nb.startsWith(e))) return -100;
+  let s = 0;
+  if (['해야', '돼야', '되야', '어야', '아야', '하여야'].some(e => pb.endsWith(e))) s -= 8;
+  if (BR.bonusBefore.includes(nb)) s += 5;
+  if (BR.clauseEnd.some(e => pb.endsWith(e))) s += 6;
+  else if (pb.endsWith('을') || pb.endsWith('를')) s -= 2;
+  else if (pb.endsWith('의')) s -= 4;
+  return s;
+}
+// captions._split_overwide_lines와 같은 재귀: 가장 자연스러운 경계에서 둘로, 넘치는 쪽만 다시.
+function splitPieces(toks, fontPx, usable) {
+  if (toks.length <= 1 || !planLine(toks.join(' '), fontPx, usable).cuts.length) return [toks.join(' ')];
+  const total = toks.join('').length;
+  let bestC = 1, bestK = null;
+  for (let c = 1; c < toks.length; c++) {
+    const k = [breakScore(toks[c - 1], toks[c]), -Math.abs(total - 2 * toks.slice(0, c).join('').length)];
+    if (!bestK || k[0] > bestK[0] || (k[0] === bestK[0] && k[1] > bestK[1])) { bestC = c; bestK = k; }
+  }
+  return splitPieces(toks.slice(0, bestC), fontPx, usable).concat(splitPieces(toks.slice(bestC), fontPx, usable));
+}
+function setPiece(el, cap, fontPx, usable, t) {
+  const text = cap.text || '';
+  const toks = String(text).split(/\s+/).filter(Boolean);
+  const pieces = splitPieces(toks, fontPx, usable);
+  if (pieces.length <= 1) { el.textContent = text; return; }
+  const lens = pieces.map(p => p.replace(/\s/g, '').length || 1);
+  const total = lens.reduce((a, b) => a + b, 0);
+  const s = +cap.start || 0, e = +cap.end || s;
+  let acc = 0, pick = pieces.length - 1;
+  for (let i = 0; i < pieces.length; i++) {
+    acc += lens[i];
+    if (t < s + (e - s) * acc / total) { pick = i; break; }
+  }
+  el.textContent = pieces[pick];
 }
 // 미리보기에서 자막을 직접 끌어 옮긴다(막대 대신 — 사용자 요청 2026-09-07).
 (function () {

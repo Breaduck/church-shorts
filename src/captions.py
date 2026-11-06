@@ -670,6 +670,40 @@ def _make_wrap_planner(font_name: str, usable_px: float):
     return plan
 
 
+def _split_overwide_lines(lines: list[CaptionLine], wrap_of, size: int) -> list[CaptionLine]:
+    """화면 폭을 넘는 자막 줄을 wrap 플래너의 분할점(말의 경계)에서 순차 표시되는 1줄 조각들로 나눈다.
+    각 조각은 자기 첫 단어 시각에 뜨고 다음 조각이 뜰 때까지 남는다(첫 조각은 원래 줄 시작, 끝 조각은 원래 줄 끝)."""
+    def _fits(ws: list[Word]) -> bool:
+        return len(ws) <= 1 or not wrap_of([_display_text(w.text) for w in ws], size)[0]
+
+    def _pieces(ws: list[Word]) -> list[list[Word]]:
+        # 한 번에 k등분하면 '망한다고요? 내 뜻과'처럼 문장 끝을 넘겨 묶는다 → 가장 자연스러운
+        # 경계(문장 끝 > 절 끝 …, 같으면 양쪽 길이가 고른 곳)에서 둘로 나누고 넘치는 쪽만 다시 나눈다.
+        if _fits(ws):
+            return [ws]
+        texts = [_display_text(w.text) for w in ws]
+        total = len("".join(texts))
+        best_c, best_key = 1, None
+        for c in range(1, len(ws)):
+            left = len("".join(texts[:c]))
+            key = (_break_score_text(texts[c - 1], texts[c]), -abs(total - 2 * left))
+            if best_key is None or key > best_key:
+                best_c, best_key = c, key
+        return _pieces(ws[:best_c]) + _pieces(ws[best_c:])
+
+    out: list[CaptionLine] = []
+    for ln in lines:
+        pieces = _pieces(ln.words)
+        if len(pieces) == 1:
+            out.append(ln)
+            continue
+        for k, ws in enumerate(pieces):
+            st = ln.start if k == 0 else max(ln.start, ws[0].start)
+            en = min(ln.end, pieces[k + 1][0].start) if k + 1 < len(pieces) else ln.end
+            out.append(CaptionLine(start=st, end=max(en, st + 0.05), words=ws))
+    return out
+
+
 def _fit_title_font_size(
     text: str, max_size: int, min_size: int, available_width_px: int, char_width_ratio: float = 0.62,
     font_family: str = "", available_height_px: int = 0,
@@ -1282,6 +1316,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         #  전체가 그만큼 다시 줄어들어 "92 넘으면 더 안 커진다"가 됐다 — 실신고 2026-09-07.)
         usable_px = width - caption_margin_l - caption_margin_r - 24
         wrap_of = _make_wrap_planner(font_name, usable_px)
+        # 자막은 무조건 1줄(2026-11-07 "왜 2줄씩 달아둔 게 있냐"): 폭을 넘는 줄은 \N으로 내리지 않고
+        # 같은 분할점에서 시간 순서대로 이어 뜨는 1줄 조각으로 나눈다. 크기는 그대로 지켜진다.
+        lines = _split_overwide_lines(lines, wrap_of, caption_size)
 
         ko_word_texts = [[_display_text(w.text) for w in line.words] for line in lines]
         uniform_ko_size = min(
@@ -1415,6 +1452,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     ln = CaptionLine(start=ln.start, end=ln.end, words=_distribute_by_chars(ft.split(), ln.start, ln.end))
                 new_lines.append(ln)
             lines = new_lines
+    # max_units는 글자 폭 근사치라 실측 폭으로 한 번 더 확인 — 넘치면 libass가 2줄로 랩핑하므로 조각낸다.
+    if lines:
+        lines = _split_overwide_lines(lines, _make_wrap_planner(font_name, usable_px), caption_size)
 
     # 편집기에서 한 번도 확정한 적 없는(caption_overrides가 비어 재전사 결과 그대로 굽는)
     # 클립도 '영어 자막'/이중언어를 고르면 그대로 나와야 한다(사용자 신고 2026-09-08). 이

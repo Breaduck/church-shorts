@@ -1774,7 +1774,15 @@ def clip_studio(video_id: str, idx: int):
         return "잘못된 클립 번호입니다.", 404
     # no-store: 스튜디오를 고쳐도 브라우저가 옛 페이지를 캐시하면 "고쳤다는데 그대로"가
     # 된다(preview-modal.js와 같은 이유 — 실제로 겪은 유형의 사고).
-    resp = Response(render_template_string(STUDIO_TEMPLATE, video_id=video_id, idx=idx))
+    from src import captions as _cap
+
+    # 자막 조각 나누기(1줄 강제)가 렌더와 같은 경계를 고르도록 줄 끊기 규칙을 그대로 넘긴다.
+    break_rules = {
+        "noAfter": sorted(_cap._NO_BREAK_AFTER), "noBeforeExact": sorted(_cap._NO_BREAK_BEFORE_EXACT),
+        "noBeforePrefix": list(_cap._NO_BREAK_BEFORE_PREFIX), "bonusBefore": list(_cap._BREAK_BEFORE_BONUS),
+        "clauseEnd": list(_cap._CLAUSE_ENDINGS), "sentEnd": list(_cap._SENTENCE_ENDINGS),
+    }
+    resp = Response(render_template_string(STUDIO_TEMPLATE, video_id=video_id, idx=idx, break_rules=break_rules))
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
