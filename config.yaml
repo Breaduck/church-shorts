@@ -2,6 +2,9 @@
 
 church:
   name: "우리교회"  # 자막/제목에 참고용으로 쓰일 수 있음
+  # 쇼츠 성과 자동 추적(src/channel_tracking.py): 이 채널의 쇼츠 탭을 하루 1회 훑어 제목으로
+  # 우리 클립과 맞추고 조회수·좋아요·댓글을 feedback.json에 채운다(로그인 불필요).
+  youtube_channel: "https://www.youtube.com/@friendlychurch_Anyang"
 
 whisper:
   # PC에 NVIDIA GPU 없음(CPU 전용 확인됨).

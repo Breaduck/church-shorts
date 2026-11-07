@@ -52,6 +52,11 @@ class PerformanceRecord:
     logged_at: str = ""
     # 스튜디오 지속률 CSV 분석(src/retention.py analyze 결과). 첫 3초 이탈·급락 지점과 그때 하던 말.
     retention_analysis: dict = field(default_factory=dict)
+    # 채널 자동 추적(src/channel_tracking.py)이 찾은 실제 업로드 영상 id.
+    youtube_video_id: str = ""
+    # rating을 사람이 아니라 채널 중앙값 배수로 자동 판정했는지. 사람이 한 번 저장하면 False가 돼
+    # 이후 자동 추적이 rating을 건드리지 않는다.
+    auto_rated: bool = False
 
 
 def load_feedback(path: Path = FEEDBACK_PATH) -> list[PerformanceRecord]:

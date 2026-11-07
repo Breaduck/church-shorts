@@ -1207,6 +1207,10 @@ def feedback_route(video_id: str):
                      if r.video_id == video_id and r.clip_index == clip_index), None)
         if prev and prev.retention_analysis:
             record.retention_analysis = prev.retention_analysis
+    prev = next((r for r in load_feedback()
+                 if r.video_id == video_id and r.clip_index == clip_index), None)
+    if prev and prev.youtube_video_id:   # 채널 자동 추적이 찾아둔 영상 링크는 사람이 저장해도 유지
+        record.youtube_video_id = prev.youtube_video_id
     upsert_feedback(record)
     return jsonify({"ok": True, "retention": record.retention_analysis, "summary": analysis_summary})
 
@@ -3084,6 +3088,16 @@ def _tracking_scheduler_loop() -> None:
             if done:
                 print(f"[tracking] 자동 성과 체크 {len(done)}건 완료")
         except Exception:  # noqa: BLE001 - 스케줄러는 죽으면 안 됨, 다음 주기에 재시도
+            traceback.print_exc()
+        # 손으로 올린 쇼츠: 교회 채널을 직접 훑어 제목으로 우리 클립과 맞춘다(하루 1회).
+        try:
+            from src.channel_tracking import SNAPSHOT_PATH, sync_channel
+            last = 0.0
+            if SNAPSHOT_PATH.exists():
+                last = SNAPSHOT_PATH.stat().st_mtime
+            if time.time() - last >= 20 * 3600:
+                print(f"[channel] 채널 성과 동기화: {sync_channel()}")
+        except Exception:  # noqa: BLE001
             traceback.print_exc()
         time.sleep(6 * 3600)
 

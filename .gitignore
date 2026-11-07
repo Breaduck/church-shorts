@@ -47,3 +47,8 @@ _scratch/
 # 각 PC 전용 설정 덮어쓰기(config.yaml 위에 병합) - 자동 업데이트가 건드리지 않음
 config.local.yaml
 .installed_requirements
+
+# 성과 기록(로컬 데이터, PC마다 다름)
+feedback.json
+uploads.json
+channel_shorts.json
