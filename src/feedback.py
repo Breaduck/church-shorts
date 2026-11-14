@@ -57,6 +57,9 @@ class PerformanceRecord:
     # rating을 사람이 아니라 채널 중앙값 배수로 자동 판정했는지. 사람이 한 번 저장하면 False가 돼
     # 이후 자동 추적이 rating을 건드리지 않는다.
     auto_rated: bool = False
+    # 게시일(YYYYMMDD)과 조회수의 채널 중앙값 대비 배수 — 갓 올린 영상을 근거에서 빼고, 날것 조회수 대신 배수로 본다.
+    upload_date: str = ""
+    view_ratio: Optional[float] = None
 
 
 def load_feedback(path: Path = FEEDBACK_PATH) -> list[PerformanceRecord]:
@@ -96,25 +99,6 @@ def upsert_feedback(record: PerformanceRecord, path: Path = FEEDBACK_PATH) -> No
     save_feedback(records, path)
 
 
-def _record_signal(r: PerformanceRecord) -> float:
-    """예측과 실제가 얼마나 어긋났는지(=학습 가치)를 대략 점수화. 클수록 교훈적."""
-    if r.rating == RATING_HIT:
-        base = 3.0
-    elif r.rating == RATING_FLOP:
-        base = 3.0
-    else:
-        base = 0.5
-    # 예측이 높았는데 flop, 낮았는데 hit이면 특히 교훈적 → 가중.
-    pred = r.predicted_score or 50
-    if r.rating == RATING_FLOP and pred >= 80:
-        base += 2.0
-    if r.rating == RATING_HIT and pred < 80:
-        base += 2.0
-    if r.retention_analysis:   # 곡선이 있으면 '어디서' 나갔는지까지 알려주는 사례라 우선 노출
-        base += 1.0
-    return base
-
-
 def _fmt_metrics(r: PerformanceRecord) -> str:
     parts = []
     if r.views is not None:
@@ -133,48 +117,109 @@ def _fmt_metrics(r: PerformanceRecord) -> str:
     return "·".join(parts) if parts else "지표없음"
 
 
+MIN_AGE_DAYS_FOR_EVIDENCE = 7   # 이보다 갓 올린 영상은 근거로 쓰지 않는다(아래 _usable 주석)
+MIN_RECORDS_FOR_BLOCK = 4       # 이보다 적으면 블록을 아예 넣지 않는다 — 사례 한두 개는 교훈이 아니라 잡음
+
+
+def _age_days(r: PerformanceRecord, now: datetime) -> Optional[int]:
+    if not r.upload_date:
+        return None
+    try:
+        return (now - datetime.strptime(r.upload_date, "%Y%m%d")).days
+    except ValueError:
+        return None
+
+
+def _usable(r: PerformanceRecord, now: datetime) -> bool:
+    """프롬프트 근거로 쓸 수 있는 기록인가.
+
+    2026-11-15 실측으로 걸러낸 세 가지 잡음:
+    - 찬양 클립(예측 점수 없음)이 설교 선정 프롬프트에 섞여 들어갔다("당신은 영광의 왕 [예측 -] = FLOP").
+    - 올린 지 하루 된 영상의 조회수 145가 '보통'이라는 등급을 달고 석 달 된 영상의 1,100과 나란히 실렸다.
+    - 자동 판정은 28일을 기다렸는데, 이 채널 쇼츠는 조회수가 이틀 안에 굳는다(1주일 뒤 재측정: 15개 중
+      14개가 변화 1% 미만) → 7일이면 충분하다."""
+    if r.predicted_score is None or r.views is None:
+        return False
+    age = _age_days(r, now)
+    if age is None:
+        return not r.auto_rated  # 게시일을 모르면 사람이 직접 매긴 기록만 믿는다
+    return age >= MIN_AGE_DAYS_FOR_EVIDENCE
+
+
 def format_feedback_for_prompt(
-    records: list[PerformanceRecord], max_examples: int = 14
+    records: list[PerformanceRecord], max_examples: int = 12, purpose: str = "select",
+    now: Optional[datetime] = None,
 ) -> str:
-    """선정 프롬프트에 넣을 '예측 → 실제 성과' 캘리브레이션 블록을 만든다.
-    학습 가치(예측-실제 괴리)가 큰 사례를 우선 노출한다. 기록이 없으면 빈 문자열."""
-    if not records:
+    """'예측 → 실제 성과' 블록. purpose="select"는 1차(소재·시작 문장 고르기), "score"는 2차(채점)용 머리말.
+
+    조회수는 날것이 아니라 **채널 중앙값 대비 배수**로 보여준다(채널 전체가 1천 회 안팎이라 날것 숫자는
+    '다 비슷하게 낮다'로만 읽힌다). 쓸 만한 기록이 MIN_RECORDS_FOR_BLOCK 미만이면 빈 문자열."""
+    now = now or datetime.now()
+    usable = [r for r in records if _usable(r, now)]
+    if len(usable) < MIN_RECORDS_FOR_BLOCK:
         return ""
 
-    ranked = sorted(records, key=_record_signal, reverse=True)[:max_examples]
+    def _ratio(r: PerformanceRecord) -> Optional[float]:
+        return r.view_ratio if r.view_ratio else None
 
-    lines = [
-        "## 이 채널의 실제 성과 피드백 (예측을 현실에 보정하라 — 매우 중요)",
-        "아래는 과거에 실제로 올린 클립들의 [예측 점수 → 실제 성과]다.",
-        "네 채점이 현실과 어긋났던 패턴을 학습해, 이번 채점(특히 viral 세부 축)에 반영하라.",
-        "예측이 높았는데 FLOP이면 그런 결의 클립을 낮게, 낮았는데 HIT이면 그런 결을 높게 조정하라.",
-        "",
-    ]
+    ranked = sorted(usable, key=lambda r: (_ratio(r) or 0.0, r.views or 0), reverse=True)
+    if len(ranked) > max_examples:  # 위·아래 끝이 교훈이다 — 가운데를 덜어낸다
+        half = max_examples // 2
+        ranked = ranked[:half] + ranked[-(max_examples - half):]
+
+    if purpose == "score":
+        intro = [
+            "## 이 채널에 실제로 올린 클립의 성과 (채점 눈금을 여기에 맞춰라)",
+            "아래는 과거 클립의 [당시 예측 점수·hook 점수 / 첫 문장] → 실제 조회수(채널 중앙값 대비 배수)다.",
+            "배수가 낮은 클립과 닮은 시작·소재에는 hook·retention을 낮게, 높은 클립과 닮았으면 높게 매겨라.",
+        ]
+    else:
+        intro = [
+            "## 이 채널에 실제로 올린 클립의 성과 (소재와 시작 문장을 고를 때 참고)",
+            "아래는 과거 클립의 [당시 예측 점수·hook 점수 / 첫 문장] → 실제 조회수(채널 중앙값 대비 배수)다.",
+            "쇼츠는 첫 노출 묶음에서 시청자가 넘겨 버리면 노출이 끊긴다 — 배수가 낮은 클립은 '초반에 넘겨진' 클립이다.",
+            "그런 클립과 닮은 시작 문장·소재는 피하고, 배수가 높은 쪽과 닮은 대목을 우선하라.",
+        ]
+    lines = intro + [""]
     for r in ranked:
-        pred = f"예측 {int(r.predicted_score)}" if r.predicted_score is not None else "예측 -"
-        sub = r.predicted_subscores or {}
-        sub_str = ""
-        if sub:
-            sub_str = " (" + "/".join(
-                f"{k[:3]}{int(v)}" for k, v in sub.items() if v is not None
-            ) + ")"
-        label = RATING_LABELS.get(r.rating, r.rating)
-        title = (r.title or r.hook_text or "제목없음").strip()
+        hook_s = (r.predicted_subscores or {}).get("hook")
+        pred = f"예측 {int(r.predicted_score)}" + (f"·hook {int(hook_s)}" if hook_s is not None else "")
+        ratio = _ratio(r)
+        perf = f"조회 {r.views:,}" + (f"(중앙값의 {ratio:.1f}배)" if ratio else "")
+        if r.likes is not None:
+            perf += f"·좋아요 {r.likes:,}"
+        if r.retention_pct is not None:
+            perf += f"·조회율 {r.retention_pct:.0f}%"
+        if r.retention_analysis:
+            from src.retention import summarize
+            perf += "·이탈: " + summarize(r.retention_analysis)
+        label = "" if r.rating == RATING_OK else f" = {RATING_LABELS.get(r.rating, r.rating)}"
+        title = " ".join((r.title or "제목없음").split())
+        hook = " ".join((r.hook_text or "").split())[:40]
         note = f" — {r.notes.strip()}" if r.notes.strip() else ""
-        lines.append(f'- "{title}" [{pred}{sub_str}] → {_fmt_metrics(r)} = {label}{note}')
+        lines.append(f'- "{title}" [{pred} / 첫 문장 "{hook}"] → {perf}{label}{note}')
 
-    # 간단한 집계 교훈.
-    hits = [r for r in records if r.rating == RATING_HIT]
-    flops = [r for r in records if r.rating == RATING_FLOP]
-    over = [r for r in flops if (r.predicted_score or 0) >= 80]
-    under = [r for r in hits if (r.predicted_score or 0) < 80]
     lessons = []
-    if over:
-        lessons.append(f"- 예측 80+였는데 실제로 망한 클립이 {len(over)}건 있었다. 네 기준이 과대평가하는 결이 있으니 냉정하게.")
-    if under:
-        lessons.append(f"- 예측 80 미만이었는데 실제로 터진 클립이 {len(under)}건 있었다. 놓친 강점 결이 있으니 재검토하라.")
-    # 지속률 곡선이 있는 클립: '어느 문장에서 나갔나'가 점수보다 구체적인 교훈이다.
-    ra = [r for r in records if r.retention_analysis]
+    # 예측이 실제를 갈랐는가: 예측 점수 상위 절반과 하위 절반의 실제 배수를 비교해 그대로 적는다(없는 교훈은 지어내지 않는다).
+    with_ratio = [r for r in usable if _ratio(r)]
+    if len(with_ratio) >= 6:
+        by_pred = sorted(with_ratio, key=lambda r: r.predicted_score or 0)
+        k = len(by_pred) // 2
+        lo, hi = by_pred[:k], by_pred[-k:]
+        lo_m = sum(_ratio(r) for r in lo) / len(lo)
+        hi_m = sum(_ratio(r) for r in hi) / len(hi)
+        if hi_m >= lo_m * 1.5:
+            cut = int(max(r.predicted_score or 0 for r in lo))
+            lessons.append(
+                f"- 예측 {cut}점 이하였던 클립은 실제로 평균 {lo_m:.1f}배, 그보다 높았던 클립은 평균 {hi_m:.1f}배였다 — "
+                "예측이 낮게 나온 결(첫 문장이 순서 표지·교리 선언·본문 설명)은 실제로도 초반에 넘겨졌다."
+            )
+        elif lo_m >= hi_m * 1.5:
+            lessons.append(
+                f"- 예측이 높았던 클립(평균 {hi_m:.1f}배)보다 낮았던 클립(평균 {lo_m:.1f}배)이 실제로 더 잘 됐다 — "
+                "지금 채점 기준이 이 채널과 거꾸로다. 위 사례에서 잘 된 쪽의 공통점을 다시 보라."
+            )
+    ra = [r for r in usable if r.retention_analysis]
     leaky = [r for r in ra if (r.retention_analysis.get("hook_leak") or 0) >= 40]
     if leaky:
         ex = "; ".join(f'"{(r.retention_analysis.get("hook_said") or r.hook_text)[:40]}"' for r in leaky[:3])
@@ -184,9 +229,6 @@ def format_feedback_for_prompt(
         lessons.append("- 시청자가 급히 빠져나간 직전 문장들(이런 이음새·곁가지는 컷에서 빼라): "
                        + " / ".join(f'"{t[:40]}"' for t in cliff_lines[:5]))
     if lessons:
-        lines.append("")
-        lines.append("### 도출된 채널 교훈:")
-        lines.extend(lessons)
-
+        lines += ["", "### 이 기록에서 실제로 확인된 것:"] + lessons
     lines.append("")
-    return "\n".join(lines)
+    return chr(10).join(lines)

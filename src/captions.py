@@ -413,7 +413,97 @@ def chunk_words_into_lines(
         cur = words[i:best_j]
         lines.append(CaptionLine(start=cur[0].start, end=cur[-1].end, words=cur))
         i = best_j
+    if max_units is not None:
+        lines = merge_orphan_lines(lines, max_units)
     return lines
+
+
+ORPHAN_MAX_UNITS = 4.0  # 이 폭 이하(또는 한 단어)인 줄은 '외톨이' — 화면에 깜빡 떴다 사라져 끊겨 보인다
+
+
+def merge_orphan_lines(lines: list[CaptionLine], max_units: float) -> list[CaptionLine]:
+    """외톨이 줄(한 단어·아주 짧은 줄)을 이웃 줄과 합치거나, 합쳐서 폭을 넘으면 두 줄을 고르게 다시 나눈다.
+
+    왜(2026-11-15 "자막이 너무 끊김, 줄바꿈이 이상해"): 앞에서부터 폭을 채우며 자르면 꼬리가 남는다 —
+    '옛날에 나침반이 없던 / 시절에', '무엇을 듣느냐 / 아닙니까?', '그래서 어느 순간 / 딱 걸려'. 사람이 손으로
+    고칠 땐 뜻 덩어리를 먼저 잡고 고르게 나누므로 이런 꼬리가 없다. 휴리스틱·모델 줄 묶기 두 경로의 결과에
+    똑같이 적용한다(초안 = 렌더).
+    규칙: 문장 끝을 넘겨 합치지 않는다 / 1.5초+ 쉼(점프컷)을 넘겨 합치지 않는다 / 금지 경계에서 나누지 않는다 /
+    더 나아지지 않으면 그대로 둔다(문장 끝의 짧은 마무리 '만났습니다.'는 허용)."""
+    def _u(ws: list[Word]) -> float:
+        return _line_units(ws)
+
+    def _orphan(ws: list[Word]) -> bool:
+        return len(ws) == 1 or _u(ws) <= ORPHAN_MAX_UNITS
+
+    def _t(w: Word) -> str:
+        return _display_text(w.text)
+
+    def _sentence_end(w: Word) -> bool:
+        return _break_score_text(_t(w), "") >= 10.0
+
+    def _mk(ws: list[Word]) -> CaptionLine:
+        return CaptionLine(start=ws[0].start, end=ws[-1].end, words=ws)
+
+    def _resplit(ws: list[Word], old_cut: int) -> list[list[Word]] | None:
+        """ws를 두 줄로 다시 나눈다. 원래 분할(old_cut)보다 나은 게 없으면 None."""
+        def _key(c: int):
+            left, right = ws[:c], ws[c:]
+            if _u(left) > max_units or _u(right) > max_units:
+                return None
+            sc = _break_score_text(_t(ws[c - 1]), _t(ws[c]))
+            if sc <= -50.0:
+                return None
+            orphans = int(_orphan(left)) + int(_orphan(right))
+            return (-orphans, min(sc, 6.0), -abs(_u(left) - _u(right)))
+
+        base = _key(old_cut)
+        best_c, best_k = None, None
+        for c in range(1, len(ws)):
+            k = _key(c)
+            if k is not None and (best_k is None or k > best_k):
+                best_c, best_k = c, k
+        if best_c is None or best_c == old_cut or (base is not None and best_k[0] <= base[0]):
+            return None  # 외톨이 수가 줄지 않으면 손대지 않는다
+        return [ws[:best_c], ws[best_c:]]
+
+    out = list(lines)
+    i = 0
+    budget = len(out) * 3 + 10
+    while i < len(out) and budget > 0:
+        budget -= 1
+        cur = out[i]
+        # 외톨이는 아니어도 폭의 절반이 안 되는 짧은 줄('우리는 또' / '욕심이 있어요')은, 이웃과 합쳐 한 줄에
+        # 통째로 들어갈 때만 합친다(다시 나누지는 않는다) — 같은 문장을 두 번 깜빡이게 할 이유가 없다.
+        is_orphan = bool(cur.words) and _orphan(cur.words)
+        if not cur.words or not (is_orphan or _u(cur.words) <= max_units * 0.5):
+            i += 1
+            continue
+        done = False
+        # 앞 줄과 합치기(앞 줄이 문장을 끝내지 않았을 때), 안 되면 뒷줄과(이 줄이 문장을 끝내지 않았을 때)
+        for j in (i - 1, i):
+            if j < 0 or j + 1 >= len(out):
+                continue
+            a, b = out[j], out[j + 1]
+            if not a.words or not b.words or b.words[0].start - a.words[-1].end >= HARD_LINE_GAP:
+                continue
+            if _sentence_end(a.words[-1]):
+                continue
+            ws = a.words + b.words
+            if _u(ws) <= max_units:
+                out[j:j + 2] = [_mk(ws)]
+                i = max(0, j)
+                done = True
+                break
+            parts = _resplit(ws, len(a.words)) if is_orphan else None
+            if parts:
+                out[j:j + 2] = [_mk(p) for p in parts]
+                i = max(0, j)
+                done = True
+                break
+        if not done:
+            i += 1
+    return out
 
 
 def _hi_bare(s: str) -> str:

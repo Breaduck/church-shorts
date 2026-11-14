@@ -245,13 +245,49 @@ def _en_track_matches(ko: list, en: list) -> bool:
     return True
 
 
-def apply_default_sermon_speed(clips: list, cfg: dict) -> None:
+def _clip_chars_per_sec(clip, segments) -> float | None:
+    """클립에서 실제로 들리는 말의 밀도(공백 제외 글자 수 ÷ 남는 길이). 점프컷은 남기는 구간만 센다."""
+    import re as _re
+
+    kr = [(float(x), float(y)) for x, y in (getattr(clip, "keep_ranges", None) or [])]
+    if len(kr) < 2:
+        kr = [(float(clip.start), float(clip.end))]
+    dur = sum(y - x for x, y in kr)
+    if dur <= 1.0:
+        return None
+    chars = 0
+    for seg in segments or []:
+        for w in (getattr(seg, "words", None) or []):
+            if any(x <= float(w.start) < y for x, y in kr):
+                t = str(w.text or "")
+                if "[" in t or ">>" in t:  # [음악]·[박수]·화자 표시는 말이 아니다
+                    continue
+                chars += len(_re.sub(r"[^0-9A-Za-z가-힣]", "", t))
+    return chars / dur if chars else None
+
+
+def apply_default_sermon_speed(clips: list, cfg: dict, segments=None) -> None:
     """새 설교 후보의 기본 재생 배속(render.sermon_playback_speed, 2026-09-27 사용자 요청 1.1배).
-    찬양은 곡 템포가 바뀌면 안 되므로 제외. 팝업의 배속 선택으로 언제든 바꿀 수 있다."""
-    spd = float(cfg.get("render", {}).get("sermon_playback_speed", 1.0) or 1.0)
+    찬양은 곡 템포가 바뀌면 안 되므로 제외. 팝업의 배속 선택으로 언제든 바꿀 수 있다.
+
+    말이 느린 클립은 조금 더 올린다(2026-11-15 실측): 좋아요 1만+ 설교 쇼츠 58개의 말 밀도는 중앙값 초당 6.2자
+    (사분위 5.7~6.8)인데 우리 클립 23개는 초당 4.2자(1.1배속을 넣어도 4.6자) — 같은 내용을 전하는 데 35% 더 걸린다.
+    초당 4.0자 미만은 1.2배(2026-10 사용자 허용 상한), 4.6자 미만은 1.15배. 그 이상은 기본값 그대로.
+    render.sermon_speed_adaptive: false로 끌 수 있다."""
+    r = cfg.get("render", {})
+    spd = min(2.0, max(1.0, float(r.get("sermon_playback_speed", 1.0) or 1.0)))
+    adaptive = bool(r.get("sermon_speed_adaptive", True)) and segments is not None
     for c in clips:
-        if getattr(c, "clip_type", "") != "praise":
-            c.playback_speed = min(2.0, max(1.0, spd))
+        if getattr(c, "clip_type", "") == "praise":
+            continue
+        s_c = spd
+        if adaptive:
+            cps = _clip_chars_per_sec(c, segments)
+            if cps is not None and cps < 4.0:
+                s_c = max(spd, 1.2)
+            elif cps is not None and cps < 4.6:
+                s_c = max(spd, 1.15)
+        c.playback_speed = s_c
 
 
 def _run_with_progress_ticker(fn, start_pct: float, end_pct: float, progress, message: str, est_seconds: float):
@@ -1663,7 +1699,11 @@ def analyze(
             )
 
         # 피드백 루프: 과거 클립들의 실제 성과를 캘리브레이션 사례로 프롬프트에 주입한다.
-        feedback_block = format_feedback_for_prompt(load_feedback())
+        _fb_records = load_feedback()
+        feedback_block = format_feedback_for_prompt(_fb_records, purpose="select")
+        # 채점 패스에도 준다(2026-11-15): 예전엔 "이번 채점에 반영하라"는 블록이 채점을 안 하는 1차(컷) 패스에만
+        # 들어가고, 정작 점수를 매기는 2차 패스는 성과 기록을 한 번도 못 봤다.
+        score_feedback_block = format_feedback_for_prompt(_fb_records, purpose="score")
 
         if h["mode"] == "manual":
             prompt = build_prompt(
@@ -1703,6 +1743,7 @@ def analyze(
                     thinking_tokens=int(h.get("thinking_tokens", 8192)),
                     score_thinking_tokens=int(h.get("score_thinking_tokens", 1024)),
                     extra_block=feedback_block,
+                    score_extra_block=score_feedback_block,
                     on_progress=lambda frac, msg: sp.set_fraction(frac, msg),
                     debug_path=video_dir / "selection_debug.json",
                     # 점프컷 전 원본 구간 상한(2026-09-21): 긴 이야기를 중간 들어내기로 살리기 위해 hard_max보다 넓다
@@ -1801,11 +1842,12 @@ def analyze(
         # 시스템이 따로 계산한 통합 score(scoring.py)가 어긋나면 목록이 뒤죽박죽으로
         # 보이므로(실측: 74,59,64,58), 저장 전에 score 내림차순으로 확정한다.
         # 렌더 전 시점이라 short_N 파일 매핑도 안 깨진다.
-        # 첫째·둘째·셋째 나열 컷은 "무조건" 넣는 컷이라 점수와 무관하게 맨 앞(2026-10-04 "안 들어간 것 같다" 신고:
-        # 점수 43으로 7번째에 묻혀 있었다).
         clips.sort(key=lambda c: c.score or 0, reverse=True)
-        clips.sort(key=lambda c: (0, c.start) if getattr(c, "enum_items", 0) else (1, 0.0))  # 안정 정렬: 나열 편은 순서대로 맨 앞
-        apply_default_sermon_speed(clips, cfg)
+        # 나열 편(첫째·둘째·셋째)도 점수순으로 줄 세운다(2026-11-15). 예전엔 점수와 무관하게 맨 앞에 뒀는데, 같은 설교
+        # (Nq9ZP8NiHQ0)에서 맨 앞에 뜬 나열 편 2개(41·45점, 첫 문장 "첫째는 죄로부터 구원이죠")는 154·584회에 그치고
+        # 아래에 있던 73점 실화 클립은 1,119회였다 — 채널 전체로도 59점 이상 7개는 741~1,185회, 45점 이하 3개는
+        # 154~584회로 갈렸다. '나열 교훈' 배지는 그대로라 찾기는 쉽다.
+        apply_default_sermon_speed(clips, cfg, segments=transcript.segments)
         _replace_clips_json(video_dir, clips)
         sp.finish(f"완료: {len(clips)}개 후보 선정")
         return video_dir, clips

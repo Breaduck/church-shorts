@@ -9,7 +9,7 @@
 규칙:
   - 사람이 입력한 rating/메모/저장/공유/조회율/지속률 분석은 덮어쓰지 않는다.
   - rating은 사람이 매긴 적 없을 때만(auto_rated) 채널 중앙값 대비 배수로 자동 판정한다.
-    올린 지 28일 안 된 영상은 아직 판정하지 않는다(조회수가 덜 쌓여 flop으로 오판).
+    올린 지 7일 안 된 영상은 아직 판정하지 않는다(조회수가 덜 쌓여 flop으로 오판).
   - 우리 클립과 안 맞는 쇼츠(예전에 다른 방식으로 만든 것)도 channel_shorts.json에 스냅숏으로 남긴다
     — 채널 중앙값 계산과 사람이 훑어보는 용도.
 
@@ -36,7 +36,9 @@ from src.fsutil import atomic_write_text
 OUTPUT_ROOT = Path("output")
 SNAPSHOT_PATH = Path("channel_shorts.json")
 MATCH_THRESHOLD = 0.85   # 제목 유사도. 올릴 때 조사·문장부호를 살짝 고친 정도까지 같은 클립으로 본다.
-MIN_AGE_DAYS_FOR_RATING = 28   # 비교 대상(채널 중앙값)이 대부분 몇 달 묵은 영상이라 갓 올린 건 불리하다
+# 28→7 (2026-11-15 실측): 1주일 간격으로 다시 재 보니 15개 중 14개가 조회수 변화 1% 미만 — 이 채널 쇼츠는
+# 올린 지 이틀 안에 조회수가 굳는다. 28일을 기다리면 판정만 늦어지고 그동안 프롬프트엔 '보통'으로 실렸다.
+MIN_AGE_DAYS_FOR_RATING = 7
 HIT_RATIO = 2.0          # 채널 중앙값의 2배 이상 → hit
 FLOP_RATIO = 0.5         # 절반 이하 → flop
 
@@ -211,6 +213,9 @@ def sync_channel(channel_url: str = "", now: Optional[datetime] = None, details:
             rec.likes = s["likes"]
         if s.get("comments") is not None:
             rec.comments = s["comments"]
+        rec.upload_date = s.get("upload_date", "") or rec.upload_date
+        if rec.views is not None and median > 0:
+            rec.view_ratio = round(rec.views / median, 2)
         if rec.auto_rated:
             rec.rating = _auto_rating(rec.views, median, s.get("upload_date", ""), now) or RATING_OK
         upsert_feedback(rec)

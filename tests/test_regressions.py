@@ -425,11 +425,11 @@ def test_sanitize_rejects_arbitrary_model_string():
     assert sanitize(f"  {EXECUTION_MODEL}  ") == EXECUTION_MODEL
 
 
-def test_model_policy_analysis_is_opus_execution_is_sonnet():
-    """모델 정책: 분석/선정=Opus, 자막 실행(교정·번역·가사)=Sonnet.
+def test_model_policy_all_opus():
+    """모델 정책(2026-10-27 사용자 결정): 분석·자막·번역·제목·채점 전부 Opus.
     한 곳에서만 정의되므로 여기서 정책 자체를 못 박아 둔다."""
     assert "opus" in ANALYSIS_MODEL
-    assert "sonnet" in EXECUTION_MODEL
+    assert "opus" in EXECUTION_MODEL
     assert ANALYSIS_MODEL in ALLOWED_MODELS and EXECUTION_MODEL in ALLOWED_MODELS
 
 

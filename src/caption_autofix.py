@@ -142,6 +142,15 @@ def segment_words_with_model(
     if isinstance(hit, dict) and isinstance(hit.get("groups"), list):
         groups = hit["groups"]
     if groups is None:
+        # 제목을 바꾸거나 참조 자막이 달라지면 키(맥락)가 바뀌어, 이미 묶어 둔 줄을 두고 팝업을 열 때마다 모델을
+        # 다시 불렀다(30~70초 대기 + 초안이 그때그때 달라짐). 단어열과 폭이 같으면 그 결과를 그대로 쓴다.
+        units_key = round(float(max_units), 1)
+        for v in cache.values():
+            if (isinstance(v, dict) and v.get("src") == texts and v.get("units") == units_key
+                    and isinstance(v.get("groups"), list)):
+                groups = v["groups"]
+                break
+    if groups is None:
         from src.highlights import segment_sermon_captions
         from src.models import EXECUTION_MODEL
 
@@ -163,7 +172,7 @@ def segment_words_with_model(
         if expect != len(texts):
             print(f"[caption_autofix] 모델 줄 묶기 검증 실패(끝 {expect}≠{len(texts)}) → 휴리스틱", flush=True)
             return None
-        cache[key] = {"groups": groups, "src": texts, "context": context}
+        cache[key] = {"groups": groups, "src": texts, "context": context, "units": round(float(max_units), 1)}
         _save_cache(video_dir, cache)
 
     def _emit(part: list, text: str | None) -> list:
@@ -204,8 +213,14 @@ def _repair_bad_boundaries(lines: list, max_units: float, max_wpl: int) -> list:
     """모델이 폭을 어림해 보수적으로 자르다 금지 경계에서 끊은 곳('그래서 영이 하나라는 / 거죠',
     '삶의 능력이 있는 / 것입니다' 실측)을 고친다: 그런 이웃 두 줄을 합쳐 휴리스틱(금지 사전+폭)으로 다시 자른다
     → '그래서 영이 / 하나라는 거죠', '삶의 능력이 / 있는 것입니다'. 쉼을 사이에 둔 줄은 합치지 않는다."""
-    from src.captions import HARD_LINE_GAP, _break_score, chunk_words_into_lines
+    from src.captions import HARD_LINE_GAP, _break_score, chunk_words_into_lines, merge_orphan_lines
 
+    lines = _repair_forbidden(lines, max_units, max_wpl, HARD_LINE_GAP, _break_score, chunk_words_into_lines)
+    # 모델도 폭(한글 11자 안팎)을 채우며 자르다 '무엇을 듣느냐 / 아닙니까?' 같은 외톨이 줄을 남긴다 → 같은 후처리.
+    return merge_orphan_lines(lines, max_units)
+
+
+def _repair_forbidden(lines: list, max_units: float, max_wpl: int, HARD_LINE_GAP, _break_score, chunk_words_into_lines) -> list:
     i = 0
     budget = len(lines) * 3 + 10  # 되감기 반복 상한(안전망)
     while i < len(lines) - 1 and budget > 0:

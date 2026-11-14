@@ -1025,15 +1025,19 @@
 
     // ── 자막 꼼꼼 재분석: 이 구간만 정밀 음성인식을 새로 돌려 자막 초안을 다시 뽑는다 ──
     const retransBtn = $('.pv-retrans');
+    // autoDraft: 서버가 준 초안이 '거친 초안'(유튜브 자동자막을 기계적으로 자른 것)이면 팝업이 스스로 정밀 초안을
+    // 요청한다(아래). 그때는 사용자가 그 사이 자막을 손댔으면 덮어쓰지 않고, 실패해도 경고창을 띄우지 않는다.
+    let autoDraft = false;
     retransBtn.addEventListener('click', async () => {
+      const auto = autoDraft; autoDraft = false;
       retransBtn.disabled = true;
       const t0 = Date.now();
-      retransBtn.textContent = '정밀 인식 중… (1~3분)';
+      retransBtn.textContent = auto ? '자막 다듬는 중…' : '정밀 인식 중… (1~3분)';
       let started = null;
-      try { started = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/retranscribe', { method: 'POST' }); }
+      try { started = await fetch('/video/' + VIDEO_ID + '/clip/' + idx + '/retranscribe' + (auto ? '?auto=1' : ''), { method: 'POST' }); }
       catch (e) { started = null; }
       if (!started || !started.ok) {
-        alert('재분석 시작 실패');
+        if (!auto) alert('재분석 시작 실패');
         retransBtn.disabled = false; retransBtn.textContent = '꼼꼼 재분석'; return;
       }
       const poll = () => {
@@ -1042,11 +1046,14 @@
           .then((r) => r.json()).then((j) => {
             if (!back.isConnected) return;
             if (j.running) {
-              retransBtn.textContent = '정밀 인식 중… ' + Math.round((Date.now() - t0) / 1000) + '초';
+              retransBtn.textContent = (auto ? '자막 다듬는 중… ' : '정밀 인식 중… ') + Math.round((Date.now() - t0) / 1000) + '초';
               setTimeout(poll, 2000); return;
             }
             if (j.error || !j.lines) {
-              alert('자막 재분석 실패: ' + (j.error || '결과 없음'));
+              if (!auto) alert('자막 재분석 실패: ' + (j.error || '결과 없음'));
+              retransBtn.disabled = false; retransBtn.textContent = '꼼꼼 재분석'; return;
+            }
+            if (auto && capsDirty) {  // 기다리는 동안 사용자가 자막을 고쳤다 — 그 편집을 지킨다
               retransBtn.disabled = false; retransBtn.textContent = '꼼꼼 재분석'; return;
             }
             // 편집 목록을 새 정밀 자막으로 교체하고, 확정 시 저장되도록 dirty 표시.
@@ -1054,11 +1061,14 @@
             j.lines.forEach((c) => addCapRow(c.start - C.start, c.end - C.start, c.text));
             capsDirty = true;
             capSec.classList.remove('hidden');
-            retransBtn.disabled = false; retransBtn.textContent = '✓ 새 자막 적용됨 (저장 필요)';
+            retransBtn.disabled = false; retransBtn.textContent = auto ? '✓ 자막 다듬기 완료' : '✓ 새 자막 적용됨 (저장 필요)';
           }).catch(() => setTimeout(poll, 2500));
       };
       poll();
     });
+    // 처음 여는 클립인데 정밀 초안이 아직 없으면(분석 직후 미리 돌리기가 여기까지 못 왔을 때) 바로 요청한다.
+    // 예전엔 이 거친 초안이 '보이는 그대로 저장'돼 결과 영상의 자막으로 굳었다.
+    if (info.caption_draft === 'rough') { autoDraft = true; retransBtn.click(); }
 
     // ── 싱크 맞추기: 자막 내용·분할은 그대로, 각 줄의 시작·끝만 실제 발화 시각에 재정렬 ──
     // 두 번째 이상 누르면 fresh=true — 캐시 재사용이 아니라 최고 정밀 모델(large-v3)로

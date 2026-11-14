@@ -857,6 +857,9 @@ def _run_analyze_job(
         _update_job(video_dir.name, status="ready", clips=clips, message="완료", pct=100)
         if orig_id != video_dir.name:  # 요청 때 id와 폴더명이 다르면 그쪽 job도 끝났다고 표시(무한 '분석 중' 방지)
             _update_job(orig_id, status="ready", message="완료", pct=100)
+        if mode != "praise":
+            # 후보를 고르는 동안 자막 초안(정밀 전사 + 모델 줄 묶기)을 미리 만들어 둔다 — 처음 여는 팝업부터 다듬어진 자막.
+            threading.Thread(target=_prewarm_caption_drafts, args=(video_dir.name,), daemon=True).start()
     except Exception as e:  # noqa: BLE001 - 사용자에게 실패 사유를 그대로 보여줘야 함
         vid = video_id_holder.get("id", "unknown")
         _update_job(vid, status="error", message=f"실패: {e}", pct=0)
@@ -1675,8 +1678,7 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     이미 편집·저장된 caption_overrides가 있으면 그걸 쓰고, 없으면 원본 전사에서 클립
     구간 단어를 뽑아 max_words_per_line 단위로 잘라 라인({start,end,text})으로 만든다."""
     from src.captions import (
-        _clean_word_text, _collect_words_in_range, _display_text, chunk_words_into_lines,
-        strip_filler_tokens_text,
+        _clean_word_text, _collect_words_in_range, _display_text, strip_filler_tokens_text,
     )
 
     # 유튜브 실황의 찬양 클립은 가사 자막을 넣지 않는다(화면에 교회 가사 슬라이드가 이미
@@ -1746,6 +1748,20 @@ def _caption_lines_for_clip(video_id: str, clip, cfg: dict) -> list[dict]:
     return _lines_from_words(
         video_id, clip, cfg, words, captions_cfg_for_clip(cfg["captions"], clip), use_model=precise,
     )
+
+
+def _caption_draft_state(video_id: str, clip, cfg: dict) -> str:
+    if getattr(clip, "caption_overrides", None) or getattr(clip, "clip_type", "") == "praise":
+        return "saved"
+    tp = OUTPUT_ROOT / video_id / "transcript.json"
+    if not tp.exists() or not (OUTPUT_ROOT / video_id / "source.mp4").exists():
+        return "saved"  # 정밀 전사를 돌릴 재료가 없다 — 자동 요청하지 않는다
+    try:
+        rep: dict = {}
+        _segments_for_clip(video_id, clip, cfg, tp, report=rep)
+        return "precise" if rep.get("precise") else "rough"
+    except Exception:  # noqa: BLE001
+        return "saved"
 
 
 def _preview_caption_text(video_id: str, clip) -> str:
@@ -2540,6 +2556,9 @@ def clip_preview_info(video_id: str, idx: int):
         },
         "caption_preview": _preview_caption_text(video_id, clip),
         "caption_lines": _caption_lines_for_clip(video_id, clip, cfg),
+        # saved=사람이 확정한 자막 / precise=정밀 전사+모델 줄 묶기 초안 / rough=유튜브 자동자막을 기계적으로 자른 초안.
+        # rough면 팝업이 스스로 정밀 초안을 요청해 바꿔 끼운다(거친 초안이 그대로 저장돼 굳던 문제).
+        "caption_draft": _caption_draft_state(video_id, clip, cfg),
         "source_duration": duration,
         "title_font": font_entry(clip.title_font or cfg["captions"].get("title_font_family", "")),
         "caption_font": font_entry(clip.caption_font or cfg["captions"].get("font_family", "")),
@@ -2627,48 +2646,54 @@ def reanalyze_status(video_id: str):
 _retrans_jobs: dict[str, dict] = {}
 
 
-def _run_retranscribe_job(video_id: str, idx: int) -> None:
-    """백그라운드: 클립 구간을 정밀 재전사해 자막 라인을 만들고, 결과를 정밀 캐시에도
-    저장한다(다음 렌더가 같은 결과를 재사용 → 결정적). 토큰 비용 없음(로컬 whisper)."""
-    key = f"{video_id}:{idx}"
-    try:
-        video_dir = OUTPUT_ROOT / video_id
-        cfg = _load_config()
-        w = cfg["whisper"]
-        clips = load_clips_json(video_dir / "clips.json")
-        clip = clips[idx]
+# 정밀 전사(large-v3)는 한 번에 하나만: 미리 돌리기(_prewarm_caption_drafts)와 팝업의 재전사가 겹치면 CPU를 두 배로
+# 먹고 둘 다 느려진다. 락 안에서 캐시를 다시 확인하므로, 미리 돌리던 클립을 팝업이 열면 끝나길 기다렸다 그 결과를 쓴다.
+_precise_lock = threading.Lock()
 
-        from src.captions import _collect_words_in_range, _display_text, chunk_words_into_lines
-        from src.main import (
-            _apply_corrections, _build_clip_hotwords, _precise_cache_save, _precise_worst_hole,
-            json_load_transcript,
+
+def _precise_segments_for_clip(video_id: str, clip, cfg: dict, use_cache: bool, cpu_threads: int | None = None):
+    """클립 구간을 정밀 재전사해 캐시에 저장하고 (세그먼트, 정밀 여부)를 돌려준다. use_cache면 이미 있는 캐시를 쓴다.
+    재시도까지 해도 5초+ 구멍이 남으면 렌더와 같은 규칙으로 참조 전사(유튜브 자동자막)를 돌려준다(정밀=False)."""
+    from src.main import (
+        _apply_corrections, _build_clip_hotwords, _precise_cache_find, _precise_cache_save, _precise_worst_hole,
+        json_load_transcript,
+    )
+    from src.transcribe import transcribe_clip_precise
+
+    video_dir = OUTPUT_ROOT / video_id
+    w = cfg["whisper"]
+    tdata = json_load_transcript(video_dir / "transcript.json")
+    base_segs = tdata["segments"]
+    base_text_all = " ".join((s.text or "") for s in base_segs)
+    hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
+    sig = hashlib.md5(
+        f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
+    ).hexdigest()[:8]
+    model = w.get("precise_model_size", w["model_size"])
+    tr_a = max(0.0, clip.start - 4.0)
+    tr_b = clip.end + 16.0  # 렌더 경로와 같은 버퍼(문장 끝 탐색 여유)
+    corrections = cfg.get("captions", {}).get("corrections") or {}
+    threads = int(cpu_threads if cpu_threads is not None else w.get("cpu_threads", 0))
+
+    def _hole(s):
+        return _precise_worst_hole(base_segs, s, clip.start, clip.end)
+
+    def _precise(vad: bool, batched: bool = True):
+        return transcribe_clip_precise(
+            video_dir / "source.mp4", tr_a, tr_b,
+            model_size=model, device=w["device"], compute_type=w["compute_type"],
+            language=w["language"], vad_filter=vad,
+            initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
+            cpu_threads=threads, batch_size=int(w.get("batch_size", 8)),
+            batched=batched,
         )
-        from src.transcribe import transcribe_clip_precise
 
-        tdata = json_load_transcript(video_dir / "transcript.json")
-        base_segs = tdata["segments"]
-        base_text_all = " ".join((s.text or "") for s in base_segs)
-        hotwords = _build_clip_hotwords(clip.keywords, w.get("bible_hotwords", ""), base_text_all)
-        sig = hashlib.md5(
-            f"{w.get('initial_prompt', '')}|{hotwords or ''}".encode("utf-8")
-        ).hexdigest()[:8]
-        model = w.get("precise_model_size", w["model_size"])
-        tr_a = max(0.0, clip.start - 4.0)
-        tr_b = clip.end + 16.0  # 렌더 경로와 같은 버퍼(문장 끝 탐색 여유)
-
-        def _precise(vad: bool, batched: bool = True):
-            return transcribe_clip_precise(
-                video_dir / "source.mp4", tr_a, tr_b,
-                model_size=model, device=w["device"], compute_type=w["compute_type"],
-                language=w["language"], vad_filter=vad,
-                initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
-                cpu_threads=int(w.get("cpu_threads", 0)), batch_size=int(w.get("batch_size", 8)),
-                batched=batched,
-            )
-
-        def _hole(s):
-            return _precise_worst_hole(base_segs, s, clip.start, clip.end)
-
+    with _precise_lock:
+        if use_cache:
+            hit = _precise_cache_find(video_dir / "precise_cache", model, sig, clip.start, clip.end + 4.0)
+            if hit is not None and _hole(hit) < 5.0:
+                _apply_corrections(hit, corrections)
+                return hit, True
         # 렌더 경로와 같은 '구멍' 방어: 배치 인식이 앞/중간을 통째로 놓치면(실측: 19초 구멍)
         # VAD 끔 → 순차 모드 순으로 재시도한다. 구멍 난 결과는 캐시에 저장하지 않는다.
         segs = _precise(w.get("vad_filter", True))
@@ -2686,20 +2711,76 @@ def _run_retranscribe_job(video_id: str, idx: int) -> None:
                     segs = s3
             except Exception:  # noqa: BLE001
                 pass
-        corrections = cfg.get("captions", {}).get("corrections") or {}
         if _hole(segs) < 5.0:
             _apply_corrections(segs, corrections)
             _precise_cache_save(video_dir / "precise_cache", model, sig, tr_a, tr_b, segs)
-        else:
-            # 재시도까지 해도 5초+ 구멍이 남는 난구간: 렌더와 같은 규칙으로 base(참조 전사)
-            # 폴백 — 초안과 실제 렌더가 항상 같은 소스를 쓰게 유지한다(자막 실종 방지 우선).
-            segs = base_segs
-            _apply_corrections(segs, corrections)
+            return segs, True
+    # 재시도까지 해도 5초+ 구멍이 남는 난구간: 렌더와 같은 규칙으로 base(참조 전사)
+    # 폴백 — 초안과 실제 렌더가 항상 같은 소스를 쓰게 유지한다(자막 실종 방지 우선).
+    _apply_corrections(base_segs, corrections)
+    return base_segs, False
 
-        from src.captions import captions_cfg_for_clip
 
+_prewarming: set[str] = set()
+
+
+def _prewarm_caption_drafts(video_id: str) -> None:
+    """분석이 끝나면 후보 클립마다 정밀 전사 + 모델 줄 묶기·교정을 백그라운드로 미리 돌려 캐시에 넣는다.
+
+    왜(2026-11-15 "링크 넣은 처음부터 자막이 끊기고 줄바꿈이 이상하다. 하나 콕 찍어 시키면 잘하면서"):
+    정밀 전사는 렌더 때나 '꼼꼼 재분석'을 눌러야 돌았다. 그래서 처음 여는 팝업의 자막은 유튜브 자동자막을
+    3단어씩 기계적으로 자른 초안이었고(모델 줄 묶기는 정밀 전사가 있을 때만 돈다), 팝업은 보이는 자막을 그대로
+    저장하니 그 초안이 결과물로 굳었다. 이제 팝업을 열기 전에 미리 만들어 둔다. 순서는 점수순(clips.json 순서)."""
+    with _jobs_lock:
+        if video_id in _prewarming:
+            return
+        _prewarming.add(video_id)
+    try:
+        cfg = _load_config()
+        if not cfg.get("captions", {}).get("prewarm_drafts", True):
+            return
+        from src.main import wait_for_download
+
+        video_dir = OUTPUT_ROOT / video_id
+        try:
+            wait_for_download(video_id)
+        except Exception:  # noqa: BLE001 - 다운로드 실패면 미리 돌릴 수 없다(팝업·렌더가 각자 처리)
+            return
+        if not (video_dir / "source.mp4").exists() or not (video_dir / "transcript.json").exists():
+            return
+        half = max(1, (os.cpu_count() or 4) // 2)  # 사용자가 후보를 보는 동안 도는 작업 — 코어 절반만
+        for clip in load_clips_json(video_dir / "clips.json"):
+            if getattr(clip, "clip_type", "") == "praise" or getattr(clip, "caption_overrides", None):
+                continue
+            t0 = time.time()
+            try:
+                _segs, precise = _precise_segments_for_clip(video_id, clip, cfg, use_cache=True, cpu_threads=half)
+                if precise:
+                    _caption_lines_for_clip(video_id, clip, cfg)  # 모델 줄 묶기·교정 → caption_fix_cache.json
+                print(f"[prewarm] {video_id} {clip.start:.0f}~{clip.end:.0f}초 자막 초안 준비 "
+                      f"({'정밀' if precise else '자동자막 폴백'}, {time.time() - t0:.0f}초)", flush=True)
+            except Exception:  # noqa: BLE001 - 한 클립 실패로 나머지를 포기하지 않는다
+                traceback.print_exc()
+    finally:
+        with _jobs_lock:
+            _prewarming.discard(video_id)
+
+
+def _run_retranscribe_job(video_id: str, idx: int, use_cache: bool = False) -> None:
+    """백그라운드: 클립 구간을 정밀 재전사해 자막 라인을 만들고, 결과를 정밀 캐시에도
+    저장한다(다음 렌더가 같은 결과를 재사용 → 결정적). 토큰 비용 없음(로컬 whisper).
+    use_cache=True(팝업이 '거친 초안'을 받았을 때 스스로 부름): 미리 돌려 둔 정밀 캐시가 있으면 전사를 건너뛴다."""
+    key = f"{video_id}:{idx}"
+    try:
+        video_dir = OUTPUT_ROOT / video_id
+        cfg = _load_config()
+        clips = load_clips_json(video_dir / "clips.json")
+        clip = clips[idx]
+
+        from src.captions import _collect_words_in_range, captions_cfg_for_clip
+
+        segs, precise = _precise_segments_for_clip(video_id, clip, cfg, use_cache=use_cache)
         captions_cfg = captions_cfg_for_clip(cfg["captions"], clip)
-        precise = segs is not base_segs
         clip = _snapped_clip(clip, segs, precise)  # 렌더와 같은 단어 경계 스냅
         words = _collect_words_in_range(
             segs, clip.start, clip.end,
@@ -2731,7 +2812,9 @@ def retranscribe_route(video_id: str, idx: int):
         if cur and cur.get("running"):
             return jsonify({"ok": True, "already": True})
         _retrans_jobs[key] = {"running": True, "error": None, "lines": None}
-    threading.Thread(target=_run_retranscribe_job, args=(video_id, idx), daemon=True).start()
+    # auto=1: 팝업이 '거친 초안'을 받았을 때 스스로 부르는 호출 — 미리 돌려 둔 정밀 캐시가 있으면 그걸 쓴다.
+    use_cache = request.args.get("auto") == "1"
+    threading.Thread(target=_run_retranscribe_job, args=(video_id, idx, use_cache), daemon=True).start()
     return jsonify({"ok": True})
 
 
