@@ -272,7 +272,7 @@ def apply_default_sermon_speed(clips: list, cfg: dict, segments=None) -> None:
 
     말이 느린 클립은 조금 더 올린다(2026-11-15 실측): 좋아요 1만+ 설교 쇼츠 58개의 말 밀도는 중앙값 초당 6.2자
     (사분위 5.7~6.8)인데 우리 클립 23개는 초당 4.2자(1.1배속을 넣어도 4.6자) — 같은 내용을 전하는 데 35% 더 걸린다.
-    초당 4.0자 미만은 1.2배(2026-10 사용자 허용 상한), 4.6자 미만은 1.15배. 그 이상은 기본값 그대로.
+    사용자 기준 두 단계: 기본 1.1배, 너무 느리면(초당 4.0자 미만) 1.2배. 중간 단계는 두지 않는다.
     render.sermon_speed_adaptive: false로 끌 수 있다."""
     r = cfg.get("render", {})
     spd = min(2.0, max(1.0, float(r.get("sermon_playback_speed", 1.0) or 1.0)))
@@ -285,8 +285,6 @@ def apply_default_sermon_speed(clips: list, cfg: dict, segments=None) -> None:
             cps = _clip_chars_per_sec(c, segments)
             if cps is not None and cps < 4.0:
                 s_c = max(spd, 1.2)
-            elif cps is not None and cps < 4.6:
-                s_c = max(spd, 1.15)
         c.playback_speed = s_c
 
 

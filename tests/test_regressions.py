@@ -948,3 +948,18 @@ def test_praise_reuse_requires_same_titles_and_praise_clips():
         _write_praise_key(d, "titles:A")
         assert _reusable_praise_clips(d, "titles:A") is not None
         assert _reusable_praise_clips(d, "titles:B") is None
+
+
+def test_naturalize_skips_drops_micro_jumps_and_caps_pieces():
+    """2026-11-15 "흐름이 어색하다": '예.' 한마디만 빼는 1초짜리 점프컷은 되살리고, 조각은 4개까지."""
+    from src.sermon_cut import _naturalize_skips, kept_runs as _kr
+
+    sents = [Sentence(i, i * 6.0, i * 6.0 + 6.0, f"문장 {i}입니다.") for i in range(14)]
+    sents[3] = Sentence(3, 18.0, 19.0, "예.")
+    sents[4] = Sentence(4, 19.0, 24.0, "문장 4입니다.")
+    log: list[str] = []
+    out = _naturalize_skips([(3, 3), (6, 7)], sents, 0, 13, 9, 200.0, log)
+    assert out == [(6, 7)]  # 1초짜리는 되살리고 12초짜리 덩어리는 유지
+    log = []
+    out = _naturalize_skips([(1, 1), (3, 3), (5, 5), (7, 7), (11, 11)], sents, 0, 13, 9, 200.0, log)
+    assert len(_kr(0, 13, out)) <= 4

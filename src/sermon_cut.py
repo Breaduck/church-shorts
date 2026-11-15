@@ -387,6 +387,9 @@ def build_thesis_cut_prompt(
    (7) **`⏸ [말 없음 …]` 공백과 그 앞뒤 문장은 절대 skip 안에 넣지 마라**(연주·노래·행동 순간, 위 '재미' 참조).
    (8) 들어낸 뒤 남는 문장들을 **처음부터 끝까지 이어 읽어 보라**. 한 군데라도 "뭐가?/누가?/왜 갑자기?"가 생기면 그 skip은
        버려라. 사용자 기준: 재미없는 부분이 날아가는 건 괜찮지만 **내용이 끊기는 건 절대 안 된다.**
+   (9) **잘게 썰지 마라.** 조각은 4개(이음새 3곳) 이하, skip 하나는 3초 이상을 줄이는 덩어리여야 한다. "예."·"응." 한마디만
+       빼는 skip은 금지(자막에서 어차피 지운다 — 화면만 튄다). 한 문장 남기고 한 문장 빼는 식으로 걸러 뽑으면 주어("양은요")가
+       사라지고 편집한 티가 난다. 곁길은 **덩어리째** 빼고, 남기는 조각은 그 자체로 말이 되는 4초 이상의 흐름이어야 한다.
   각 skip은 [첫 문장, 끝 문장] 번호 쌍이고 start·end·core는 뺄 수 없다. 들어내고 남는 길이가 {hard_max_sec:.0f}초
   이내면 원본 구간은 {max_span_sec:.0f}초까지 잡아도 된다. {hard_max_sec:.0f}초 이내 컷에도 늘어지는 구간이 있으면 빼서
   밀도를 올려라 — 단 위 5개 조건 중 하나라도 어기면 빼지 않는 쪽이 낫다.
@@ -921,6 +924,79 @@ def _recover_subject_start(
     return None
 
 
+# 점프컷을 '편집한 티 안 나게' 다듬기(2026-11-15 사용자: "흐름이 어색하다, 중요한 건 자연스럽게 편집").
+# 실측(1jRnbkxEOgI 재분석 9컷): 이 설교자는 문장의 6%가 "예."·"응." 한마디다(19편 중앙값). 모델이 그걸 하나씩 skip으로
+# 빼서 0.3~1.5초짜리 점프컷이 컷마다 1~3개 생겼고(자막에선 어차피 추임새를 지운다 — 화면만 튄다), 조각 상한이 없어
+# 56초 컷이 6조각(한 조각 3초)으로 쪼개져 "양은요"라는 주어까지 사라졌다. 나열 컷에만 있던 상한을 일반 컷에도 건다.
+#   · 2.5초도 못 줄이는 skip은 되살린다 — 얻는 것 없이 화면만 튄다.
+#   · 두 skip 사이에 낀 4초 미만 조각(번쩍 지나가는 한마디)은 옆 skip을 되살려 붙이고, 길이가 안 되면 그 조각도 뺀다.
+#   · 조각은 4개(이음새 3곳)까지. 넘으면 가장 적게 줄이는 skip부터 되살린다(길이 상한 안에서).
+_SEAM_MIN_GAIN_SEC = 2.5
+_SEAM_MIN_RUN_SEC = 4.0
+_SEAM_MAX_PIECES = 4
+
+
+def _naturalize_skips(
+    skips: list[tuple[int, int]], sentences: list[Sentence], start: int, end: int, core: int,
+    hard_max_sec: float, log: list[str],
+) -> list[tuple[int, int]]:
+    skips = _merge_ranges(_clip_skips([tuple(s) for s in skips], start, end))
+    if not skips:
+        return skips
+
+    def eff(sk: list[tuple[int, int]]) -> float:
+        return _eff_dur(sentences, start, end, sk)
+
+    def gain(sk: list[tuple[int, int]], s: tuple[int, int]) -> float:
+        return eff([x for x in sk if x != s]) - eff(sk)
+
+    for s in list(skips):
+        g = gain(skips, s)
+        rest = [x for x in skips if x != s]
+        if g < _SEAM_MIN_GAIN_SEC and eff(rest) <= hard_max_sec:
+            log.append(f"skip S{s[0]}~S{s[1]} 되살림: {g:.1f}초밖에 못 줄이는 점프컷(화면만 튄다)")
+            skips = rest
+    changed = True
+    while changed and skips:
+        changed = False
+        runs = kept_runs(start, end, skips)
+        for i in range(1, len(runs) - 1):
+            a, b = runs[i]
+            run_sec = sum(r[1] - r[0] for r in _run_abs_ranges(sentences, a, b))
+            if run_sec >= _SEAM_MIN_RUN_SEC:
+                continue
+            left = next((x for x in skips if x[1] == a - 1), None)
+            right = next((x for x in skips if x[0] == b + 1), None)
+            if left is None or right is None:
+                continue
+            for s in sorted((left, right), key=lambda x: gain(skips, x)):
+                rest = [x for x in skips if x != s]
+                if eff(rest) <= hard_max_sec:
+                    log.append(f"skip S{s[0]}~S{s[1]} 되살림: 사이에 낀 조각 S{a}~S{b}가 {run_sec:.1f}초뿐")
+                    skips, changed = rest, True
+                    break
+            if changed:
+                break
+            if not (a <= core <= b):
+                kept_before = " ".join(
+                    x.text for i0, i1 in kept_runs(start, left[0] - 1, skips) for x in sentences[i0: i1 + 1]
+                )
+                if not _seam_problem(sentences[left[0] - 1], sentences[right[1] + 1], kept_before):
+                    log.append(f"조각 S{a}~S{b}({run_sec:.1f}초) 제거: 두 점프컷 사이 한마디")
+                    skips = _merge_ranges([x for x in skips if x not in (left, right)] + [(left[0], right[1])])
+                    changed = True
+                    break
+    while len(kept_runs(start, end, skips)) > _SEAM_MAX_PIECES:
+        s = min(skips, key=lambda x: gain(skips, x))
+        rest = [x for x in skips if x != s]
+        if eff(rest) > hard_max_sec:
+            log.append(f"조각 {len(kept_runs(start, end, skips))}개 — 더 되살리면 {hard_max_sec:.0f}초 초과라 유지")
+            break
+        log.append(f"skip S{s[0]}~S{s[1]} 되살림: 조각 {_SEAM_MAX_PIECES}개 상한")
+        skips = rest
+    return skips
+
+
 def verify_and_fix(
     raw: dict,
     sentences: list[Sentence],
@@ -1091,6 +1167,7 @@ def verify_and_fix(
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
     skips = _restore_costly_skips(raw, skips, sentences, start, end, max_sec, hard_max_sec, log)
     skips = _restore_bridges_in_skips(skips, sentences, start, end, hard_max_sec, log)
+    skips = _naturalize_skips(skips, sentences, start, end, core, hard_max_sec, log)
     # 하한은 config min_duration_sec 그대로 적용한다(예전 0.8배 여유는 30초대 반쪽 후보를 통과시켰다 —
     # 2026-09-22 정답지 A/B: 하한을 엄격히 해도 적중 6/7·커버 70% 유지, 40초 미만 후보만 2개→1개로 줄었다).
     if dur(start, end) < min_sec:
@@ -1135,6 +1212,8 @@ def build_refine_prompt(cuts: list[dict], sentences: list[Sentence], hard_max_se
    다음으로/새 이야기"가 붙었으면 착지에서 끊어라. 축복 공식("~되시기를", "축원합니다")으로 끝내지 마라.
 3. **이음새(skip)**: 들어낸 자리마다 (a) 앞 문장이 말을 마쳤는가 (b) 뒤 문장이 가리키는 대상("그 사장님", "그 말씀")이 남은
    내용에 있는가 (c) 명제의 근거·반전·대사·`⏸` 공연 순간을 들어내지 않았는가. 하나라도 걸리면 그 skip을 버려라.
+   조각은 4개 이하, "예."·"응." 한마디만 빼는 skip은 버려라(화면만 튄다). 뒤 문장의 **주어가 skip 안에서 사라졌으면**
+   ("양은요." 를 빼고 "눈이 어두워 가지고…"로 이으면 누가 눈이 어두운지 모른다) 그 skip을 줄이거나 버려라.
 4. **이어 읽기**: 남는 문장을 처음부터 끝까지 이어 읽어 "뭐가?/누가?/왜 갑자기?"가 한 군데라도 생기면 skip을 되돌려라.
    재미없는 해설이 8초 넘게 이어지고 그걸 빼도 위 (a)(b)(c)가 전부 괜찮을 때만 새 skip을 추가해도 된다. 길이는 {hard_max_sec:.0f}초 이내.
 start·end·core·skip은 전부 **아래 창에 보이는 S번호**로만 적는다. core는 start~end 안에 있어야 한다. 고칠 게 없으면 그대로 적어라.
