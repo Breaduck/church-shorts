@@ -2039,6 +2039,50 @@ def _snap_clip_start_to_sentence(
     return clip.start
 
 
+def align_end_to_payoff(clip, segs: list, back_sec: float = 12.0, fwd_sec: float = 4.0) -> float | None:
+    """선정이 고른 마지막 문장(payoff_line)의 끝을 정밀 전사 단어에서 **글자로 찾아** 그 시각을 돌려준다(못 찾으면 None).
+
+    왜(2026-11-15 실측 1jRnbkxEOgI): 선정은 유튜브 자동자막 시각으로 끝을 잡는데, 자동자막 문장의 끝 시각은 다음 문장
+    위로 3~6초 늘어져 있다("…환경에 감사가 아니라는 거야." 실제 끝 748.3초, 자동자막 끝 754.4초). 그래서 팝업 자막 끝에
+    다음 문장 머리('어떤 환경에 있든지 / 하나님께 예배하고 / 하나님이')가 잘린 채 붙었고, 렌더는 그 잘린 문장을 끝내려고
+    최대 12초를 더 늘려 **고르지 않은 문장 하나가 착지 뒤에 통째로 붙었다**. 시각이 아니라 글자를 기준으로 끊는다.
+    마지막 2~3어절을 붙인 글자열을 창 안의 단어열과 비교해 가장 닮은 자리(닮음 0.6 이상, 동률이면 원래 끝에 가까운 쪽)."""
+    import difflib
+    import re
+
+    payoff = re.sub(r"[^\w\s]", "", str(getattr(clip, "payoff_line", "") or "")).split()
+    if len(payoff) < 2:
+        return None
+    words = _flatten_words(segs)
+    if not words:
+        return None
+    k = min(3, len(payoff))
+    target = "".join(payoff[-k:])
+    lo, hi = float(clip.end) - back_sec, float(clip.end) + fwd_sec
+    kr = getattr(clip, "keep_ranges", None) or []
+    floor = (float(kr[-1][0]) if len(kr) > 1 else float(clip.start)) + 1.0
+    best: tuple[float, float, int] | None = None
+    for i in range(k - 1, len(words)):
+        e = _word_true_end(words, i)
+        if e < max(lo, floor) or e > hi:
+            continue
+        cand = "".join(re.sub(r"[^\w]", "", w.text) for w in words[i - k + 1: i + 1])
+        r = difflib.SequenceMatcher(None, target, cand).ratio()
+        if r < 0.6:
+            continue
+        key = (round(r, 2), -abs(e - float(clip.end)), i)
+        if best is None or key > best:
+            best = key
+    if best is None:
+        return None
+    i = best[2]
+    e = _word_true_end(words, i)
+    pad = 0.25
+    if i + 1 < len(words):
+        pad = min(pad, max(0.0, words[i + 1].start - e))
+    return round(e + pad, 3)
+
+
 def _sync_keep_ranges(clip, old_start: float, old_end: float) -> None:
     """경계 스냅으로 clip.start/end가 움직였으면 점프컷 구간(keep_ranges)의 양 끝을 따라 옮긴다.
 
@@ -2874,7 +2918,13 @@ def render_selected(
                 # 정렬돼 있으므로 정밀 전사 기준 미세 조정(4초)만 허용한다 — 휴리스틱이
                 # 앵커를 다음 주제까지 끌고 가는 과확장을 막는다.
                 snap_budget = 4.0 if getattr(clip, "anchored", False) else 12.0
-                new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=snap_budget)
+                # 정밀 전사가 있으면 먼저 '선정이 고른 마지막 문장'의 글자를 찾아 거기서 끊는다(자동자막 끝 시각은
+                # 다음 문장 위로 늘어져 있어, 문장 끝 스냅이 고르지 않은 다음 문장까지 끌고 갔다 — 2026-11-15).
+                payoff_end = align_end_to_payoff(clip, segs) if used_precise else None
+                if payoff_end is not None:
+                    new_end = payoff_end
+                else:
+                    new_end = _snap_clip_end_to_sentence(clip, snap_src, max_extend=snap_budget)
                 if new_end != clip.end:
                     _rlog(video_dir, f"clip{idx} 끝 문장 스냅: -> {new_end:.2f}")
                     clip.end = new_end

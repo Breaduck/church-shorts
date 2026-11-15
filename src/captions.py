@@ -437,7 +437,10 @@ def merge_orphan_lines(lines: list[CaptionLine], max_units: float) -> list[Capti
         return len(ws) == 1 or _u(ws) <= ORPHAN_MAX_UNITS
 
     def _t(w: Word) -> str:
-        return _display_text(w.text)
+        # 경계 판단은 마침표가 붙은 원문으로 한다. 예전엔 화면용 텍스트(_display_text — 끝 마침표를 뗀다)로 봐서
+        # 문장 끝을 못 알아보고 '많아요. / 기도하는 대로 다 되면'을 '많아요 기도하는 / 대로 다 되면'으로 섞었다
+        # (2026-11-15 실측: 모델이 잘 나눈 줄을 이 후처리가 망가뜨림).
+        return (w.text or "").strip()
 
     def _sentence_end(w: Word) -> bool:
         return _break_score_text(_t(w), "") >= 10.0

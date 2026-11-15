@@ -963,3 +963,31 @@ def test_naturalize_skips_drops_micro_jumps_and_caps_pieces():
     log = []
     out = _naturalize_skips([(1, 1), (3, 3), (5, 5), (7, 7), (11, 11)], sents, 0, 13, 9, 200.0, log)
     assert len(_kr(0, 13, out)) <= 4
+
+
+def test_align_end_to_payoff_cuts_at_selected_last_sentence():
+    """2026-11-15: 자동자막 끝 시각이 다음 문장 위로 늘어져 끝에 '어떤 환경에 있든지 … 하나님이'가 붙던 문제.
+    선정이 고른 마지막 문장의 글자를 정밀 단어에서 찾아 거기서 끊는다(어미가 조금 달라도)."""
+    from src.main import align_end_to_payoff
+
+    ws = [Word(745.64, 746.14, "그러니까"), Word(746.14, 747.10, "환경에"), Word(747.10, 747.66, "감사가"),
+          Word(747.66, 748.04, "아니라는"), Word(748.04, 748.34, "거예요."), Word(748.50, 749.76, "어떤"),
+          Word(749.76, 750.40, "환경에"), Word(750.40, 750.94, "있든지"), Word(753.06, 754.80, "하나님이")]
+    seg = Segment(start=745.64, end=754.8, text="", words=ws)
+    from types import SimpleNamespace
+
+    clip = SimpleNamespace(start=696.7, end=754.4, keep_ranges=[], payoff_line="그러니까 환경에 감사가 아니라는 거야.")
+    e = align_end_to_payoff(clip, [seg])
+    assert e is not None and 748.3 <= e <= 748.6
+    clip.payoff_line = "전혀 다른 문장으로 끝납니다."
+    assert align_end_to_payoff(clip, [seg]) is None
+
+
+def test_merge_orphan_lines_does_not_cross_sentence_end():
+    """2026-11-15: 화면용 텍스트(마침표 뗌)로 경계를 봐서 '많아요. / 기도하는 대로 다 되면'을 섞던 버그."""
+    from src.captions import CaptionLine, merge_orphan_lines
+
+    a = [Word(0.0, 0.5, "많아요.")]
+    b = [Word(1.0, 1.3, "기도하는"), Word(1.3, 1.6, "대로"), Word(1.6, 1.8, "다"), Word(1.8, 2.1, "되면")]
+    out = merge_orphan_lines([CaptionLine(0.0, 0.5, a), CaptionLine(1.0, 2.1, b)], 11.6)
+    assert [w.text for w in out[0].words] == ["많아요."]

@@ -23,6 +23,8 @@ from src.captions import strip_filler_tokens_text
 
 CACHE_NAME = "caption_fix_cache.json"
 PROMPT_VERSION = "haeyo-v1"
+# 줄 묶기 프롬프트 규칙이 바뀌면 올린다 — 옛 규칙으로 묶어 둔 캐시를 다시 쓰지 않게(2026-11-15: 지어낸 단어 빼기).
+SEG_PROMPT_VERSION = "seg-v2"
 
 
 def _cache_path(video_dir: Path) -> Path:
@@ -134,7 +136,7 @@ def segment_words_with_model(
     gap_after = {i for i in range(len(base) - 1) if base[i + 1].start - base[i].end >= HARD_LINE_GAP}
     # 키에 쉼 위치(gap_after)는 넣지 않는다: 같은 단어열이면 시간축(절대초/점프컷 리매핑/무음 보정)이 달라도
     # 반드시 같은 줄을 돌려줘야 편집기 초안 = 렌더. 쉼을 가로지른 묶음은 아래에서 결정론적으로 가른다.
-    key_parts = ["seg", texts, round(float(max_units), 1), context, reference, model]
+    key_parts = ["seg", SEG_PROMPT_VERSION, texts, round(float(max_units), 1), context, reference, model]
     key = "seg:" + hashlib.sha1(json.dumps(key_parts, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     cache = _load_cache(video_dir)
     groups = None
@@ -147,7 +149,7 @@ def segment_words_with_model(
         units_key = round(float(max_units), 1)
         for v in cache.values():
             if (isinstance(v, dict) and v.get("src") == texts and v.get("units") == units_key
-                    and isinstance(v.get("groups"), list)):
+                    and v.get("ver") == SEG_PROMPT_VERSION and isinstance(v.get("groups"), list)):
                 groups = v["groups"]
                 break
     if groups is None:
@@ -172,7 +174,8 @@ def segment_words_with_model(
         if expect != len(texts):
             print(f"[caption_autofix] 모델 줄 묶기 검증 실패(끝 {expect}≠{len(texts)}) → 휴리스틱", flush=True)
             return None
-        cache[key] = {"groups": groups, "src": texts, "context": context, "units": round(float(max_units), 1)}
+        cache[key] = {"groups": groups, "src": texts, "context": context, "units": round(float(max_units), 1),
+                      "ver": SEG_PROMPT_VERSION}
         _save_cache(video_dir, cache)
 
     def _emit(part: list, text: str | None) -> list:
@@ -213,11 +216,12 @@ def _repair_bad_boundaries(lines: list, max_units: float, max_wpl: int) -> list:
     """모델이 폭을 어림해 보수적으로 자르다 금지 경계에서 끊은 곳('그래서 영이 하나라는 / 거죠',
     '삶의 능력이 있는 / 것입니다' 실측)을 고친다: 그런 이웃 두 줄을 합쳐 휴리스틱(금지 사전+폭)으로 다시 자른다
     → '그래서 영이 / 하나라는 거죠', '삶의 능력이 / 있는 것입니다'. 쉼을 사이에 둔 줄은 합치지 않는다."""
-    from src.captions import HARD_LINE_GAP, _break_score, chunk_words_into_lines, merge_orphan_lines
+    from src.captions import HARD_LINE_GAP, _break_score, chunk_words_into_lines
 
-    lines = _repair_forbidden(lines, max_units, max_wpl, HARD_LINE_GAP, _break_score, chunk_words_into_lines)
-    # 모델도 폭(한글 11자 안팎)을 채우며 자르다 '무엇을 듣느냐 / 아닙니까?' 같은 외톨이 줄을 남긴다 → 같은 후처리.
-    return merge_orphan_lines(lines, max_units)
+    # 외톨이 줄 병합(merge_orphan_lines)은 모델 경로에 쓰지 않는다(2026-11-15 실측으로 철회): 모델이 일부러 떼어 둔
+    # 펀치라인('기도하는 대로 다 되면 / 망한다고요?')과 뜻 덩어리('휠체어 탄 사람을 / 만났습니다')를 폭 균형만 보고
+    # '기도하는 대로 다 / 되면 망한다고요?', '휠체어 탄 / 사람을 만났습니다'로 다시 갈라 오히려 망가뜨렸다.
+    return _repair_forbidden(lines, max_units, max_wpl, HARD_LINE_GAP, _break_score, chunk_words_into_lines)
 
 
 def _repair_forbidden(lines: list, max_units: float, max_wpl: int, HARD_LINE_GAP, _break_score, chunk_words_into_lines) -> list:

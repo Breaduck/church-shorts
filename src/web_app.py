@@ -1614,6 +1614,20 @@ def _snapped_clip(clip, segs: list, precise: bool):
     import dataclasses
     from src.captions import snap_clip_ranges
 
+    # 렌더와 같은 순서: 먼저 선정이 고른 마지막 문장의 글자를 찾아 끝을 맞춘다(자동자막 끝 시각은 다음 문장 위로
+    # 늘어져 있어 초안 끝에 다음 문장 머리가 잘린 채 붙었다 — 2026-11-15). 사용자가 직접 자른 클립은 건드리지 않는다.
+    if not getattr(clip, "trimmed", False):
+        try:
+            from src.main import align_end_to_payoff
+
+            pe = align_end_to_payoff(clip, segs)
+            if pe is not None and abs(pe - float(clip.end)) > 0.01:
+                kr = [list(map(float, r)) for r in (getattr(clip, "keep_ranges", None) or [])]
+                if len(kr) > 1:
+                    kr[-1][1] = pe
+                clip = dataclasses.replace(clip, end=pe, keep_ranges=kr if len(kr) > 1 else [])
+        except Exception:  # noqa: BLE001 - 정렬 실패는 원래 끝
+            pass
     try:
         ns, ne, nk = snap_clip_ranges(clip, segs)
     except Exception:  # noqa: BLE001 - 스냅 실패는 원래 구간
