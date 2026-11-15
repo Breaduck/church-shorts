@@ -1004,8 +1004,15 @@ def verify_and_fix(
     max_sec: float,
     hard_max_sec: float,
     max_span_sec: float | None = None,
+    trust_bounds: bool = False,
 ) -> tuple[dict | None, list[str]]:
     """모델의 컷(문장 번호)을 벤치마크 뼈대 기준으로 검증·보정한다.
+
+    trust_bounds=True(정밀 패스의 답을 검증할 때): 시작·끝을 옮기는 휴리스틱(축복 착지 포함·짧은 컷 앞 보강·약한 훅
+    당기기·접속어 시작 고치기)을 적용하지 않고 모델이 정한 경계를 그대로 둔다. 2026-11-15 실측(nOUez83I-qY): 정밀
+    패스가 컷을 하나씩 읽고 고친 5건 — "누구 노트인지 세우는 문장부터 시작", "축복 공식 전에 끊기", "'결론을
+    말씀드립니다' 빼기" — 을 이 휴리스틱들이 전부 원래대로 되돌렸다(로그엔 changed=True인데 결과는 그대로).
+    1차 패스의 거친 경계를 다듬으려고 만든 규칙이, 문장을 읽고 내린 판단을 덮어쓰면 안 된다.
 
     길이 규칙은 전부 skip(점프컷)을 들어낸 뒤의 '실제 남는 길이'로 재고, 원본 구간(start~end)은 max_span_sec까지 허용.
     반환: (보정된 컷 dict 또는 None(탈락), 적용한 보정 로그). 보정된 컷의 skip은 검증을 통과한 것만 남는다."""
@@ -1031,6 +1038,7 @@ def verify_and_fix(
     skips = _sanitize_skips(_parse_skips(raw.get("skip"), n), sentences, start, end, core, log)
     if skips:
         log.append("skip " + ", ".join(f"S{a}~S{b}" for a, b in skips))
+    model_start, model_end = start, end
 
     def span(a: int, b: int) -> float:
         return sentences[b].end - sentences[a].start
@@ -1164,6 +1172,9 @@ def verify_and_fix(
     moved_to = _recover_subject_start(raw, sentences, start, end, hard_max_sec, max_span_sec, skips)
     if moved_to is not None and moved_to != start:
         log.append(f"start S{start} → S{moved_to} (훅의 대상이 앞 문장에 있음)"); start = moved_to
+    if trust_bounds and (start, end) != (model_start, model_end):
+        log.append(f"정밀 패스 경계 유지 S{model_start}~S{model_end} (규칙 보정 S{start}~S{end}는 적용 안 함)")
+        start, end = model_start, model_end
     skips = _sanitize_skips(skips, sentences, start, end, core, log)
     skips = _restore_costly_skips(raw, skips, sentences, start, end, max_sec, hard_max_sec, log)
     skips = _restore_bridges_in_skips(skips, sentences, start, end, hard_max_sec, log)
@@ -1266,7 +1277,9 @@ def refine_cuts(
             same = True
         if same:
             out.append(c); logs.append({"index": i, "changed": False, "note": r.get("note", "")}); continue
-        fixed, vlog = verify_and_fix(cand, sentences, min_sec, max_sec, hard_max_sec, max_span_sec=max_span_sec)
+        fixed, vlog = verify_and_fix(
+            cand, sentences, min_sec, max_sec, hard_max_sec, max_span_sec=max_span_sec, trust_bounds=True,
+        )
         # core가 1차와 다른 문장으로 옮겨졌으면(소재 변경) 받지 않는다 — 이 패스는 경계만 고친다.
         if fixed is None or int(fixed["core"]) != int(c["core"]) and abs(int(fixed["core"]) - int(c["core"])) > 2:
             out.append(c)
