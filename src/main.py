@@ -2076,6 +2076,14 @@ def retime_stretched_words(segs: list, base_segments: list, min_dur: float = 2.5
     return n
 
 
+def _low_mem_note() -> str:
+    """여유 메모리가 1.5GB 밑이면 진행 문구에 붙일 안내 — '자막 인식이 안 끝난다'의 실제 원인이 이것이었다."""
+    from src.transcribe import free_memory_gb
+
+    free = free_memory_gb()
+    return f"(메모리 여유 {free:.1f}GB — 다른 프로그램을 닫으면 훨씬 빨라져요)" if free is not None and free < 1.5 else ""
+
+
 def precise_windows(clip, start_buf: float = 4.0, end_buf: float = 16.0, merge_gap: float = 30.0) -> list[tuple[float, float]]:
     """정밀 받아쓰기를 돌릴 원본 구간 목록. 통짜 클립은 [시작-버퍼, 끝+버퍼] 하나, 점프컷 클립은 남기는 조각마다
     (앞뒤 4초, 마지막 조각은 문장 끝 탐색용 end_buf) — 조각 사이가 merge_gap 미만이면 하나로 합친다."""
@@ -2869,7 +2877,7 @@ def render_selected(
                     segs = _run_with_progress_ticker(
                         lambda: _precise(vad_default),
                         start_pct=base, end_pct=base + step * 0.45, progress=progress,
-                        message=f"[{i+1}/{total}] 자막 정밀 인식 중: {clip.title}",
+                        message=f"[{i+1}/{total}] 자막 정밀 인식 중{_low_mem_note()}: {clip.title}",
                         est_seconds=max(20.0, clip_len * 1.8),
                     )
                 except Exception as e:  # noqa: BLE001 - 정밀 재전사 실패해도 아래 재시도/폴백으로 계속

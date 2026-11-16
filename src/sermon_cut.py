@@ -104,10 +104,32 @@ def _split_long_at_clause(sentences: list[Sentence]) -> list[Sentence]:
 
     for sent in sentences:
         if sent.words:
-            _emit(list(sent.words), sent.reaction)
+            ws = list(sent.words)
+            k = _read_cue_tail_start(ws)
+            if k is not None:
+                _emit(ws[:k])
+                _emit(ws[k:], sent.reaction)
+            else:
+                _emit(ws, sent.reaction)
         else:
             out.append(Sentence(len(out), sent.start, sent.end, sent.text, [], sent.reaction))
     return out
+
+
+_CUE_TAIL = re.compile(r"^(?:\S*\d+\s*절\S*\s+)*(?:다\s*같이|우리\s*같이|같이|함께)\s*(?:합독|봉독|읽)")
+
+
+def _read_cue_tail_start(ws: list) -> int | None:
+    """문장 뒤쪽에 붙은 낭독 유도("… 망하는 사람이 5절과 6절 다 같이 합독해 보시겠어")가 시작하는 단어 위치.
+    2026-11-17 실측(ZxqNWy2N6FY): 나열 표지·교훈 제목과 낭독 유도가 한 문장이라 떼어 낼 수 없었고, 그 편이
+    "…합독해 보시겠어"로 시작했다. 앞에 4단어 이상 남고 유도 꼬리가 8단어 이하일 때만 나눈다."""
+    n = len(ws)
+    for k in range(4, n - 1):
+        if n - k > 8:
+            continue
+        if _CUE_TAIL.match(" ".join(w[2] for w in ws[k:])):
+            return k
+    return None
 
 
 def build_sentences(transcript: Transcript) -> list[Sentence]:
@@ -2271,7 +2293,7 @@ def _enum_trim_tail(
 # "하나님의 약속을 믿어야 합니다."(실측 nOUez83I-qY·1jRnbkxEOgI). 쇼츠에선 앞 두 마디가 죽은 시간이고, 편의 첫 문장이
 # "첫째는 읽어 보시죠"라 훅 점수가 2점이었다. 표지 문장이 유도 멘트뿐이면 표지째 빼고 제목 문장부터 시작한다.
 _READ_CUE = re.compile(
-    r"(읽어\s*보시죠|읽어\s*봅시다|읽어\s*보겠습니다|읽어\s*보실까요|읽어\s*보세요|같이\s*읽|따라서?\s*합니다|따라\s*합시다"
+    r"(합독|봉독|읽어\s*보시겠|읽어\s*보시죠|읽어\s*봅시다|읽어\s*보겠습니다|읽어\s*보실까요|읽어\s*보세요|같이\s*읽|따라서?\s*합니다|따라\s*합시다"
     r"|(?:^|\s)시작[.!]?$)"
 )
 
@@ -2280,6 +2302,11 @@ def _enum_drop_read_cues(keep: set[int], m: int, rb: int, sentences: list[Senten
     def _cue(i: int) -> bool:
         return bool(_READ_CUE.search(sentences[i].text.strip()))
 
+    # 표지 바로 뒤에 따라붙은 유도 멘트·낭독 시작("… 다 같이 합독해 보시겠어." / "시작 …")은 표지가 멀쩡해도 뺀다
+    tail = [i for i in range(m + 1, min(rb, m + 2) + 1) if i in keep and _cue(i)]
+    if tail and m in keep and not _cue(m):
+        log.append(f"낭독 유도 멘트 S{tail[0]}~S{tail[-1]} 제거")
+        return keep - set(tail)
     if m not in keep or not _cue(m):
         return keep
     # 표지 뒤 3문장 안에서 유도 멘트가 아닌 첫 문장 = 화면 제목을 읽는 문장(그 편의 명제)
@@ -2622,9 +2649,43 @@ def select_highlights_v2(
             )
 
             def _sig(c: dict):
-                return (int(c["start"]), int(c["end"]), _skips_of(c))
+                return (int(c["start"]), int(c["end"]), tuple(_skips_of(c)))
 
+            bad_set = set(bad)
             changed = [(i, rc) for i, rc in zip(bad, repaired) if _sig(rc) != _sig(fixed[i])]
+            # 모델이 "고칠 게 없다"고 해도(실측 2편 모두 그랬다) 후보를 직접 만든다: 막히는 이유는 거의 언제나
+            # '앞 설정이 없다' 아니면 '가운데를 들어냈다'이므로, 앞 2·4문장을 붙인 것과 들어낸 자리를 되살린 것을
+            # 길이 상한 안에서 만들어 같은 채점기로 다시 재고, 이해도가 가장 높은 것을 고른다.
+            for i in bad:
+                c0 = fixed[i]
+                seen = {_sig(c0)} | {_sig(rc) for j, rc in changed if j == i}
+                variants = []
+                for back in (2, 4):
+                    ns = max(0, int(c0["start"]) - back)
+                    if ns < int(c0["start"]):
+                        variants.append({**c0, "start": ns})
+                # 막히는 이유에 따옴표로 적힌 이름·대상('송 집사')이 처음 나오는 앞 문장 하나만 붙이고 그 사이는 들어낸다
+                # — 사연이 이미 상한에 닿아 있어(실측 83초) 앞 문장을 통째로 붙일 수 없을 때의 가장 싼 설정 보강.
+                st0 = int(c0["start"])
+                issue = str(scored[i].get("confusing") or "")
+                for tok in re.findall(r"['‘\"“]([^'’\"”]{2,12})['’\"”]", issue):
+                    key = re.sub(r"^(이|그|저)\s+", "", tok).replace(" ", "")
+                    hit = next((j for j in range(max(0, st0 - 15), st0)
+                                if key and key in sentences[j].text.replace(" ", "")), None)
+                    if hit is not None:
+                        sk = _skips_of(c0) + ([(hit + 1, st0 - 1)] if hit + 1 <= st0 - 1 else [])
+                        variants.insert(0, {**c0, "start": hit, "skip": sorted(sk)})
+                        break
+                if _skips_of(c0):
+                    variants.append({**c0, "skip": []})
+                    variants.append({**c0, "skip": [], "start": max(0, int(c0["start"]) - 2)})
+                for v in variants:
+                    if _sig(v) in seen:
+                        continue
+                    if _eff_dur(sentences, int(v["start"]), int(v["end"]), _skips_of(v)) > float(hard_max_duration_sec):
+                        continue
+                    seen.add(_sig(v))
+                    changed.append((i, v))
             if changed:
                 items2 = []
                 for k, (i, rc) in enumerate(changed):
@@ -2645,13 +2706,15 @@ def select_highlights_v2(
                         continue
                     old_f = _num(scored[i].get("followable")) or 0
                     new_f = _num(r2.get("followable")) or 0
-                    if new_f > old_f:
+                    if new_f > old_f and i in bad_set:
                         print(f"[v2] 이해도 수선 클립 {i}: S{fixed[i]['start']}~S{fixed[i]['end']} → S{rc['start']}~S{rc['end']} "
                               f"(이해도 {old_f:.0f}→{new_f:.0f})", flush=True)
                         fixed[i] = {k2: v for k2, v in rc.items() if k2 != "_issue"}
                         scored[i] = r2
+                        if new_f > FOLLOWABLE_SOFT:
+                            bad_set.discard(i)  # 충분히 풀렸으면 뒤 후보는 보지 않는다(짧은 후보가 앞에 있다)
                     else:
-                        print(f"[v2] 이해도 수선 클립 {i}: 고쳐도 이해도 {old_f:.0f}→{new_f:.0f} — 원래 컷 유지", flush=True)
+                        print(f"[v2] 이해도 수선 클립 {i}: 후보 S{rc['start']}~S{rc['end']} 이해도 {old_f:.0f}→{new_f:.0f} — 채택 안 함", flush=True)
             else:
                 print(f"[v2] 이해도 수선: 탈락 {len(bad)}개 중 고칠 수 있는 컷 없음", flush=True)
         except QuotaExceededError:

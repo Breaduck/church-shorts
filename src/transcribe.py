@@ -67,6 +67,28 @@ def _format_ts(sec: float) -> str:
 _model_cache: dict[str, WhisperModel] = {}
 
 
+def free_memory_gb() -> float | None:
+    """남은 물리 메모리(GB). 못 재면 None. large-v3는 3GB쯤 쓰는데 여유가 1GB 밑이면 스왑으로 10배 느려진다
+    (실측 2026-11-16~17: 여유 0.3GB에서 91초 음성 받아쓰기 12분, 449초는 몇 시간 뒤 강제 종료)."""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+                (n, ctypes.c_ulonglong) for n in (
+                    "ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                    "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")
+            ]
+
+        st = _MS()
+        st.dwLength = ctypes.sizeof(_MS)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return None
+        return st.ullAvailPhys / (1024 ** 3)
+    except Exception:  # noqa: BLE001 - 윈도우가 아니거나 호출 실패
+        return None
+
+
 def _get_model(model_size: str, device: str, compute_type: str, cpu_threads: int = 0) -> WhisperModel:
     # cpu_threads=0이면 ctranslate2 기본값(4스레드)이라 8코어 CPU의 절반이 논다.
     # 물리 코어 수를 넘기면 행렬 연산이 전 코어를 써 정밀 재전사가 눈에 띄게 빨라진다.
@@ -111,6 +133,11 @@ def transcribe(
         # BatchedInferencePipeline: VAD로 잘게 나눈 발화 조각들을 batch_size개씩 병렬 디코딩해
         # CPU에서도 2~4배 빠르다. condition_on_previous_text는 내부에서 항상 False(정밀 재전사
         # 경로가 원하는 그 설정). VAD를 끈 재시도 경로에서는 조각을 만들 수 없어 순차 방식 사용.
+        free = free_memory_gb()
+        if free is not None and free < 2.0 and batch_size > 2:
+            # 배치는 조각 여러 개를 한꺼번에 메모리에 올린다 — 여유가 없으면 스왑만 늘어 오히려 느리다.
+            print(f"[transcribe] 여유 메모리 {free:.1f}GB — 배치 {batch_size}→2로 줄여 받아씁니다", flush=True)
+            batch_size = 2
         pipeline = BatchedInferencePipeline(model=model)
         segments_iter, info = pipeline.transcribe(str(audio_path), batch_size=batch_size, **common)
     else:
