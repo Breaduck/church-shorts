@@ -2028,6 +2028,10 @@ def _snap_clip_start_to_sentence(
         else:
             next_start = s
             break
+    # 이미 문장 첫머리에 서 있으면 그대로 둔다(2026-11-17): 스냅 결과(문장 시작-0.05)가 clips.json에 저장된 뒤
+    # 다시 구우면 아래 '꼬리 밀기'가 발동해 구울 때마다 0.05초씩 당겨지거나, 짧은 첫 문장을 통째로 버렸다.
+    if any(abs(t - clip.start) <= 0.2 for t in sentence_starts):
+        return clip.start
     if prev_start is not None and 0.35 <= clip.start - prev_start <= max_back:
         # 문장 시작과 clip.start 사이에 단어 없는 공백(1.5초+)이 끼어 있으면 당기지 않는다(2026-11-17 실측):
         # 선정이 "첫째는 읽어 보시죠. 첫째 시작."을 빼고 676초부터 잡았는데, whisper가 그 멘트를 못 받아쓰고
@@ -2104,7 +2108,9 @@ def segments_in_windows(segs: list, windows: list[tuple[float, float]]) -> list:
 
 def hole_base_for(clip, base_segments: list) -> list:
     """구멍 검사에 쓸 base 전사: 점프컷 클립이면 받아쓴 조각 안의 단어만(들어낸 구간을 구멍으로 오판하지 않게)."""
-    wins = precise_windows(clip)
+    # merge_gap=0: 받아쓰기는 가까운 조각을 한 창으로 묶지만, 구멍은 남기는 조각 주변만 본다 —
+    # 묶인 창 안의 들어낸 구간(실측 19.8초)을 구멍으로 보고 전체를 순차 재전사(4분)하던 낭비 방지.
+    wins = precise_windows(clip, merge_gap=0.0)
     return base_segments if len(wins) <= 1 else segments_in_windows(base_segments, wins)
 
 
@@ -2819,7 +2825,7 @@ def render_selected(
             # 449초를 통째로 large-v3에 돌렸다 — 메모리가 빠듯한 PC에서 몇 시간씩 걸리다 죽었다. 들어낸 구간에는
             # 자막이 필요 없으므로 구멍·단어 수 검사도 조각 안의 base 단어만으로 한다(hole_base).
             tr_windows = precise_windows(clip, START_BUFFER_SEC, END_BUFFER_SEC)
-            hole_base = base_segments if len(tr_windows) <= 1 else segments_in_windows(base_segments, tr_windows)
+            hole_base = hole_base_for(clip, base_segments)
             # 캐시 요구 범위는 [시작, 끝+4초]면 충분하다: 시작 스냅으로 당겨져 저장된 start 때문에
             # tr_a(시작-4초)로 찾으면 자기 자신이 만든 캐시도 못 찾아 매번 재전사했다(실측).
             # 끝+4초는 "이미 문장 끝에 스냅돼 있는지" 확인에 필요한 최소 버퍼.
@@ -2875,6 +2881,25 @@ def render_selected(
                 # 있는데 정밀 결과가 통째로 빈 구간(실측: 초반 22초 자막 실종)을 잡는다.
                 # 구멍이 크면 느리지만 검증된 순차 모드로 다시 전사한다.
                 hole = _precise_worst_hole(hole_base, segs, clip.start, clip.end)
+                if segs and hole >= 5.0:
+                    # 먼저 구멍만 짧게 다시 받아쓴다(수십 초) — 전체 순차 재전사(수 분)는 그래도 안 메워질 때만.
+                    for ha, hb in _precise_hole_spans(hole_base, segs, clip.start, clip.end):
+                        try:
+                            patch = transcribe_clip_precise(
+                                video_path, max(0.0, ha - 1.0), hb + 3.0,
+                                model_size=precise_model,
+                                device=w["device"], compute_type=w["compute_type"],
+                                language=w["language"], vad_filter=vad_default,
+                                initial_prompt=w.get("initial_prompt"),
+                                hotwords=hotwords,
+                                cpu_threads=int(w.get("cpu_threads", 0)),
+                                batched=False,
+                            )
+                            segs = _splice_hole_words(segs, patch, ha, hb)
+                            _rlog(video_dir, f"clip{idx} 구멍 {ha:.1f}~{hb:.1f} 먼저 부분 재전사")
+                        except Exception as e:  # noqa: BLE001
+                            _rlog(video_dir, f"clip{idx} 구멍 부분 재전사 예외: {type(e).__name__}: {e}")
+                    hole = _precise_worst_hole(hole_base, segs, clip.start, clip.end)
                 if segs and hole >= 5.0:
                     _rlog(video_dir, f"clip{idx} 정밀(배치) 자막 구멍 {hole:.1f}초 → 순차 모드 재전사")
                     try:

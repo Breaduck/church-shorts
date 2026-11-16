@@ -2694,10 +2694,10 @@ def _precise_segments_for_clip(video_id: str, clip, cfg: dict, use_cache: bool, 
     threads = int(cpu_threads if cpu_threads is not None else w.get("cpu_threads", 0))
 
     # 점프컷 클립은 남기는 조각만 받아쓴다(렌더와 같은 규칙 — main.precise_windows 주석 참고).
-    from src.main import precise_windows, segments_in_windows
+    from src.main import hole_base_for, precise_windows
 
     windows = precise_windows(clip)
-    hole_base = base_segs if len(windows) <= 1 else segments_in_windows(base_segs, windows)
+    hole_base = hole_base_for(clip, base_segs)
 
     def _hole(s):
         return _precise_worst_hole(hole_base, s, clip.start, clip.end)
