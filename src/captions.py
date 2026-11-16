@@ -268,6 +268,8 @@ _NO_BREAK_AFTER = {"안", "못", "잘", "더", "덜", "꼭", "왜", "그", "이"
                    "결국", "드디어", "마침내", "거의", "전혀", "절대", "결코", "반드시", "꼭꼭",
                    "이미", "벌써", "아직", "먼저", "바로", "그냥", "막", "갓", "딱", "훨씬"}
 # 이 말들 '앞'에서 끊으면 자연스럽다 — 새 문장·새 절을 여는 접속 부사.
+_DEP_NOUNS = {"수", "것", "거", "줄", "때", "뿐", "채", "지"}
+_DEP_NOUN_PREDICATES = ("있", "없", "아니", "같", "모르", "몰", "알", "하", "되", "돼", "않", "됩", "합", "했", "됐")
 _BREAK_BEFORE_BONUS = ("그래서", "그리고", "그러나", "그런데", "하지만", "그러니까", "그러면",
                        "그러므로", "따라서", "왜냐하면", "그럼", "근데", "또한", "즉", "결국")
 # 이 단어 '앞'에서 끊으면 어색한 것들: 의존명사('감당할 수', '가시는 거')와
@@ -325,7 +327,11 @@ def _break_score_text(prev_text: str, next_text: str) -> float:
     if prev_bare.endswith(_SENTENCE_ENDINGS):
         return 10.0
     if prev_bare in _NO_BREAK_AFTER:
-        return -100.0
+        # 의존명사('수·것·거·줄…') 뒤는 서술어가 이어질 때만 금지다('할 수 / 있다', '하는 거 / 아니에요').
+        # 뒤에 새 구가 오면('안 되는 거 / 포기한 민법인데') 거기가 오히려 자연스러운 경계인데, 무조건 금지라서 모델이
+        # 잘 나눈 줄을 '안 되는 거 포기한 / 민법인데'로 다시 갈랐다(2026-11-15 실측).
+        if prev_bare not in _DEP_NOUNS or nxt_bare.startswith(_DEP_NOUN_PREDICATES):
+            return -100.0
     if nxt_bare in _NO_BREAK_BEFORE_EXACT or nxt_bare.startswith(_NO_BREAK_BEFORE_PREFIX):
         return -100.0
     score = 0.0

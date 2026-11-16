@@ -57,6 +57,9 @@ _FINAL_ENDING = re.compile(r"(습니다|ㅂ니다|입니다|니다|세요|어요
 _MAX_SENT_SEC = 12.0
 _MAX_SENT_WORDS = 25
 _GAP_SPLIT_SEC = 1.2
+_CLAUSE_SPLIT_SEC = 14.0     # 종결어미 없이 이만큼 이어지면 절 끝에서 끊는다
+_CLAUSE_SPLIT_WORDS = 30
+_CLAUSE_SPLIT_END = re.compile(r"(는데|은데|인데|니까|으니까|지만|면서|다가|더니|가지고|아서|어서|해서)$")
 # 자동자막/whisper 단어 토큰에 마침표가 '가운데' 박힌 경우("돼.이", "아멘.에", "없습니다.에 에").
 # 2026-09-18 실측(1GM): 이런 토큰이 14개인데 문장 분할이 토큰 '끝'의 구두점만 보니까 앞 문장과
 # 뒤 문장이 한 문장으로 붙었다. 붙은 문장이 컷의 시작이 되면 "그래서 우리가 하나님의 마음을
@@ -77,6 +80,34 @@ def _split_glued_token(start: float, end: float, text: str) -> list[tuple[float,
     total = max(1, len(head) + len(tail))
     mid = start + (end - start) * (len(head) / total)
     return [(start, mid, head)] + _split_glued_token(mid, end, tail)
+
+
+def _split_long_at_clause(sentences: list[Sentence]) -> list[Sentence]:
+    """종결어미 없이 늘어지는 문장(자동자막엔 마침표가 없다)을 절 끝(…는데/…니까)에서 나눈다 — 가운데에 가장 가까운 곳.
+
+    2026-11-15 실측(nOUez83I-qY): "기도하고 가는 길에 … 독서실이 세 개가 있는데 독서실 앞에 어떤 남학생이 자기 노트
+    정리한 것을 …"이 28초짜리 한 문장이라, 사연의 설정('독서실 앞 남학생의 노트')만 떼어 쓸 수가 없었다 — 통째로
+    넣으면 90초, 빼면 누구 노트인지 모르는 채로 시작. 문장이 선정의 최소 단위이므로 단위를 줄인다."""
+    out: list[Sentence] = []
+
+    def _emit(ws: list, reaction: str = "") -> None:
+        dur = max(w[1] for w in ws) - ws[0][0]
+        if (dur > _CLAUSE_SPLIT_SEC or len(ws) > _CLAUSE_SPLIT_WORDS) and len(ws) >= 10:
+            mid = ws[0][0] + dur / 2
+            cands = [k for k in range(4, len(ws) - 4) if _CLAUSE_SPLIT_END.search(ws[k][2].rstrip(",."))]
+            if cands:
+                k = min(cands, key=lambda c: abs(ws[c][1] - mid))
+                _emit(ws[: k + 1])
+                _emit(ws[k + 1:], reaction)
+                return
+        out.append(Sentence(len(out), ws[0][0], max(w[1] for w in ws), " ".join(w[2] for w in ws).strip(), list(ws), reaction))
+
+    for sent in sentences:
+        if sent.words:
+            _emit(list(sent.words), sent.reaction)
+        else:
+            out.append(Sentence(len(out), sent.start, sent.end, sent.text, [], sent.reaction))
+    return out
 
 
 def build_sentences(transcript: Transcript) -> list[Sentence]:
@@ -135,6 +166,7 @@ def build_sentences(transcript: Transcript) -> list[Sentence]:
         ):
             _flush()
     _flush()
+    sentences = _split_long_at_clause(sentences)
     # 청중 반응을 그 시각을 품은(또는 직전) 문장에 표식으로 붙인다(텍스트는 건드리지 않음 — 형식 출력에서만 보임).
     for t, label in reactions:
         target = None
@@ -1193,6 +1225,7 @@ def verify_and_fix(
 
 _REFINE_BEFORE = 6   # 컷 앞으로 보여줄 문장 수
 _REFINE_AFTER = 4    # 컷 뒤로 보여줄 문장 수
+_REPAIR_BEFORE = 16  # 이해도 수선 때 컷 앞으로 보여줄 문장 수
 
 
 def build_refine_prompt(cuts: list[dict], sentences: list[Sentence], hard_max_sec: float) -> str:
@@ -1205,11 +1238,18 @@ def build_refine_prompt(cuts: list[dict], sentences: list[Sentence], hard_max_se
     blocks: list[str] = []
     for i, c in enumerate(cuts):
         s, e = int(c["start"]), int(c["end"])
-        lo, hi = max(0, s - _REFINE_BEFORE), min(len(sentences) - 1, e + _REFINE_AFTER)
+        issue = str(c.get("_issue") or "").strip()
+        before = _REPAIR_BEFORE if issue else _REFINE_BEFORE  # 수선은 설정을 찾아 더 앞까지 본다
+        lo, hi = max(0, s - before), min(len(sentences) - 1, e + _REFINE_AFTER)
         win = format_sentences(sentences[lo: hi + 1])
         skips = ", ".join(f"S{a}~S{b}" for a, b in _skips_of(c)) or "없음"
+        issue_line = (
+            f"- **처음 보는 사람이 막힌 지점(반드시 해결)**: {issue}\n"
+            "  → 그 인물·대상·사연의 가운데를 세우는 문장이 창 안에 있으면 start를 그 문장으로 옮기거나 그 문장을 뺀 skip을 되돌려라.\n"
+            "    길이가 넘치면 대신 반복·해설을 빼라. 창 안에서 해결할 수 없으면 그대로 둬라.\n"
+        ) if issue else ""
         blocks.append(
-            f"### 컷 {i}\n- 장면: {c.get('scene','')}\n- 명제: {c.get('thesis','')}\n- 현재 start=S{s}, end=S{e}, core=S{c['core']}, "
+            f"### 컷 {i}\n- 장면: {c.get('scene','')}\n- 명제: {c.get('thesis','')}\n{issue_line}- 현재 start=S{s}, end=S{e}, core=S{c['core']}, "
             f"skip={skips}, 남는 길이={_eff_dur(sentences, s, e, _skips_of(c)):.0f}초\n{win}"
         )
     return f"""너는 교회 쇼츠 편집자다. 1차로 고른 컷들을 **하나씩** 다시 본다 — 전체 설교가 아니라 그 컷의 앞뒤 전사본만 보고,
@@ -1563,6 +1603,10 @@ def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: floa
 # ---------------------------------------------------------------------------
 # 4. 2차 패스 — 확정된 컷의 실제 대사만 보고 채점·캡션·키워드·제목 초안
 # ---------------------------------------------------------------------------
+FOLLOWABLE_GATE = 5    # 이해도(1~10)가 이 이하면 관문 탈락
+FOLLOWABLE_CAP = 35    # 탈락 컷의 점수 상한(목록 맨 아래로)
+
+
 def build_score_prompt(items: list[dict], extra_block: str = "") -> str:
     extra = f"\n{extra_block}\n" if extra_block else ""
     blocks = []
@@ -1593,6 +1637,10 @@ quotability(스샷 떠 공유할 한 문장 — 그 줄만 떼어도 뜻이 서�
 주된 내용이 성경 인물의 행적 이야기(베드로가 어디로 갔다, 요나가 도망쳤다)면 relatability·core_score 4 이하 —
 성경 모르는 시청자에겐 남의 옛날이야기다.
 
+**followable(1~10) — 이해도 관문**: 이 설교를 한 번도 안 들은 사람이 **위 대사만** 듣고 "누가 · 무엇을 · 왜"를 따라올 수
+있는가. ` … `는 편집으로 들어낸 자리다 — 그 자리를 건너뛰어도 말이 이어지는지 본다. 인물이 소개 없이 튀어나오거나("이 송
+집사가"), 가리키는 대상이 없거나("그 노트를" — 무슨 노트?), 사연의 가운데(무슨 일이 있었는지)가 빠져 결말만 남았거나,
+앞 얘기를 알아야 뜻이 통하면 5 이하. 처음부터 끝까지 막힘 없이 이해되면 8 이상. 5 이하면 confusing에 막히는 지점을 한 줄로.
 title = 핵심 문장을 벤치마크 스타일로 다듬은 15~20자 구어체 한 줄(예: "기도하는 사람은 오염되지 않습니다").
 insight = 이 클립이 시청자 삶의 어떤 문제에 어떻게 닿는가 한 줄. caption = 훅 한 문장. hashtags 3개.
 keywords = 이 클립에 실제 등장하는 고유명사(성경 인물·지명·용어) 3~5개를 **올바른 철자**로(자막 정밀 전사의 철자
@@ -1604,6 +1652,7 @@ keywords = 이 클립에 실제 등장하는 고유명사(성경 인물·지명�
 ```json
 [
   {{"index": 0, "core_score": 8, "hook": 7, "retention": 7, "emotion": 8, "relatability": 8, "payoff": 8, "quotability": 7,
+    "followable": 8, "confusing": "",
     "title": "…", "insight": "…", "caption": "…",
     "hashtags": ["#설교","#은혜","#힐링"], "keywords": ["…"]}}
 ]
@@ -2213,6 +2262,31 @@ def _enum_trim_tail(
     return out
 
 
+# 이 설교자의 낭독 유도 멘트: 대지마다 화면의 제목을 회중과 함께 읽는다 — "첫째는 읽어 보시죠." "첫째 시작."
+# "하나님의 약속을 믿어야 합니다."(실측 nOUez83I-qY·1jRnbkxEOgI). 쇼츠에선 앞 두 마디가 죽은 시간이고, 편의 첫 문장이
+# "첫째는 읽어 보시죠"라 훅 점수가 2점이었다. 표지 문장이 유도 멘트뿐이면 표지째 빼고 제목 문장부터 시작한다.
+_READ_CUE = re.compile(
+    r"(읽어\s*보시죠|읽어\s*봅시다|읽어\s*보겠습니다|읽어\s*보실까요|읽어\s*보세요|같이\s*읽|따라서?\s*합니다|따라\s*합시다"
+    r"|(?:^|\s)시작[.!]?$)"
+)
+
+
+def _enum_drop_read_cues(keep: set[int], m: int, rb: int, sentences: list[Sentence], log: list[str]) -> set[int]:
+    def _cue(i: int) -> bool:
+        return bool(_READ_CUE.search(sentences[i].text.strip()))
+
+    if m not in keep or not _cue(m):
+        return keep
+    # 표지 뒤 3문장 안에서 유도 멘트가 아닌 첫 문장 = 화면 제목을 읽는 문장(그 편의 명제)
+    title = next((i for i in range(m + 1, min(rb, m + 3) + 1) if not _cue(i) and len(sentences[i].text.split()) >= 2), None)
+    if title is None:
+        return keep
+    dropped = [i for i in range(m, title) if i in keep]
+    out = (keep - set(dropped)) | {title}
+    log.append(f"낭독 유도 멘트 S{m}~S{title - 1} 제거 → 제목 문장 S{title} '{sentences[title].text[:24]}'부터")
+    return out
+
+
 _ORDINAL_KO = ["첫째", "둘째", "셋째", "넷째", "다섯째"]
 
 
@@ -2336,6 +2410,7 @@ def build_enumeration_cuts(
             keep, _bridged = _restore_bridges(keep, sentences, hard_max_sec, ilog)
             keep = _enum_consolidate(keep, m, sentences, ilog, anchors=punches | landing_ids | tease_keep)
             keep = _enum_trim_tail(keep, [m], punches | landing_ids, sentences, ilog)
+            keep = _enum_drop_read_cues(keep, m, rb, sentences, ilog)
             ids = sorted(keep)
             if not ids:
                 continue
@@ -2519,6 +2594,59 @@ def select_highlights_v2(
     except Exception as exc:  # noqa: BLE001 - 채점 실패해도 컷은 살린다
         print(f"[v2] 2차 채점 실패(컷은 유지, 기본 점수): {exc}", flush=True)
 
+    # --- 이해도 수선(2026-11-16): 처음 보는 눈(채점)이 "여기서 막힌다"고 한 컷은 그 지점을 정밀 패스에 돌려줘 한 번 고치게
+    # 하고, 고친 컷만 다시 채점해 이해도가 오르면 받아들인다. 관문 탈락 컷이 있을 때만 호출 2회가 더 든다.
+    bad = [i for i, c in enumerate(fixed) if not c.get("enum")
+           and (_num(scored.get(i, {}).get("followable")) or 10) <= FOLLOWABLE_GATE]
+    if bad and refine_pass:
+        if on_progress:
+            on_progress(0.98, "이해가 막히는 컷을 다시 다듬는 중...")
+        try:
+            subs = [{**fixed[i], "_issue": str(scored[i].get("confusing") or "설정이 빠져 이해가 어렵다")} for i in bad]
+            repaired, _ = refine_cuts(
+                subs, sentences, model=model, thinking_tokens=refine_thinking_tokens,
+                min_sec=min_duration_sec, max_sec=max_duration_sec, hard_max_sec=hard_max_duration_sec,
+                max_span_sec=max_span_sec,
+            )
+
+            def _sig(c: dict):
+                return (int(c["start"]), int(c["end"]), _skips_of(c))
+
+            changed = [(i, rc) for i, rc in zip(bad, repaired) if _sig(rc) != _sig(fixed[i])]
+            if changed:
+                items2 = []
+                for k, (i, rc) in enumerate(changed):
+                    runs = kept_runs(rc["start"], rc["end"], _skips_of(rc))
+                    items2.append({
+                        "index": k, "duration": _eff_dur(sentences, rc["start"], rc["end"], _skips_of(rc)),
+                        "appeal": rc.get("appeal", ""), "core_line": sentences[rc["core"]].text,
+                        "text": " … ".join(" ".join(x.text for x in sentences[a: b + 1]) for a, b in runs),
+                    })
+                raw2 = _invoke_claude_json(
+                    build_score_prompt(items2, score_extra_block), model=score_model,
+                    thinking_tokens=score_thinking_tokens, timeout_sec=600, max_clips=len(items2),
+                )
+                for r2 in raw2:
+                    try:
+                        i, rc = changed[int(r2.get("index"))]
+                    except (TypeError, ValueError, AttributeError, IndexError):
+                        continue
+                    old_f = _num(scored[i].get("followable")) or 0
+                    new_f = _num(r2.get("followable")) or 0
+                    if new_f > old_f:
+                        print(f"[v2] 이해도 수선 클립 {i}: S{fixed[i]['start']}~S{fixed[i]['end']} → S{rc['start']}~S{rc['end']} "
+                              f"(이해도 {old_f:.0f}→{new_f:.0f})", flush=True)
+                        fixed[i] = {k2: v for k2, v in rc.items() if k2 != "_issue"}
+                        scored[i] = r2
+                    else:
+                        print(f"[v2] 이해도 수선 클립 {i}: 고쳐도 이해도 {old_f:.0f}→{new_f:.0f} — 원래 컷 유지", flush=True)
+            else:
+                print(f"[v2] 이해도 수선: 탈락 {len(bad)}개 중 고칠 수 있는 컷 없음", flush=True)
+        except QuotaExceededError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 수선 실패는 원래 컷(관문 감점)으로 간다
+            print(f"[v2] 이해도 수선 실패(원래 컷 유지): {exc}", flush=True)
+
     clips: list[Clip] = []
     for i, c in enumerate(fixed):
         s, e = sentences[c["start"]], sentences[c["end"]]
@@ -2539,6 +2667,17 @@ def select_highlights_v2(
         if c.get("polemic") or c.get("bible_story") or c.get("biased"):
             # 후보 부족으로 살려 둔 타자 비판/성경 인물 이야기 컷: 점수 상한을 걸어 항상 맨 아래
             computed["score"] = min(int(computed["score"]), 30)
+        # 이해도 관문(2026-11-16 "어떤 링크를 넣어도 같은 품질"): 채점은 실제로 남는 대사만 본다 — 그 눈으로 '처음 보는
+        # 사람이 따라올 수 있는가'를 매기게 하고, 못 따라오는 컷은 다른 축이 아무리 높아도 뒤로 보낸다. 실측
+        # (nOUez83I-qY 3회 분석): 같은 사연이 실행마다 '설정 없이 시작' / '가운데가 잘려 결말만' 으로 다르게 망가졌고,
+        # 그대로 1~3위에 올랐다. 고르는 쪽은 앞뒤 문맥을 알아서 빠진 걸 못 느낀다 — 모르는 눈으로 한 번 거른다.
+        follow = _num(r.get("followable")) if r else None
+        confusing = str(r.get("confusing", "") or "").strip() if r else ""
+        if follow is not None and follow <= FOLLOWABLE_GATE:
+            capped = min(int(computed["score"]), FOLLOWABLE_CAP)
+            print(f"[v2] 클립 {i} 이해도 {follow:.0f} ≤ {FOLLOWABLE_GATE} → 점수 {computed['score']}→{capped} ({confusing})", flush=True)
+            computed["score"] = capped
+            c["why"] = (str(c.get("why", "")).strip() + f" ⚠ 처음 보면 이해가 어려움: {confusing}").strip()
         # 점프컷: 남길 구간(절대초). 첫 구간의 시작은 말버릇 트림을 반영한다. 한 구간뿐이면 빈 목록(=전체 사용).
         keep_abs = cut_keep_ranges(c, sentences)
         if len(keep_abs) > 1:
