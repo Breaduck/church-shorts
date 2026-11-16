@@ -1578,14 +1578,18 @@ def _segments_for_clip(video_id: str, clip, cfg: dict, transcript_path: Path, re
         )
         # 렌더와 같은 '구멍' 검사: 앞/중간이 통째로 빈 불량 캐시(VAD/배치 사고)를 신뢰하면
         # 초안 자체가 십수 초 어긋난다(실측: 19초 구멍 캐시 → 초안 전체 밀림).
+        from src.main import hole_base_for
         if segs is not None and _precise_worst_hole(
-            tdata["segments"], segs, clip.start, clip.end
+            hole_base_for(clip, tdata["segments"]), segs, clip.start, clip.end
         ) >= 5.0:
             segs = None
     except Exception:  # noqa: BLE001 - 캐시 조회 실패는 조용히 자동자막 폴백
         segs = None
     if report is not None:
         report["precise"] = segs is not None
+    if segs is not None:
+        from src.main import retime_stretched_words
+        retime_stretched_words(segs, tdata["segments"])  # 렌더와 같은 단어 시각 보정
     if segs is None:
         segs = json_load_transcript(transcript_path)["segments"]
     # 오탈자 교정도 렌더와 동일하게 적용(예전엔 편집기 초안에만 미적용 → 저장 시 오탈자 굳음).
@@ -2689,18 +2693,27 @@ def _precise_segments_for_clip(video_id: str, clip, cfg: dict, use_cache: bool, 
     corrections = cfg.get("captions", {}).get("corrections") or {}
     threads = int(cpu_threads if cpu_threads is not None else w.get("cpu_threads", 0))
 
+    # 점프컷 클립은 남기는 조각만 받아쓴다(렌더와 같은 규칙 — main.precise_windows 주석 참고).
+    from src.main import precise_windows, segments_in_windows
+
+    windows = precise_windows(clip)
+    hole_base = base_segs if len(windows) <= 1 else segments_in_windows(base_segs, windows)
+
     def _hole(s):
-        return _precise_worst_hole(base_segs, s, clip.start, clip.end)
+        return _precise_worst_hole(hole_base, s, clip.start, clip.end)
 
     def _precise(vad: bool, batched: bool = True):
-        return transcribe_clip_precise(
-            video_dir / "source.mp4", tr_a, tr_b,
-            model_size=model, device=w["device"], compute_type=w["compute_type"],
-            language=w["language"], vad_filter=vad,
-            initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
-            cpu_threads=threads, batch_size=int(w.get("batch_size", 8)),
-            batched=batched,
-        )
+        out = []
+        for wa, wb in (windows if len(windows) > 1 else [(tr_a, tr_b)]):
+            out += transcribe_clip_precise(
+                video_dir / "source.mp4", wa, wb,
+                model_size=model, device=w["device"], compute_type=w["compute_type"],
+                language=w["language"], vad_filter=vad,
+                initial_prompt=w.get("initial_prompt"), hotwords=hotwords,
+                cpu_threads=threads, batch_size=int(w.get("batch_size", 8)),
+                batched=batched,
+            )
+        return out
 
     with _precise_lock:
         if use_cache:
@@ -2926,9 +2939,13 @@ def sync_captions_route(video_id: str, idx: int):
     model = w.get("precise_model_size", w["model_size"])
     segs = _precise_cache_find(video_dir / "precise_cache", model, sig, clip.start, clip.end + 4.0)
     used = "정밀 캐시"
-    if segs is not None and _precise_worst_hole(tdata["segments"], segs, clip.start, clip.end) >= 5.0:
+    from src.main import hole_base_for
+    if segs is not None and _precise_worst_hole(hole_base_for(clip, tdata["segments"]), segs, clip.start, clip.end) >= 5.0:
         segs = None  # 구멍 난 불량 캐시는 신뢰하지 않는다
     precise = segs is not None
+    if precise:
+        from src.main import retime_stretched_words
+        retime_stretched_words(segs, tdata["segments"])
     if segs is None:
         segs = tdata["segments"]
         used = "참조 전사(캐시 없음 — 정밀 인식 후 다시 맞추면 더 정확)"

@@ -991,3 +991,55 @@ def test_merge_orphan_lines_does_not_cross_sentence_end():
     b = [Word(1.0, 1.3, "기도하는"), Word(1.3, 1.6, "대로"), Word(1.6, 1.8, "다"), Word(1.8, 2.1, "되면")]
     out = merge_orphan_lines([CaptionLine(0.0, 0.5, a), CaptionLine(1.0, 2.1, b)], 11.6)
     assert [w.text for w in out[0].words] == ["많아요."]
+
+
+def test_precise_windows_only_cover_kept_pieces():
+    """점프컷 클립은 남기는 조각만 정밀 받아쓰기 한다(449초 통째 → 조각 합계)."""
+    from types import SimpleNamespace
+    from src.main import precise_windows, segments_in_windows, _precise_worst_hole
+    from src.transcribe import Segment, Word
+
+    whole = SimpleNamespace(start=100.0, end=160.0, keep_ranges=[[100.0, 160.0]], teaser_range=None)
+    assert precise_windows(whole) == [(96.0, 176.0)]
+
+    jump = SimpleNamespace(
+        start=676.0, end=1126.0,
+        keep_ranges=[[676.0, 681.0], [1067.0, 1082.0], [1113.0, 1126.0]],
+        teaser_range=[1077.8, 1082.1],
+    )
+    wins = precise_windows(jump)
+    assert wins == [(672.0, 685.0), (1063.0, 1142.0)]
+    assert sum(b - a for a, b in wins) < 100
+
+    def seg(ts):
+        ws = [Word(start=t, end=t + 0.3, text="말") for t in ts]
+        return Segment(start=ws[0].start, end=ws[-1].end, text="말", words=ws)
+
+    base = [seg([677.0, 679.0]), seg([700.0 + i * 2 for i in range(150)]), seg([1068.0, 1075.0, 1115.0, 1120.0])]
+    precise = [seg([677.1, 679.1]), seg([1068.1, 1075.1, 1115.1, 1120.1])]
+    # 들어낸 구간(700~1000초)은 구멍이 아니다
+    assert _precise_worst_hole(segments_in_windows(base, wins), precise, jump.start, jump.end) < 5.0
+    assert _precise_worst_hole(base, precise, jump.start, jump.end) >= 5.0
+
+
+def test_start_snap_does_not_pull_back_across_untranscribed_gap():
+    """whisper가 낭독 유도 멘트를 못 받아쓰고 '첫째는 하나님의(3.5초로 늘어남) 약속을'로 뭉쳐도
+    선정한 시작(676초)을 672초로 되돌리지 않고, 늘어난 단어는 자동자막 시각으로 바로잡는다."""
+    from types import SimpleNamespace
+    from src.main import _snap_clip_start_to_sentence, retime_stretched_words
+    from src.transcribe import Segment, Word
+
+    def seg(items):
+        ws = [Word(start=a, end=b, text=t) for a, b, t in items]
+        return Segment(start=ws[0].start, end=ws[-1].end, text=" ".join(w.text for w in ws), words=ws)
+
+    precise = [seg([(672.5, 673.56, "첫째는"), (673.56, 677.04, "하나님의"), (677.04, 678.28, "약속을"),
+                    (678.28, 679.3, "믿어야"), (679.3, 680.0, "합니다.")])]
+    base = [seg([(673.0, 674.0, "첫째는"), (674.0, 676.5, "읽어"), (676.5, 679.0, ">> 하나님의"), (677.8, 679.7, ">> 약속을")])]
+    clip = SimpleNamespace(start=676.0, end=1126.0)
+    assert retime_stretched_words(precise, base) == 1
+    assert abs(precise[0].words[1].start - 676.5) < 0.01
+    assert _snap_clip_start_to_sentence(clip, precise) == 676.0
+    # 공백 없는 보통 문장은 예전처럼 문장 시작으로 당긴다
+    normal = [seg([(100.0, 100.5, "그런데"), (100.5, 101.0, "여러분"), (101.0, 101.6, "보세요.")])]
+    assert abs(_snap_clip_start_to_sentence(SimpleNamespace(start=100.8, end=140.0), normal) - 99.95) < 0.01

@@ -2029,6 +2029,18 @@ def _snap_clip_start_to_sentence(
             next_start = s
             break
     if prev_start is not None and 0.35 <= clip.start - prev_start <= max_back:
+        # 문장 시작과 clip.start 사이에 단어 없는 공백(1.5초+)이 끼어 있으면 당기지 않는다(2026-11-17 실측):
+        # 선정이 "첫째는 읽어 보시죠. 첫째 시작."을 빼고 676초부터 잡았는데, whisper가 그 멘트를 못 받아쓰고
+        # '첫째는(672.5) 하나님의 …(3.4초 공백)… 약속을'로 한 문장을 만들어, 여기서 3.5초를 되돌려
+        # 자막 없는 낭독 유도 멘트가 클립 머리에 통째로 들어갔다. 공백 너머는 같은 문장이 아니다.
+        between = [w for w in words if prev_start - 0.01 <= w.start <= clip.start + 0.6]
+        gap = max(
+            (b.start - a.end for a, b in zip(between, between[1:])), default=0.0
+        )
+        if between:
+            gap = max(gap, clip.start - between[-1].end)
+        if gap >= 1.5:
+            return clip.start
         return max(0.0, prev_start - 0.05)
     if (
         next_start is not None
@@ -2037,6 +2049,63 @@ def _snap_clip_start_to_sentence(
     ):
         return next_start - 0.1
     return clip.start
+
+
+def retime_stretched_words(segs: list, base_segments: list, min_dur: float = 2.5) -> int:
+    """whisper가 쉼/못 받아쓴 말 위로 길게 늘인 단어(2.5초+)의 시작을 자동자막의 같은 단어 시각으로 바로잡는다.
+    실측(2026-11-17): '하나님의' 673.56~677.04 — 실제 발화는 676.5(자동자막). 늘어난 시작 시각 때문에
+    시작 스냅이 3.5초를 되돌리고, 그 단어가 자막에서 빠졌다. 고친 단어 수를 돌려준다(제자리 수정)."""
+    def norm(t: str) -> str:
+        return re.sub(r"[^0-9A-Za-z가-힣]", "", t or "")
+
+    base_words = [w for s in (base_segments or []) for w in (getattr(s, "words", None) or [])]
+    n = 0
+    for s in segs or []:
+        for w in getattr(s, "words", None) or []:
+            if w.end - w.start < min_dur:
+                continue
+            key = norm(w.text)
+            cand = [b.start for b in base_words if w.start < b.start < w.end - 0.2 and norm(b.text) == key and key]
+            if cand:
+                w.start = round(max(cand), 3)
+                n += 1
+    return n
+
+
+def precise_windows(clip, start_buf: float = 4.0, end_buf: float = 16.0, merge_gap: float = 30.0) -> list[tuple[float, float]]:
+    """정밀 받아쓰기를 돌릴 원본 구간 목록. 통짜 클립은 [시작-버퍼, 끝+버퍼] 하나, 점프컷 클립은 남기는 조각마다
+    (앞뒤 4초, 마지막 조각은 문장 끝 탐색용 end_buf) — 조각 사이가 merge_gap 미만이면 하나로 합친다."""
+    kr = [[float(a), float(b)] for a, b in (getattr(clip, "keep_ranges", None) or [])]
+    ranges = kr if len(kr) > 1 else [[float(clip.start), float(clip.end)]]
+    tz = [float(x) for x in (getattr(clip, "teaser_range", None) or [])]
+    if len(tz) == 2 and tz[1] > tz[0]:
+        ranges = ranges + [tz]
+    ranges.sort()
+    last_end = max(r[1] for r in ranges)
+    wins: list[list[float]] = []
+    for a, b in ranges:
+        wa, wb = max(0.0, a - start_buf), b + (end_buf if b >= last_end else start_buf)
+        if wins and wa - wins[-1][1] < merge_gap:
+            wins[-1][1] = max(wins[-1][1], wb)
+        else:
+            wins.append([wa, wb])
+    return [(a, b) for a, b in wins]
+
+
+def segments_in_windows(segs: list, windows: list[tuple[float, float]]) -> list:
+    """세그먼트의 단어 중 windows 안에서 시작하는 것만 남긴 사본(구멍·단어 수 검사를 받아쓴 범위로 한정)."""
+    out = []
+    for s in segs:
+        ws = [w for w in (s.words or []) if any(a <= w.start <= b for a, b in windows)]
+        if ws:
+            out.append(Segment(start=ws[0].start, end=ws[-1].end, text=" ".join(w.text for w in ws), words=ws))
+    return out
+
+
+def hole_base_for(clip, base_segments: list) -> list:
+    """구멍 검사에 쓸 base 전사: 점프컷 클립이면 받아쓴 조각 안의 단어만(들어낸 구간을 구멍으로 오판하지 않게)."""
+    wins = precise_windows(clip)
+    return base_segments if len(wins) <= 1 else segments_in_windows(base_segments, wins)
 
 
 def align_end_to_payoff(clip, segs: list, back_sec: float = 12.0, fwd_sec: float = 4.0) -> float | None:
@@ -2746,6 +2815,11 @@ def render_selected(
             # 렌더가 느린 주범이었다 — 캐시 적중 시 그 시간이 통째로 사라진다.
             tr_a = max(0.0, clip.start - START_BUFFER_SEC)
             tr_b = clip.end + END_BUFFER_SEC
+            # 점프컷 클립은 실제로 쓰는 조각만 받아쓴다(2026-11-16): 나열 컷은 남는 게 32초인데 원본 구간이 449초라
+            # 449초를 통째로 large-v3에 돌렸다 — 메모리가 빠듯한 PC에서 몇 시간씩 걸리다 죽었다. 들어낸 구간에는
+            # 자막이 필요 없으므로 구멍·단어 수 검사도 조각 안의 base 단어만으로 한다(hole_base).
+            tr_windows = precise_windows(clip, START_BUFFER_SEC, END_BUFFER_SEC)
+            hole_base = base_segments if len(tr_windows) <= 1 else segments_in_windows(base_segments, tr_windows)
             # 캐시 요구 범위는 [시작, 끝+4초]면 충분하다: 시작 스냅으로 당겨져 저장된 start 때문에
             # tr_a(시작-4초)로 찾으면 자기 자신이 만든 캐시도 못 찾아 매번 재전사했다(실측).
             # 끝+4초는 "이미 문장 끝에 스냅돼 있는지" 확인에 필요한 최소 버퍼.
@@ -2753,7 +2827,7 @@ def render_selected(
                 cache_dir, precise_model, sig, clip.start, clip.end + 4.0
             )
             if cached_segs is not None and _precise_worst_hole(
-                base_segments, cached_segs, clip.start, clip.end
+                hole_base, cached_segs, clip.start, clip.end
             ) >= 5.0:
                 # 과거에 '부분 실종' 결과가 캐시된 경우(초반 20초 자막 실종 사고) 재사용하지 않는다.
                 _rlog(video_dir, f"clip{idx} 캐시에 자막 구멍 발견 → 캐시 무시, 재전사")
@@ -2769,17 +2843,20 @@ def render_selected(
                 # 같은 예외로 통째로 죽는 경우가 있다(실제 발생). 그러면 렌더 전체가 실패하므로,
                 # 예외는 삼키고 빈 결과로 둔 뒤 아래 폴백(원본 자막)이 자막을 채우게 한다.
                 def _precise(vad: bool, batched: bool = True) -> list[Segment]:
-                    return transcribe_clip_precise(
-                        video_path, tr_a, tr_b,
-                        model_size=precise_model,
-                        device=w["device"], compute_type=w["compute_type"],
-                        language=w["language"], vad_filter=vad,
-                        initial_prompt=w.get("initial_prompt"),
-                        hotwords=hotwords,
-                        cpu_threads=int(w.get("cpu_threads", 0)),
-                        batch_size=int(w.get("batch_size", 8)),
-                        batched=batched,
-                    )
+                    out_segs: list[Segment] = []
+                    for wa, wb in (tr_windows if len(tr_windows) > 1 else [(tr_a, tr_b)]):
+                        out_segs += transcribe_clip_precise(
+                            video_path, wa, wb,
+                            model_size=precise_model,
+                            device=w["device"], compute_type=w["compute_type"],
+                            language=w["language"], vad_filter=vad,
+                            initial_prompt=w.get("initial_prompt"),
+                            hotwords=hotwords,
+                            cpu_threads=int(w.get("cpu_threads", 0)),
+                            batch_size=int(w.get("batch_size", 8)),
+                            batched=batched,
+                        )
+                    return out_segs
 
                 vad_default = w.get("vad_filter", True)
                 try:
@@ -2797,7 +2874,7 @@ def render_selected(
                 # 배치 모드 '부분 실종' 검사: 단어 수(35% 기준)로는 못 잡는, base엔 발화가
                 # 있는데 정밀 결과가 통째로 빈 구간(실측: 초반 22초 자막 실종)을 잡는다.
                 # 구멍이 크면 느리지만 검증된 순차 모드로 다시 전사한다.
-                hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+                hole = _precise_worst_hole(hole_base, segs, clip.start, clip.end)
                 if segs and hole >= 5.0:
                     _rlog(video_dir, f"clip{idx} 정밀(배치) 자막 구멍 {hole:.1f}초 → 순차 모드 재전사")
                     try:
@@ -2807,12 +2884,12 @@ def render_selected(
                             message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구): {clip.title}",
                             est_seconds=max(30.0, clip_len * 2.2),
                         )
-                        if _precise_worst_hole(base_segments, segs_seq, clip.start, clip.end) < hole:
+                        if _precise_worst_hole(hole_base, segs_seq, clip.start, clip.end) < hole:
                             segs = segs_seq
                     except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
                         _rlog(video_dir, f"clip{idx} 순차 재전사 예외: {type(e).__name__}: {e}")
 
-                base_n = _count_words(base_segments, clip.start, clip.end)
+                base_n = _count_words(hole_base, clip.start, clip.end)
                 precise_n = _count_words(segs, clip.start, clip.end)
                 # 1차 정밀 재전사가 비었거나 원본보다 현저히 부실하면, 유튜브 자동자막(오인식 다수)으로
                 # 폴백하기 전에 VAD를 끄고 한 번 더 정밀 재전사한다. VAD 필터가 짧은 클립에서 발화를
@@ -2835,7 +2912,7 @@ def render_selected(
                             segs, precise_n = segs2, _count_words(segs2, clip.start, clip.end)
                             # 이 재시도도 배치 모드(batched=True)라 같은 '구멍' 사고가 재발할 수 있다.
                             # 단어 수만 보고 그대로 채택하면 구멍이 다시 렌더로 새어나가므로 한 번 더 검사한다.
-                            hole2 = _precise_worst_hole(base_segments, segs, clip.start, clip.end)
+                            hole2 = _precise_worst_hole(hole_base, segs, clip.start, clip.end)
                             if hole2 >= 5.0:
                                 _rlog(video_dir, f"clip{idx} VAD끔 재시도도 자막 구멍 {hole2:.1f}초 → 순차 모드 재전사")
                                 try:
@@ -2845,7 +2922,7 @@ def render_selected(
                                         message=f"[{i+1}/{total}] 자막 재인식(빠짐 구간 복구 2차): {clip.title}",
                                         est_seconds=max(30.0, clip_len * 2.2),
                                     )
-                                    if _precise_worst_hole(base_segments, segs_seq2, clip.start, clip.end) < hole2:
+                                    if _precise_worst_hole(hole_base, segs_seq2, clip.start, clip.end) < hole2:
                                         segs, precise_n = segs_seq2, _count_words(segs_seq2, clip.start, clip.end)
                                 except Exception as e:  # noqa: BLE001 - 재시도 실패 시 기존 결과/폴백 유지
                                     _rlog(video_dir, f"clip{idx} 2차 순차 재전사 예외: {type(e).__name__}: {e}")
@@ -2857,7 +2934,7 @@ def render_selected(
                 # (실측: base 54단어 vs precise 32단어=59%로 통과했지만 16초 구멍 → 자막 공백 렌더).
                 # 긴 창에서 whisper가 통째로 건너뛴 구간은 그 구간만 짧은 창으로 다시 전사해 메운다.
                 if segs:
-                    for ha, hb in _precise_hole_spans(base_segments, segs, clip.start, clip.end):
+                    for ha, hb in _precise_hole_spans(hole_base, segs, clip.start, clip.end):
                         try:
                             patch = transcribe_clip_precise(
                                 video_path, max(0.0, ha - 1.0), hb + 3.0,
@@ -2875,7 +2952,7 @@ def render_selected(
                             _rlog(video_dir, f"clip{idx} 구멍 {ha:.1f}~{hb:.1f} 부분 재전사: {before}→{precise_n}단어")
                         except Exception as e:  # noqa: BLE001 - 실패 시 아래 폴백
                             _rlog(video_dir, f"clip{idx} 구멍 부분 재전사 예외: {type(e).__name__}: {e}")
-                final_hole = _precise_worst_hole(base_segments, segs, clip.start, clip.end) if segs else 999.0
+                final_hole = _precise_worst_hole(hole_base, segs, clip.start, clip.end) if segs else 999.0
                 if base_n >= 5 and (precise_n < max(3, int(base_n * 0.35)) or final_hole >= 5.0):
                     progress(
                         f"[{i+1}/{total}] 정밀 자막 부실 → 원본 자막({base_n}단어)으로 대체",
@@ -2890,11 +2967,13 @@ def render_selected(
                     _rlog(video_dir, f"clip{idx} 정밀 자막 사용: {precise_n}단어 (base {base_n}단어)")
                     # 건강한 정밀 결과만 캐시한다(부실 결과를 캐시하면 다음 렌더가 재시도 기회를 잃는다).
                     # 자막 구멍이 남아 있는 결과도 캐시하지 않는다(불량 캐시가 계속 재사용되는 사고 방지).
-                    if _precise_worst_hole(base_segments, segs, clip.start, clip.end) < 5.0:
+                    if _precise_worst_hole(hole_base, segs, clip.start, clip.end) < 5.0:
                         _precise_cache_save(cache_dir, precise_model, sig, tr_a, tr_b, segs)
             # 확정 오탈자 교정(출애굽기/여호와 등). 캐시는 원본 그대로 저장하고 매번 여기서 교정한다
             # (교정 사전을 나중에 더 채워도 재전사 없이 다음 렌더부터 바로 반영되게).
             _apply_corrections(segs, corrections)
+            if segs is not base_segments:
+                retime_stretched_words(segs, base_segments)
             # 경계 스냅 기준: 정밀 전사가 건강하면 그것을 쓴다 — large-v3는 구두점 있는 진짜
             # 문장 단위라 "문장 중간 끊김/앞 문장 꼬리 시작"을 정확히 잡는다. 유튜브 자막 조각
             # (base)은 문장 경계가 아니어서 스냅이 어색했다(실측 불만). 폴백 시에만 base 사용.
