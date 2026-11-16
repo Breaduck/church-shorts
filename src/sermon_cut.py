@@ -1536,7 +1536,7 @@ def drop_bible_story_cuts(cuts: list[dict], sentences: list[Sentence]) -> tuple[
 # "그 시절 어머니 세대가 멈춘다"며 뽑아 올리므로 이단·인물 필터와 같은 방식으로 결정론적으로 거른다.
 # '여자가/남자가'는 이야기 속 인물("한 여자가 찾아왔어요")에도 쓰이므로 표지에서 뺐다.
 _BIASED_RE = re.compile(
-    r"(?<![가-힣])(여성|남성|여자들|남자들|신여성|남녀|가부장|인권|여성\s*상위|남존\s*여비|"
+    r"(?<![가-힣])((?:여성|남성)(?:들)?(?:은|는|이라면|이란|일수록|보다)|여자들|남자들|신여성|남녀|가부장|인권|여성\s*상위|남존\s*여비|"
     r"기독교\s*(덕분|때문)|성경\s*때문에\s*그런|선교사들?\s*(덕분|때문|이\s*세운)|개화)"
 )
 _BIASED_MIN_SENTENCES = 2
@@ -1603,7 +1603,9 @@ def dedupe_cuts(cuts: list[dict], sentences: list[Sentence], overlap_ratio: floa
 # ---------------------------------------------------------------------------
 # 4. 2차 패스 — 확정된 컷의 실제 대사만 보고 채점·캡션·키워드·제목 초안
 # ---------------------------------------------------------------------------
-FOLLOWABLE_GATE = 5    # 이해도(1~10)가 이 이하면 관문 탈락
+FOLLOWABLE_GATE = 4    # 이해도(1~10)가 이 이하면 관문 탈락(점수 상한). 실측: 진짜 막히는 컷('송 집사' 소개 없음)은 4,
+                       # 5는 받아쓰기 오탈자·사소한 빈칸 때문에 나오는 경계값(완결된 클리블랜드 일화 56점이 35로 떨어짐) → 5는 10% 감점만
+FOLLOWABLE_SOFT = 5
 FOLLOWABLE_CAP = 35    # 탈락 컷의 점수 상한(목록 맨 아래로)
 
 
@@ -1640,7 +1642,10 @@ quotability(스샷 떠 공유할 한 문장 — 그 줄만 떼어도 뜻이 서�
 **followable(1~10) — 이해도 관문**: 이 설교를 한 번도 안 들은 사람이 **위 대사만** 듣고 "누가 · 무엇을 · 왜"를 따라올 수
 있는가. ` … `는 편집으로 들어낸 자리다 — 그 자리를 건너뛰어도 말이 이어지는지 본다. 인물이 소개 없이 튀어나오거나("이 송
 집사가"), 가리키는 대상이 없거나("그 노트를" — 무슨 노트?), 사연의 가운데(무슨 일이 있었는지)가 빠져 결말만 남았거나,
-앞 얘기를 알아야 뜻이 통하면 5 이하. 처음부터 끝까지 막힘 없이 이해되면 8 이상. 5 이하면 confusing에 막히는 지점을 한 줄로.
+앞 얘기를 알아야 뜻이 통하면 4 이하. 조금 걸리지만 따라갈 수는 있으면 5~7. 처음부터 끝까지 막힘 없이 이해되면 8 이상.
+5 이하면 confusing에 막히는 지점을 한 줄로. **대사는 자동 받아쓰기라 오탈자가 많다('해속장'=해수욕장, '보정'=보증) —
+화면 자막은 따로 정확히 다시 받아쓰니 오탈자·뭉개진 낱말, 그리고 사실관계의 정확성(연도·몇 대 대통령)은 이해도에서 깎지 마라.
+소리 내어 읽었을 때 뜻이 통하는지만 본다.**
 title = 핵심 문장을 벤치마크 스타일로 다듬은 15~20자 구어체 한 줄(예: "기도하는 사람은 오염되지 않습니다").
 insight = 이 클립이 시청자 삶의 어떤 문제에 어떻게 닿는가 한 줄. caption = 훅 한 문장. hashtags 3개.
 keywords = 이 클립에 실제 등장하는 고유명사(성경 인물·지명·용어) 3~5개를 **올바른 철자**로(자막 정밀 전사의 철자
@@ -2535,12 +2540,19 @@ def select_highlights_v2(
         )
         if enum_cuts:
             # 일반 컷이 같은 첫째·둘째 구간을 잡았으면 쇼츠 두 개가 겹쳐 나온다 → 나열 컷과 30% 이상 겹치는 일반 컷은 뺀다.
-            def _span(c):
-                return sentences[c["start"]].start, sentences[c["end"]].end
+            # 겹침은 **실제로 남기는 문장**으로 잰다(2026-11-17 실측 ZxqNWy2N6FY): 나열 컷은 점프컷이라 원본 구간이
+            # S99~S139처럼 넓은데(남기는 건 13문장), 구간 겹침으로 재면 그 안의 전혀 다른 사연 컷(담배 66점·클리블랜드
+            # 56점)이 40점짜리 나열 컷 때문에 통째로 버려졌다 — 실행마다 좋은 컷이 있다 없다 하던 원인.
+            def _kept(c):
+                out = set()
+                for a0, b0 in kept_runs(int(c["start"]), int(c["end"]), [tuple(x) for x in (c.get("skip") or [])]):
+                    out.update(range(a0, b0 + 1))
+                return out
+            def _dur(idxs):
+                return sum(max(0.0, sentences[k].end - sentences[k].start) for k in idxs)
             def _ov(a, b):
-                (s1, e1), (s2, e2) = _span(a), _span(b)
-                inter = max(0.0, min(e1, e2) - max(s1, s2))
-                return inter / max(1e-6, min(e1 - s1, e2 - s2))
+                ka, kb = _kept(a), _kept(b)
+                return _dur(ka & kb) / max(1e-6, min(_dur(ka), _dur(kb)))
             kept = [c for c in fixed if all(_ov(c, ec) < 0.3 for ec in enum_cuts)]
             if len(kept) < len(fixed):
                 print(f"[v2] 나열 컷과 겹치는 일반 컷 {len(fixed) - len(kept)}개 제외", flush=True)
@@ -2597,7 +2609,7 @@ def select_highlights_v2(
     # --- 이해도 수선(2026-11-16): 처음 보는 눈(채점)이 "여기서 막힌다"고 한 컷은 그 지점을 정밀 패스에 돌려줘 한 번 고치게
     # 하고, 고친 컷만 다시 채점해 이해도가 오르면 받아들인다. 관문 탈락 컷이 있을 때만 호출 2회가 더 든다.
     bad = [i for i, c in enumerate(fixed) if not c.get("enum")
-           and (_num(scored.get(i, {}).get("followable")) or 10) <= FOLLOWABLE_GATE]
+           and (_num(scored.get(i, {}).get("followable")) or 10) <= FOLLOWABLE_SOFT]
     if bad and refine_pass:
         if on_progress:
             on_progress(0.98, "이해가 막히는 컷을 다시 다듬는 중...")
@@ -2678,6 +2690,10 @@ def select_highlights_v2(
             print(f"[v2] 클립 {i} 이해도 {follow:.0f} ≤ {FOLLOWABLE_GATE} → 점수 {computed['score']}→{capped} ({confusing})", flush=True)
             computed["score"] = capped
             c["why"] = (str(c.get("why", "")).strip() + f" ⚠ 처음 보면 이해가 어려움: {confusing}").strip()
+        elif follow is not None and follow <= FOLLOWABLE_SOFT:
+            soft = int(round(int(computed["score"]) * 0.9))
+            print(f"[v2] 클립 {i} 이해도 {follow:.0f}(경계) → 점수 {computed['score']}→{soft} ({confusing})", flush=True)
+            computed["score"] = soft
         # 점프컷: 남길 구간(절대초). 첫 구간의 시작은 말버릇 트림을 반영한다. 한 구간뿐이면 빈 목록(=전체 사용).
         keep_abs = cut_keep_ranges(c, sentences)
         if len(keep_abs) > 1:
